@@ -57,7 +57,7 @@ jobs:
                   expected[info.filename] = ('100755' if executable else '100644', gitblob)
           subprocess.run(['git','config','user.name','github-actions[bot]'], check=True)
           subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'], check=True)
-          subprocess.run(['git','add','--all','--force'], check=True)
+          # Keep the archive's .gitattributes intact but bypass LFS clean filters for this exact-source import.\n          # Otherwise git-lfs replaces binary bytes with pointer objects.\n          subprocess.run(['git','config','filter.lfs.clean','cat'], check=True)\n          subprocess.run(['git','config','filter.lfs.process',''], check=True)\n          subprocess.run(['git','config','filter.lfs.required','false'], check=True)\n          subprocess.run(['git','add','--all','--force'], check=True)
           subprocess.run(['git','commit','-m','Import Convay Board Meeting solution: exact ZIP source'], check=True)
           actual = {}
           for record in subprocess.check_output(['git','ls-tree','-r','-z','HEAD']).split(b'\x00'):
