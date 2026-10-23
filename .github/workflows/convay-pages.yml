@@ -38,6 +38,8 @@ jobs:
         run: pnpm exec tsc --noEmit --project tsconfig.release.json
       - name: Run application tests
         run: pnpm test
+      - name: Verify router under GitHub Pages base path
+        run: pnpm exec vitest run src/test/pages-router-basename.test.ts --base /ConvayBoardMeetingSolution/
       - name: Build for repository-subpath deployment
         run: pnpm exec vite build --config vite.figma.config.ts --base /ConvayBoardMeetingSolution/
       - name: Verify production entry
@@ -45,6 +47,10 @@ jobs:
           test -s dist/index.html
           grep -q '/ConvayBoardMeetingSolution/assets/' dist/index.html
           ! grep -q 'src/main.tsx' dist/index.html
+      - name: Provide deep-link recovery document for GitHub Pages
+        run: |
+          cp dist/index.html dist/404.html
+          cmp dist/index.html dist/404.html
       - name: Embed exact release commit
         run: |
           printf '{"commit":"%s"}\n' "$GITHUB_SHA" > dist/release.json
@@ -106,4 +112,52 @@ jobs:
                       raise RuntimeError("Public site failed verification: " + "; ".join(errors[-3:]))
                   time.sleep(10)
           PY
+      - name: Install pinned headless browser
+        run: |
+          npm install --prefix "$RUNNER_TEMP/convay-browser" --no-audit --no-fund playwright@1.56.1
+          "$RUNNER_TEMP/convay-browser/node_modules/.bin/playwright" install chromium
+      - name: Verify the real browser renders the application and deep links
+        env:
+          PUBLIC_URL: https://shihab-tech04.github.io/ConvayBoardMeetingSolution/
+        run: |
+          NODE_PATH="$RUNNER_TEMP/convay-browser/node_modules" node <<'NODE'
+          const { chromium } = require("playwright");
+          (async () => {
+            const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+            try {
+              const page = await browser.newPage();
+              const errors = [];
+              page.on("pageerror", err => errors.push(err.message));
+              const base = process.env.PUBLIC_URL;
+              for (const pathname of ["", "home/overview", "meetings/all-meetings"]) {
+                await page.goto(base + pathname, { waitUntil: "networkidle", timeout: 60000 });
+                await page.locator("#root").waitFor({ state: "visible", timeout: 30000 });
+                const body = await page.locator("body").innerText();
+                if (body.includes("Unexpected Application Error") ||
+                    body.includes("Hey developer") ||
+                    body.includes("404 Not Found")) {
+                  throw new Error("Client-side route failure at " + pathname + ": " + body.slice(0, 400));
+                }
+                if (body.trim().length < 30) {
+                  throw new Error("Empty application at " + pathname + ": " + body.slice(0, 200));
+                }
+                if (!new URL(page.url()).pathname.startsWith("/ConvayBoardMeetingSolution/")) {
+                  throw new Error("App navigated outside Pages base: " + page.url());
+                }
+                if (errors.length) throw new Error("Browser runtime errors: " + errors.join("; "));
+                console.log("BROWSER PASS", page.url(), "body length", body.length);
+                await page.reload({ waitUntil: "networkidle", timeout: 60000 });
+                const refreshed = await page.locator("body").innerText();
+                if (refreshed.includes("Unexpected Application Error") ||
+                    refreshed.includes("Hey developer") ||
+                    refreshed.trim().length < 30) {
+                  throw new Error("Refresh failed at " + pathname);
+                }
+                console.log("RELOAD PASS", page.url());
+              }
+            } finally {
+              await browser.close();
+            }
+          })().catch(err => { console.error(err); process.exit(1); });
+          NODE
 
