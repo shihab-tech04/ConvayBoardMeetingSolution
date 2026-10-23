@@ -39,7 +39,7 @@ jobs:
       - name: Run application tests
         run: pnpm test
       - name: Verify router under GitHub Pages base path
-        run: pnpm exec vitest run src/test/pages-router-basename.test.ts --base /ConvayBoardMeetingSolution/
+        run: pnpm exec vitest run src/test/pages-router-basename.test.ts --config vite.pages.test.config.ts
       - name: Build for repository-subpath deployment
         run: pnpm exec vite build --config vite.figma.config.ts --base /ConvayBoardMeetingSolution/
       - name: Verify production entry
