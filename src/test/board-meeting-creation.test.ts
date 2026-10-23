@@ -316,14 +316,13 @@ describe("Hidden form fields for draft restoration (Section 6)", () => {
     expect(keys).toContain("draft_current_step");
   });
 
-  it("hidden state-carrier fields have condition: () => false", async () => {
+  it("hidden state-carrier fields use the non-matching declarative condition", async () => {
     const { MEETING_FORM_FIELDS } = await import("../app/pages/boardMeetingFormFields");
     const hiddenKeys = ["participant_links_json", "selected_agenda_ids_json", "additional_doc_ids_json", "draft_current_step"];
     for (const key of hiddenKeys) {
       const field = MEETING_FORM_FIELDS.find((f) => f.key === key);
       expect(field, `field ${key} not found`).toBeDefined();
-      expect(typeof field?.condition).toBe("function");
-      expect(field?.condition?.()).toBe(false);
+      expect(field?.condition).toEqual({ field: "__never__", value: "__never__" });
     }
   });
 });
