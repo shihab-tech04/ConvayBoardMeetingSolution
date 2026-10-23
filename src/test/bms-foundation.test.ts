@@ -390,7 +390,7 @@ describe("bmsMigration", () => {
 
   it("runs migration and increments version", () => {
     runBmsMigrationIfNeeded();
-    expect(getMigrationVersionNumber()).toBe(4);
+    expect(getMigrationVersionNumber()).toBe(6);
   });
 
   it("does not run twice", () => {
@@ -425,7 +425,7 @@ describe("bmsMigration", () => {
 
   it("handles missing legacy data gracefully", () => {
     expect(() => runBmsMigrationIfNeeded()).not.toThrow();
-    expect(getMigrationVersionNumber()).toBe(4);
+    expect(getMigrationVersionNumber()).toBe(6);
   });
 
   it("resetMigration allows re-running", () => {
