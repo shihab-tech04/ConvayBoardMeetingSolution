@@ -206,4 +206,4 @@ export const router = createBrowserRouter([
       { path: "administration/audit-selection",     loader: async () => redirect("/administration/security-retention/security-policies") },
     ],
   },
-]);
+], { basename: import.meta.env.BASE_URL });
