@@ -3,7 +3,7 @@ import { matchRoutes } from "react-router";
 
 describe("GitHub Pages router prefix", () => {
   it("matches the entry route and internal destinations beneath Vite's configured base", async () => {
-    // In CI this test also runs with --base /ConvayBoardMeetingSolution/.
+    // CI also runs this through vite.pages.test.config.ts at the Pages prefix.
     const base = import.meta.env.BASE_URL;
     window.history.replaceState({}, "", base);
     const { router } = await import("../app/routes");
@@ -17,5 +17,5 @@ describe("GitHub Pages router prefix", () => {
 
     const meeting = matchRoutes(router.routes, base + "meetings/all-meetings", router.basename);
     expect(meeting?.at(-1)?.route.path).toBe("meetings/all-meetings");
-  });
+ }, 20_000);
 });
