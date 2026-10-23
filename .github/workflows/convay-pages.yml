@@ -1,0 +1,67 @@
+name: Convay Board Meeting — GitHub Pages
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: convay-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install dependencies from committed lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Type-check
+        run: pnpm run typecheck
+      - name: Run application tests
+        run: pnpm test
+      - name: Build for repository-subpath deployment
+        run: pnpm exec vite build --config vite.figma.config.ts --base /ConvayBoardMeetingSolution/
+      - name: Verify production entry
+        run: |
+          test -s dist/index.html
+          grep -q '/ConvayBoardMeetingSolution/assets/' dist/index.html
+          ! grep -q 'src/main.tsx' dist/index.html
+      - name: Upload production Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    steps:
+      - name: Publish verified build
+        id: deployment
+        uses: actions/deploy-pages@v4
