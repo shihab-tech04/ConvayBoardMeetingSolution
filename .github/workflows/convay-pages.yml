@@ -88,7 +88,7 @@ jobs:
                       html = response.read().decode("utf-8")
                   if "Convay Board Meeting solution v3.0" not in html:
                       raise RuntimeError("Wrong site title: expected Convay Board Meeting solution v3.0")
-                  match = re.search(r'<script[^>]+src="([^"]+\\.js)"', html)
+                  match = re.search(r'<script[^>]+src="([^"]+\.js)"', html)
                   if not match:
                       raise RuntimeError("Compiled JavaScript entry missing")
                   src = match.group(1)
