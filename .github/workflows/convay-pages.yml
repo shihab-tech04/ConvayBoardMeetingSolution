@@ -45,6 +45,9 @@ jobs:
           test -s dist/index.html
           grep -q '/ConvayBoardMeetingSolution/assets/' dist/index.html
           ! grep -q 'src/main.tsx' dist/index.html
+      - name: Embed exact release commit
+        run: |
+          printf '{"commit":"%s"}\n' "$GITHUB_SHA" > dist/release.json
       - name: Upload production Pages artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
@@ -66,3 +69,41 @@ jobs:
       - name: Publish verified build
         id: deployment
         uses: actions/deploy-pages@v4
+      - name: Verify actual public URL, release SHA, and JavaScript asset
+        env:
+          PUBLIC_URL: https://shihab-tech04.github.io/ConvayBoardMeetingSolution/
+        run: |
+          python3 - <<'PY'
+          import json, os, re, time, urllib.request
+          base = os.environ["PUBLIC_URL"]
+          expected = os.environ["GITHUB_SHA"]
+          errors = []
+          for attempt in range(18):
+              try:
+                  with urllib.request.urlopen(base + "release.json?release=" + expected, timeout=12) as response:
+                      release = json.load(response)
+                  if release.get("commit") != expected:
+                      raise RuntimeError("Stale or unexpected public commit: " + repr(release))
+                  with urllib.request.urlopen(base + "?release=" + expected, timeout=12) as response:
+                      html = response.read().decode("utf-8")
+                  if "Convay Board Meeting solution v3.0" not in html:
+                      raise RuntimeError("Wrong site title: expected Convay Board Meeting solution v3.0")
+                  match = re.search(r'<script[^>]+src="([^"]+\.js)"', html)
+                  if not match:
+                      raise RuntimeError("Compiled JavaScript entry missing")
+                  src = match.group(1)
+                  if not src.startswith("/ConvayBoardMeetingSolution/assets/"):
+                      raise RuntimeError("Incorrect application asset base: " + src)
+                  with urllib.request.urlopen("https://shihab-tech04.github.io" + src, timeout=15) as response:
+                      js = response.read()
+                  if len(js) < 500:
+                      raise RuntimeError("Compiled JS entry unexpectedly small")
+                  print("LIVE VERIFIED", base, "commit", expected, "asset", src, "size", len(js))
+                  break
+              except Exception as exc:
+                  errors.append(str(exc))
+                  if attempt == 17:
+                      raise RuntimeError("Public site failed verification: " + "; ".join(errors[-3:]))
+                  time.sleep(10)
+          PY
+
