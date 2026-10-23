@@ -1,0 +1,707 @@
+/* ════════════════════════════════════════════════════════════════
+   Document Editor — full-screen layout
+   ════════════════════════════════════════════════════════════════ */
+
+/* Root flex column that fills the FullScreenWorkspaceShell (100vh) */
+.doc-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-surface, #fff);
+  overflow: hidden;
+  font-size: 0.875rem;
+}
+
+/* ── Header ── */
+.doc-editor__head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.875rem;
+  height: 3rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface, #fff);
+}
+
+.doc-editor__head-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-editor__head-center {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.doc-editor__head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-shrink: 0;
+}
+
+.doc-editor__back-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 0.375rem;
+  color: var(--color-text-secondary, #6b7280);
+  padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+
+.doc-editor__back-btn:hover {
+  background: var(--color-surface-subtle, #f9fafb);
+  color: var(--color-text-primary, #111827);
+}
+
+.doc-editor__head-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--color-primary, #4f46e5);
+}
+
+.doc-editor__head-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+  border: none;
+  background: transparent;
+  outline: none;
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-editor__head-title:focus {
+  background: var(--color-surface-subtle, #f9fafb);
+  box-shadow: 0 0 0 2px var(--color-primary, #4f46e5);
+}
+
+.doc-editor__head-ver {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-family: monospace;
+  color: var(--color-text-subtle, #9ca3af);
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.25rem;
+  background: var(--color-surface-subtle, #f9fafb);
+}
+
+.doc-editor__save-state {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--color-text-subtle, #9ca3af);
+}
+
+.doc-editor__head-mode {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  font-weight: 500;
+}
+
+.doc-editor__head-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.3rem 0.4rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 0.375rem;
+  color: var(--color-text-secondary, #6b7280);
+  font-size: 0.75rem;
+  transition: background 0.1s, color 0.1s;
+}
+
+.doc-editor__head-btn:hover {
+  background: var(--color-surface-subtle, #f9fafb);
+  color: var(--color-text-primary, #111827);
+}
+
+.doc-editor__head-btn[aria-pressed="true"] {
+  background: var(--color-primary-50, #eef2ff);
+  color: var(--color-primary, #4f46e5);
+}
+
+.doc-editor__head-btn--mode {
+  border: 1px solid var(--color-border, #e5e7eb);
+}
+
+.doc-editor__head-btn--mode-active {
+  background: var(--color-primary-50, #eef2ff);
+  border-color: var(--color-primary-200, #c7d2fe);
+  color: var(--color-primary, #4f46e5);
+}
+
+.doc-editor__head-divider {
+  width: 1px;
+  height: 1.25rem;
+  background: var(--color-border, #e5e7eb);
+  margin: 0 0.125rem;
+}
+
+/* ── Conversion banner ── */
+.doc-editor__banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--color-warning-50, #fffbeb);
+  border-bottom: 1px solid var(--color-warning-200, #fde68a);
+  color: var(--color-warning-800, #78350f);
+  font-size: 0.8125rem;
+}
+
+.doc-editor__banner-dismiss {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.125rem 0.25rem;
+  font-size: 0.875rem;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.doc-editor__banner-dismiss:hover { opacity: 1; }
+
+/* ── Workspace (horizontal flex) ── */
+.doc-editor__workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Icon rails ── */
+.doc-editor__left-rail,
+.doc-editor__right-rail {
+  flex-shrink: 0;
+  width: 2.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 0.5rem;
+  gap: 0.25rem;
+  border-right: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface-subtle, #f9fafb);
+}
+
+.doc-editor__right-rail {
+  border-right: none;
+  border-left: 1px solid var(--color-border, #e5e7eb);
+}
+
+.doc-editor__rail-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 0.375rem;
+  color: var(--color-text-subtle, #9ca3af);
+  padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+
+.doc-editor__rail-btn:hover {
+  background: var(--color-surface, #fff);
+  color: var(--color-text-primary, #111827);
+}
+
+.doc-editor__rail-btn--active {
+  background: var(--color-primary-50, #eef2ff);
+  color: var(--color-primary, #4f46e5);
+}
+
+/* ── Side panels ── */
+.doc-editor__left-panel,
+.doc-editor__right-panel {
+  flex-shrink: 0;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface, #fff);
+  overflow: hidden;
+}
+
+.doc-editor__right-panel {
+  border-right: none;
+  border-left: 1px solid var(--color-border, #e5e7eb);
+  width: 260px;
+}
+
+.doc-editor__panel-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.doc-editor__panel-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.doc-editor__panel-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.125rem;
+  display: flex;
+  color: var(--color-text-subtle, #9ca3af);
+  border-radius: 0.25rem;
+}
+
+.doc-editor__panel-close:hover { color: var(--color-text-primary, #111827); }
+
+.doc-editor__panel-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.doc-editor__panel-empty {
+  padding: 1rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--color-text-subtle, #9ca3af);
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ── Outline navigation ── */
+.doc-editor__outline-item {
+  padding: 0.3rem 0.75rem 0.3rem 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #6b7280);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.1s;
+}
+
+.doc-editor__outline-item:hover {
+  color: var(--color-primary, #4f46e5);
+}
+
+/* ── Main editing area ── */
+.doc-editor__main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--color-surface-subtle, #f9fafb);
+}
+
+/* ── Formatting toolbar ── */
+.doc-editor__toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.3rem 0.625rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface, #fff);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.doc-editor__toolbar::-webkit-scrollbar { display: none; }
+
+.doc-editor__toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 0.3125rem;
+  color: var(--color-text-secondary, #6b7280);
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+
+.doc-editor__toolbar-btn:hover {
+  background: var(--color-surface-subtle, #f9fafb);
+  color: var(--color-text-primary, #111827);
+}
+
+.doc-editor__toolbar-btn--active {
+  background: var(--color-primary-50, #eef2ff);
+  color: var(--color-primary, #4f46e5);
+}
+
+.doc-editor__toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.doc-editor__toolbar-divider {
+  width: 1px;
+  height: 1.25rem;
+  background: var(--color-border, #e5e7eb);
+  margin: 0 0.125rem;
+  flex-shrink: 0;
+}
+
+.doc-editor__toolbar-select {
+  font-size: 0.75rem;
+  height: 1.75rem;
+  padding: 0 0.375rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.3125rem;
+  background: var(--color-surface, #fff);
+  color: var(--color-text-primary, #111827);
+  cursor: pointer;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+/* ── Canvas wrapper (scrollable) ── */
+.doc-editor__canvas-wrap {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 2rem 1.5rem;
+}
+
+/* ── Document canvas (max-width page) ── */
+.doc-editor__canvas {
+  width: 100%;
+  max-width: 780px;
+  min-height: 100%;
+}
+
+.doc-editor__prosemirror-wrap {
+  background: white;
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 8px rgba(0, 0, 0, 0.04);
+  min-height: 60vh;
+  padding: 3rem 3.5rem;
+}
+
+/* ── ProseMirror (Tiptap) content styles ── */
+.doc-editor__prosemirror-wrap .ProseMirror {
+  outline: none;
+  min-height: 60vh;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--color-text-primary, #111827);
+  font-family: inherit;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror > * + * {
+  margin-top: 0.75em;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror h1 {
+  font-size: 1.875rem;
+  font-weight: 700;
+  line-height: 1.25;
+  margin-top: 1.5em;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror h2 {
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  margin-top: 1.25em;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.35;
+  margin-top: 1em;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror p {
+  margin: 0;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror ul,
+.doc-editor__prosemirror-wrap .ProseMirror ol {
+  padding-left: 1.5rem;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror blockquote {
+  border-left: 3px solid var(--color-border, #e5e7eb);
+  padding-left: 1rem;
+  color: var(--color-text-secondary, #6b7280);
+  font-style: italic;
+  margin: 1rem 0;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror code {
+  background: var(--color-surface-subtle, #f9fafb);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.3rem;
+  font-family: monospace;
+  font-size: 0.875em;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror pre {
+  background: var(--color-surface-subtle, #f9fafb);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.375rem;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--color-border, #e5e7eb);
+  margin: 1.5rem 0;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror a {
+  color: var(--color-primary, #4f46e5);
+  text-decoration: underline;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror mark {
+  background: #fef08a;
+  border-radius: 0.125rem;
+}
+
+/* Table styles */
+.doc-editor__prosemirror-wrap .ProseMirror table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror th,
+.doc-editor__prosemirror-wrap .ProseMirror td {
+  border: 1px solid var(--color-border, #e5e7eb);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.doc-editor__prosemirror-wrap .ProseMirror th {
+  background: var(--color-surface-subtle, #f9fafb);
+  font-weight: 600;
+}
+
+/* Placeholder */
+.doc-editor__prosemirror-wrap .ProseMirror .is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--color-text-subtle, #9ca3af);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+/* ── Loading state ── */
+.doc-editor__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 60vh;
+  color: var(--color-text-subtle, #9ca3af);
+  font-size: 0.875rem;
+}
+
+/* ── Status bar ── */
+.doc-editor__statusbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 1rem;
+  border-top: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface-subtle, #f9fafb);
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  overflow: hidden;
+}
+
+.doc-editor__status-item {
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.doc-editor__status-sep {
+  color: var(--color-border, #e5e7eb);
+}
+
+/* ── Format-not-supported view ── */
+.doc-editor__no-edit {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--color-text-secondary, #6b7280);
+}
+
+.doc-editor__no-edit-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+  margin: 0 0 0.5rem;
+}
+
+.doc-editor__no-edit-msg {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #6b7280);
+  max-width: 400px;
+  line-height: 1.55;
+  margin: 0 0 1.5rem;
+}
+
+/* ── Right panel comment styles ── */
+.doc-editor__comment-input {
+  padding: 0.625rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.doc-editor__comment-item {
+  padding: 0.625rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.doc-editor__comment-head {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 0.25rem;
+}
+
+.doc-editor__comment-avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--color-primary-100, #e0e7ff);
+  color: var(--color-primary, #4f46e5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.doc-editor__comment-author {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-primary, #111827);
+}
+
+.doc-editor__comment-time {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  margin-left: auto;
+}
+
+.doc-editor__comment-body {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary, #111827);
+  line-height: 1.45;
+}
+
+/* ── Version list items ── */
+.doc-editor__version-item {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.doc-editor__ver-num {
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: monospace;
+  color: var(--color-primary, #4f46e5);
+}
+
+.doc-editor__ver-badge {
+  font-size: 0.6875rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  background: var(--color-success-50, #ecfdf5);
+  border: 1px solid var(--color-success-200, #a7f3d0);
+  color: var(--color-success, #10b981);
+  font-weight: 500;
+}
+
+.doc-editor__ver-summary {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary, #111827);
+  margin-top: 0.125rem;
+}
+
+.doc-editor__ver-meta {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  margin-top: 0.125rem;
+}
+
+/* ── Spin animation (reuse from doc-library.css if needed) ── */
+.spin-icon {
+  animation: editor-spin 0.8s linear infinite;
+}
+
+@keyframes editor-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  .doc-editor__left-panel  { display: none; }
+  .doc-editor__right-panel { display: none; }
+  .doc-editor__left-rail,
+  .doc-editor__right-rail   { display: none; }
+  .doc-editor__prosemirror-wrap { padding: 1.5rem 1.25rem; }
+  .doc-editor__canvas-wrap  { padding: 1rem 0.5rem; }
+  .doc-editor__head-mode    { display: none; }
+}
+
+@media (max-width: 600px) {
+  .doc-editor__toolbar-divider { display: none; }
+  .doc-editor__head-center { display: none; }
+}

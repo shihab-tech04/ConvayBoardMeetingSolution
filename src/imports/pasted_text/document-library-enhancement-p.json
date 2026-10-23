@@ -1,0 +1,209 @@
+Transform the current Document Library into a robust board-document management and collaboration workspace with a real in-app document editor.
+
+Work directly with the existing Board Meeting Solution. Study the current files, components, registries, actions, permissions, routes, styles, and responsive behavior before making changes.
+
+Do not build a separate demo application. Extend the current project.
+
+## Current project setup you must respect
+
+The project currently uses:
+
+- React 18
+- TypeScript
+- Vite
+- React Router
+- Redux Toolkit
+- Material UI
+- Lucide icons
+- CSS variables and the existing theme system
+- `UnifiedDataTable` for tables
+- `ResponsiveOverlay` and existing drawer patterns
+- `FullScreenWorkspaceShell` for immersive full-screen workspaces
+- Local-storage entity registries through `createEntityRegistry`
+- A placeholder API layer in `src/app/services/api/client.ts`
+- Mock data for frontend development
+
+The current Document Library is routed through:
+
+`/agenda-documents/document-library`
+
+The route currently renders:
+
+`src/app/pages/register-stock/TaxRegistryPage.tsx`
+
+This is a legacy file name. Do not break the route or backward-compatible redirects.
+
+The current page uses:
+
+- `GenPage`
+- `useDocumentRegistry`
+- `useMeetingRegistry`
+- `useGovernanceRegistry`
+- `DOCUMENT_FORM_FIELDS`
+- `DOCUMENT_DRAWER_COLS`
+- `DOCUMENT_ACTIONS`
+- `UnifiedDataTable`
+
+The project already has:
+
+- `BoardDocument`
+- `DocumentVersion`
+- `useDocumentRegistry`
+- `useDocumentVersionRegistry`
+- `useBoardPackRegistry`
+- `useBoardPackVersionRegistry`
+- `useQuestionRegistry`
+- `usePrivateNoteRegistry`
+- `useWorkflowRegistry`
+- `useApprovalRuleRegistry`
+- `useAuditEventRegistry`
+- User, role, and permission registries
+- Secure file validation in `AppFileUpload`
+- MIME-type checking
+- Magic-byte checking
+- Detection of disguised executable files
+- Attachment preview patterns
+- Board Pack integration
+- Questions & Responses
+- My Notes
+- My Tasks
+- Document approval actions
+
+Reuse these foundations.
+
+Do not recreate features that already work.
+
+# 1. First fix the current Document Library data problems
+
+The current document form and document model use conflicting field names.
+
+The current `BoardDocument` and table expect fields such as:
+
+- `doc_name`
+- `doc_type`
+- `related_meeting`
+- `related_agenda`
+- `acknowledgement_required`
+
+The current `DOCUMENT_FORM_FIELDS` uses different keys such as:
+
+- `document_name`
+- `document_type`
+- `meeting_id`
+- `ack_required`
+
+`TaxRegistryPage.tsx` then attempts to read values using the model keys, which can create blank or incomplete document records.
+
+Fix this before building new features.
+
+Create one canonical document mapper that accepts both old and new keys.
+
+For example:
+
+- `document_name` → `doc_name`
+- `document_type` → `doc_type`
+- `meeting_id` → `related_meeting`
+- `ack_required` → `acknowledgement_required`
+- `file` → source-file metadata and content storage
+
+Use the canonical document keys in all new code.
+
+Preserve all existing mock and locally created documents.
+
+Do not delete or invalidate older local-storage records.
+
+Add a normalization function such as:
+
+`normalizeBoardDocument(record)`
+
+It must safely fill missing optional fields and migrate legacy field names at runtime.
+
+Also fix these current issues:
+
+- Document edits currently do not reliably persist through `useDocumentRegistry.update`.
+- The generic document drawer title detection does not consistently recognize `doc_name`.
+- The Document Library form accepts some formats that `AppFileUpload` cannot validate.
+- `documentActions.ts` checks the nonexistent permission ID `document_approve`.
+- Static `DOCUMENT_ACTIONS` and the dynamic document resolver are not consistently connected.
+- `useDocumentVersionRegistry` exists but is not used by the current Document Library.
+- The existing Document Approval Workflow exists but is not connected to the document workspace.
+
+# 2. Create a dedicated Document Library page without breaking legacy routes
+
+Create:
+
+`src/app/pages/agenda-documents/DocumentLibraryPage.tsx`
+
+Update:
+
+`src/app/pages/register-stock/TaxRegistryPage.tsx`
+
+Make `TaxRegistryPage.tsx` a thin compatibility wrapper that renders the new `DocumentLibraryPage`.
+
+Do not remove the legacy component export because current routes and backward-compatible redirects may still depend on it.
+
+Keep this route unchanged:
+
+`/agenda-documents/document-library`
+
+Update the lazy route import only if necessary.
+
+Do not change the Agenda & Documents navigation structure.
+
+Keep these existing navigation items unchanged:
+
+- Agenda Management
+- Board Packs
+- Document Library
+- Questions & Responses
+- My Notes
+
+# 3. Use one real document repository architecture
+
+The project is currently frontend-only. Do not store document bodies, uploaded binaries, or complete version snapshots in localStorage.
+
+Continue using `useDocumentRegistry` for lightweight document metadata.
+
+Continue using `useDocumentVersionRegistry` for lightweight version metadata.
+
+Store actual document content and uploaded file blobs in IndexedDB.
+
+Add a small IndexedDB library such as Dexie.
+
+Create:
+
+- `src/app/services/types/documents.ts`
+- `src/app/services/repositories/documentRepository.ts`
+- `src/app/services/repositories/localDocumentRepository.ts`
+- `src/app/services/repositories/apiDocumentRepository.ts`
+- `src/app/services/repositories/documentContentStore.ts`
+- `src/app/services/endpoints/documents.ts`
+
+Create one repository contract such as:
+
+```ts
+interface DocumentRepository {
+  getDocument(documentId: string): Promise<BoardDocument | null>;
+  createDocument(input: CreateDocumentInput): Promise<BoardDocument>;
+  updateDocument(documentId: string, patch: Partial<BoardDocument>): Promise<BoardDocument>;
+
+  saveOriginalFile(documentId: string, file: File): Promise<string>;
+  getOriginalFile(documentId: string): Promise<Blob | null>;
+
+  getContent(documentId: string): Promise<DocumentContent | null>;
+  saveContent(documentId: string, content: DocumentContent): Promise<void>;
+
+  listVersions(documentId: string): Promise<DocumentVersion[]>;
+  createVersion(input: CreateDocumentVersionInput): Promise<DocumentVersion>;
+  restoreVersion(documentId: string, versionId: string): Promise<DocumentVersion>;
+
+  listComments(documentId: string): Promise<DocumentCommentThread[]>;
+  addComment(input: CreateDocumentCommentInput): Promise<DocumentCommentThread>;
+  updateComment(threadId: string, patch: Partial<DocumentCommentThread>): Promise<void>;
+
+  listAccess(documentId: string): Promise<DocumentAccessGrant[]>;
+  updateAccess(documentId: string, grants: DocumentAccessGrant[]): Promise<void>;
+
+  listApprovals(documentId: string): Promise<DocumentApproval[]>;
+  updateApproval(input: UpdateDocumentApprovalInput): Promise<void>;
+}

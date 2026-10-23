@@ -1,0 +1,11 @@
+{
+  "title": "Convay Board Meeting solution v3.0",
+  "description": "Streamline government office management with a user-friendly dashboard for organizing and accessing reports, enhancing efficiency and clarity.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

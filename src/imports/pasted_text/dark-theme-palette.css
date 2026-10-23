@@ -1,0 +1,251 @@
+# Master dark-mode palette
+
+Use this as the single source of truth for the NCC Bank Board Meeting Solution dark theme.
+
+## Core surfaces
+
+| Token                     | Color     | Use                                 |
+| ------------------------- | --------- | ----------------------------------- |
+| `--dark-bg`               | `#121319` | Main application background         |
+| `--dark-surface-1`        | `#191B23` | Sidebar, base cards                 |
+| `--dark-surface-2`        | `#20232D` | Tables, inputs, secondary cards     |
+| `--dark-surface-3`        | `#272B36` | Drawers, menus, raised panels       |
+| `--dark-surface-4`        | `#2D323F` | Modals, popovers, active containers |
+| `--dark-surface-5`        | `#343A49` | Highest raised surfaces             |
+| `--dark-surface-hover`    | `#2B303C` | Hover state                         |
+| `--dark-surface-selected` | `#303752` | Selected row or navigation item     |
+
+Higher surfaces become slightly lighter. Do not communicate elevation by using random shadows or unrelated gray values.
+
+## Borders and dividers
+
+| Token                  | Color                    | Use                              |
+| ---------------------- | ------------------------ | -------------------------------- |
+| `--dark-border-subtle` | `#292D38`                | Internal separators              |
+| `--dark-border`        | `#373C49`                | Cards, inputs, tables            |
+| `--dark-border-strong` | `#4A5060`                | Active and emphasized boundaries |
+| `--dark-divider`       | `rgba(255,255,255,0.10)` | Section dividers                 |
+
+## Text hierarchy
+
+| Token                   | Color     | Use                                |
+| ----------------------- | --------- | ---------------------------------- |
+| `--dark-text-primary`   | `#F1F3F7` | Headings and high-emphasis content |
+| `--dark-text-secondary` | `#B7BDC9` | Body text and metadata             |
+| `--dark-text-muted`     | `#8D95A3` | Helper text and timestamps         |
+| `--dark-text-disabled`  | `#626977` | Disabled text                      |
+| `--dark-text-inverse`   | `#171922` | Text on light-colored buttons      |
+
+Do not use pure white for all text. Maintain clear high, medium, muted, and disabled emphasis levels.
+
+## Brand colors
+
+| Token                         | Color     | Use                                     |
+| ----------------------------- | --------- | --------------------------------------- |
+| `--dark-primary`              | `#A8B3FF` | Primary buttons, links, selected states |
+| `--dark-primary-hover`        | `#BAC2FF` | Primary hover                           |
+| `--dark-primary-active`       | `#909DF5` | Primary pressed state                   |
+| `--dark-primary-container`    | `#30386B` | Selected navigation and tonal areas     |
+| `--dark-on-primary`           | `#171A38` | Text on primary                         |
+| `--dark-on-primary-container` | `#E3E6FF` | Text inside primary container           |
+
+Do not use the primary color as a full-page, sidebar, modal, or large-card background.
+
+## Secondary colors
+
+| Token                           | Color     | Use                             |
+| ------------------------------- | --------- | ------------------------------- |
+| `--dark-secondary`              | `#A9BED9` | Supporting accent               |
+| `--dark-secondary-container`    | `#29394B` | Secondary tonal surface         |
+| `--dark-on-secondary`           | `#152231` | Text on secondary               |
+| `--dark-on-secondary-container` | `#DCEBFA` | Text inside secondary container |
+
+## Semantic colors
+
+### Success
+
+| Token                         | Color     |
+| ----------------------------- | --------- |
+| `--dark-success`              | `#7ED6A3` |
+| `--dark-success-container`    | `#183C2A` |
+| `--dark-on-success`           | `#092116` |
+| `--dark-on-success-container` | `#C6F3D7` |
+
+### Warning
+
+| Token                         | Color     |
+| ----------------------------- | --------- |
+| `--dark-warning`              | `#F2C76D` |
+| `--dark-warning-container`    | `#49380D` |
+| `--dark-on-warning`           | `#281B00` |
+| `--dark-on-warning-container` | `#FFE8AE` |
+
+### Error
+
+| Token                       | Color     |
+| --------------------------- | --------- |
+| `--dark-error`              | `#FFB4AB` |
+| `--dark-error-container`    | `#5B1B1B` |
+| `--dark-on-error`           | `#3A0907` |
+| `--dark-on-error-container` | `#FFDAD6` |
+
+### Information
+
+| Token                      | Color     |
+| -------------------------- | --------- |
+| `--dark-info`              | `#8EC8FF` |
+| `--dark-info-container`    | `#183A59` |
+| `--dark-on-info`           | `#082137` |
+| `--dark-on-info-container` | `#D1E9FF` |
+
+Semantic colors should communicate real states. Do not combine a colored border, icon, badge, background, and button for the same state.
+
+## Inputs
+
+| Token                      | Color     | Use                      |
+| -------------------------- | --------- | ------------------------ |
+| `--dark-input-bg`          | `#20232D` | Default input background |
+| `--dark-input-hover`       | `#272B36` | Input hover              |
+| `--dark-input-border`      | `#414756` | Default border           |
+| `--dark-input-focus`       | `#A8B3FF` | Focus border             |
+| `--dark-input-placeholder` | `#858D9B` | Placeholder              |
+| `--dark-input-disabled`    | `#191B23` | Disabled background      |
+
+## Interactive states
+
+```css
+--dark-hover-overlay: rgba(255, 255, 255, 0.06);
+--dark-pressed-overlay: rgba(255, 255, 255, 0.10);
+--dark-selected-overlay: rgba(168, 179, 255, 0.14);
+--dark-focus-ring: rgba(168, 179, 255, 0.62);
+--dark-disabled-overlay: rgba(255, 255, 255, 0.04);
+--dark-scrim: rgba(0, 0, 0, 0.64);
+```
+
+## Shadows
+
+```css
+--dark-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.28);
+--dark-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.38);
+--dark-shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.48);
+```
+
+Use shadows sparingly. Surface elevation should primarily come from the surface color ladder.
+
+## Button mapping
+
+| Button             | Background               | Text                        | Border                 |
+| ------------------ | ------------------------ | --------------------------- | ---------------------- |
+| Primary            | `--dark-primary`         | `--dark-on-primary`         | Transparent            |
+| Secondary          | `--dark-surface-3`       | `--dark-text-primary`       | `--dark-border-strong` |
+| Tertiary           | Transparent              | `--dark-primary`            | Transparent            |
+| Ghost              | Transparent              | `--dark-text-secondary`     | Transparent            |
+| Destructive        | `--dark-error`           | `--dark-on-error`           | Transparent            |
+| Destructive subtle | `--dark-error-container` | `--dark-on-error-container` | Transparent            |
+
+Do not create green, orange, purple, or blue buttons locally. Button meaning comes from hierarchy, not random page-level colors.
+
+## Status badge mapping
+
+| State               | Background                 | Text                          |
+| ------------------- | -------------------------- | ----------------------------- |
+| Active / Selected   | `--dark-primary-container` | `--dark-on-primary-container` |
+| Success / Completed | `--dark-success-container` | `--dark-on-success-container` |
+| Warning / Pending   | `--dark-warning-container` | `--dark-on-warning-container` |
+| Error / Overdue     | `--dark-error-container`   | `--dark-on-error-container`   |
+| Informational       | `--dark-info-container`    | `--dark-on-info-container`    |
+| Neutral             | `--dark-surface-3`         | `--dark-text-secondary`       |
+
+## Ready-to-use CSS variables
+
+```css
+[data-theme="dark"],
+.theme-dark {
+  color-scheme: dark;
+
+  --color-background: #121319;
+
+  --color-surface: #191B23;
+  --color-surface-secondary: #20232D;
+  --color-surface-raised: #272B36;
+  --color-surface-overlay: #2D323F;
+  --color-surface-high: #343A49;
+  --color-surface-hover: #2B303C;
+  --color-surface-selected: #303752;
+
+  --color-border-subtle: #292D38;
+  --color-border: #373C49;
+  --color-border-strong: #4A5060;
+  --color-divider: rgba(255, 255, 255, 0.10);
+
+  --color-text-primary: #F1F3F7;
+  --color-text-secondary: #B7BDC9;
+  --color-text-muted: #8D95A3;
+  --color-text-disabled: #626977;
+  --color-text-inverse: #171922;
+
+  --color-primary: #A8B3FF;
+  --color-primary-hover: #BAC2FF;
+  --color-primary-active: #909DF5;
+  --color-primary-container: #30386B;
+  --color-on-primary: #171A38;
+  --color-on-primary-container: #E3E6FF;
+
+  --color-secondary: #A9BED9;
+  --color-secondary-container: #29394B;
+  --color-on-secondary: #152231;
+  --color-on-secondary-container: #DCEBFA;
+
+  --color-success: #7ED6A3;
+  --color-success-container: #183C2A;
+  --color-on-success: #092116;
+  --color-on-success-container: #C6F3D7;
+
+  --color-warning: #F2C76D;
+  --color-warning-container: #49380D;
+  --color-on-warning: #281B00;
+  --color-on-warning-container: #FFE8AE;
+
+  --color-error: #FFB4AB;
+  --color-error-container: #5B1B1B;
+  --color-on-error: #3A0907;
+  --color-on-error-container: #FFDAD6;
+
+  --color-info: #8EC8FF;
+  --color-info-container: #183A59;
+  --color-on-info: #082137;
+  --color-on-info-container: #D1E9FF;
+
+  --color-input-background: #20232D;
+  --color-input-hover: #272B36;
+  --color-input-border: #414756;
+  --color-input-focus: #A8B3FF;
+  --color-input-placeholder: #858D9B;
+  --color-input-disabled: #191B23;
+
+  --state-hover: rgba(255, 255, 255, 0.06);
+  --state-pressed: rgba(255, 255, 255, 0.10);
+  --state-selected: rgba(168, 179, 255, 0.14);
+  --state-focus: rgba(168, 179, 255, 0.62);
+  --state-disabled: rgba(255, 255, 255, 0.04);
+
+  --color-scrim: rgba(0, 0, 0, 0.64);
+
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.38);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.48);
+}
+```
+
+## Usage rules
+
+* Use one dark-theme class and remove the disconnected secondary `.dark` system.
+* Set MUI to `palette.mode: "dark"` when this theme is active.
+* Do not use pure black for the application background.
+* Do not use pure white for every text level.
+* Use lighter surfaces for higher elevation.
+* Do not use primary color across large surfaces.
+* Do not hardcode colors inside pages or components.
+* Use semantic containers for badges, alerts, and status panels.
+* Use one semantic signal per row.
+* Define component colors through these tokens only.

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" fill="none">
+  <rect width="200" height="60" rx="4" fill="transparent"/>
+  <!-- NCC Bank shield icon -->
+  <path d="M10 8 L30 4 L50 8 L50 32 Q50 48 30 54 Q10 48 10 32 Z" fill="#1a3a6b"/>
+  <path d="M15 12 L30 8 L45 12 L45 32 Q45 45 30 50 Q15 45 15 32 Z" fill="#2456a0"/>
+  <text x="30" y="35" font-family="Georgia, serif" font-size="14" font-weight="700" fill="white" text-anchor="middle">NCC</text>
+  <!-- Bank name text -->
+  <text x="62" y="22" font-family="Georgia, serif" font-size="13" font-weight="700" fill="#1a3a6b" letter-spacing="1">NCC BANK</text>
+  <text x="62" y="38" font-family="Arial, sans-serif" font-size="9" fill="#4a6a9a" letter-spacing="2">BOARD MEETING</text>
+  <text x="62" y="51" font-family="Arial, sans-serif" font-size="8" fill="#7a9abf" letter-spacing="1">SOLUTION</text>
+</svg>

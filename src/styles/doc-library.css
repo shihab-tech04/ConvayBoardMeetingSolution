@@ -1,0 +1,1293 @@
+/* ── Document Library — page-specific styles ─────────────────────────────── */
+
+/* Summary cards row */
+.doc-lib__cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 1.25rem;
+}
+
+@media (max-width: 1024px) {
+  .doc-lib__cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 480px) {
+  .doc-lib__cards { grid-template-columns: 1fr; }
+}
+
+/* ── DocCell — document name column ──────────────────────────────────────── */
+
+.doc-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.doc-cell__icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--color-text-subtle, #9ca3af);
+}
+
+.doc-cell__body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.doc-cell__name {
+  font-weight: 500;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary, #111827);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-cell__sub {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-cell__ext {
+  flex-shrink: 0;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.125rem 0.35rem;
+  border-radius: 0.25rem;
+  background: var(--color-surface-subtle, #f3f4f6);
+  color: var(--color-text-secondary, #6b7280);
+  line-height: 1.4;
+  border: 1px solid var(--color-border, #e5e7eb);
+}
+
+.doc-cell__conf {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--color-warning, #d97706);
+}
+
+/* ── Modal form layout ───────────────────────────────────────────────────── */
+
+.doc-lib__form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.doc-lib__form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.doc-lib__form-section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-subtle, #9ca3af);
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  margin: 0;
+}
+
+.doc-lib__form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.875rem;
+}
+
+.doc-lib__form-span {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 520px) {
+  .doc-lib__form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Document Details Drawer
+   ════════════════════════════════════════════════════════════════ */
+
+/* Override overlay body for the drawer variant */
+.doc-drawer-overlay .responsive-overlay__body {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Root layout */
+.doc-drawer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+.doc-drawer__head {
+  flex-shrink: 0;
+  padding: 1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface, #fff);
+}
+
+.doc-drawer__head-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.doc-drawer__head-icon {
+  flex-shrink: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.5rem;
+  background: var(--color-primary-50, #eef2ff);
+  border: 1px solid var(--color-primary-200, #c7d2fe);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary, #4f46e5);
+  margin-top: 0.125rem;
+}
+
+.doc-drawer__head-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-drawer__head-name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-text-primary, #111827);
+  word-break: break-word;
+  margin: 0;
+}
+
+.doc-drawer__head-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+}
+
+.doc-drawer__head-ref {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  font-family: monospace;
+  color: var(--color-text-subtle, #9ca3af);
+}
+
+.doc-drawer__head-ver {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+}
+
+.doc-drawer__head-close {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  color: var(--color-text-subtle, #9ca3af);
+  padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+
+.doc-drawer__head-close:hover {
+  background: var(--color-surface-subtle, #f9fafb);
+  color: var(--color-text-primary, #111827);
+}
+
+/* Actions strip under name row */
+.doc-drawer__head-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.625rem;
+}
+
+/* ── Tabs strip ── */
+.doc-drawer__tabs {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  padding: 0;
+  background: var(--color-surface, #fff);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.doc-drawer__tabs::-webkit-scrollbar { display: none; }
+
+/* Prevent tab-bar from wrapping inside the drawer — let the container scroll instead */
+.doc-drawer__tabs .tab-bar {
+  flex-wrap: nowrap;
+  border-bottom: none;
+}
+
+.doc-drawer__tabs .tab-bar__tab {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Scrollable body ── */
+.doc-drawer__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Section ── */
+.doc-drawer__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.doc-drawer__section-title {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-subtle, #9ca3af);
+  padding-bottom: 0.375rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  margin: 0;
+}
+
+/* ── Field grid ── */
+.doc-drawer__field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 1rem;
+}
+
+.doc-drawer__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.doc-drawer__field--span {
+  grid-column: 1 / -1;
+}
+
+.doc-drawer__field-label {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.doc-drawer__field-value {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary, #111827);
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+/* ── Avatar / user row ── */
+.doc-drawer__avatar {
+  flex-shrink: 0;
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: 50%;
+  background: var(--color-primary-100, #e0e7ff);
+  color: var(--color-primary, #4f46e5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.doc-drawer__avatar--md {
+  width: 2.25rem;
+  height: 2.25rem;
+  font-size: 0.75rem;
+}
+
+.doc-drawer__user-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.375rem;
+  background: var(--color-surface-subtle, #f9fafb);
+}
+
+.doc-drawer__user-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-drawer__user-name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary, #111827);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-drawer__user-sub {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+}
+
+.doc-drawer__role-badge {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  padding: 0.125rem 0.4rem;
+  border-radius: 0.25rem;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e5e7eb);
+  color: var(--color-text-secondary, #6b7280);
+  white-space: nowrap;
+}
+
+.doc-drawer__icon-btn {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--color-text-subtle, #9ca3af);
+  border-radius: 0.25rem;
+  padding: 0;
+}
+
+.doc-drawer__icon-btn:hover {
+  background: var(--color-surface-subtle, #f9fafb);
+  color: var(--color-error, #ef4444);
+}
+
+/* ── Comments ── */
+.doc-drawer__comment {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  background: var(--color-surface-subtle, #f9fafb);
+}
+
+.doc-drawer__comment--resolved {
+  opacity: 0.6;
+}
+
+.doc-drawer__comment-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+}
+
+.doc-drawer__comment-author {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary, #111827);
+}
+
+.doc-drawer__comment-time {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  margin-left: auto;
+}
+
+.doc-drawer__comment-body {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary, #111827);
+  line-height: 1.55;
+}
+
+.doc-drawer__text-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.6875rem;
+  color: var(--color-primary, #4f46e5);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.doc-drawer__text-btn:hover { text-decoration: underline; }
+
+/* ── Add comment form ── */
+.doc-drawer__add-comment {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.5rem;
+}
+
+/* ── Filter chips ── */
+.doc-drawer__filter-chips {
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.doc-drawer__chip {
+  font-size: 0.6875rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface, #fff);
+  cursor: pointer;
+  color: var(--color-text-secondary, #6b7280);
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.doc-drawer__chip--active {
+  background: var(--color-primary-50, #eef2ff);
+  border-color: var(--color-primary, #4f46e5);
+  color: var(--color-primary, #4f46e5);
+  font-weight: 500;
+}
+
+/* ── Version rows ── */
+.doc-drawer__version-row {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  background: var(--color-surface-subtle, #f9fafb);
+}
+
+.doc-drawer__version-header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.doc-drawer__version-num {
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: monospace;
+  color: var(--color-primary, #4f46e5);
+}
+
+.doc-drawer__version-name {
+  font-size: 0.75rem;
+  color: var(--color-text-subtle, #9ca3af);
+}
+
+.doc-drawer__version-summary {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary, #111827);
+  margin-top: 0.25rem;
+  line-height: 1.45;
+}
+
+.doc-drawer__version-meta {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  margin-top: 0.125rem;
+  display: flex;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+}
+
+.doc-drawer__version-actions {
+  display: flex;
+  gap: 0.375rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* ── Workflow stages ── */
+.doc-drawer__stages {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
+}
+
+.doc-drawer__stage {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--color-text-subtle, #9ca3af);
+}
+
+.doc-drawer__stage-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--color-border, #e5e7eb);
+  flex-shrink: 0;
+}
+
+.doc-drawer__stage--done  .doc-drawer__stage-dot { background: var(--color-success, #10b981); }
+.doc-drawer__stage--active .doc-drawer__stage-dot { background: var(--color-primary, #4f46e5); }
+.doc-drawer__stage--done  { color: var(--color-text-secondary, #6b7280); }
+.doc-drawer__stage--active { font-weight: 600; color: var(--color-primary, #4f46e5); }
+
+/* ── Workflow actions ── */
+.doc-drawer__workflow-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* ── Add access form ── */
+.doc-drawer__add-access {
+  padding: 0.75rem;
+  background: var(--color-surface-subtle, #f9fafb);
+  border: 1px dashed var(--color-border, #e5e7eb);
+  border-radius: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin-bottom: 0.75rem;
+}
+
+/* ── Collaboration summary grid ── */
+.doc-drawer__collab-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.doc-drawer__collab-item {
+  padding: 0.5rem 0.75rem;
+  background: var(--color-surface-subtle, #f9fafb);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.375rem;
+}
+
+.doc-drawer__collab-value {
+  display: block;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+  line-height: 1.2;
+}
+
+.doc-drawer__collab-label {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  margin-top: 0.125rem;
+}
+
+/* ── Activity timeline ── */
+.doc-drawer__timeline {
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-drawer__timeline-item {
+  display: flex;
+  gap: 0.75rem;
+  padding-bottom: 1rem;
+  position: relative;
+}
+
+.doc-drawer__timeline-item:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 0.9375rem;
+  top: 1.875rem;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-border, #e5e7eb);
+}
+
+.doc-drawer__timeline-dot {
+  flex-shrink: 0;
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: 50%;
+  background: var(--color-surface-subtle, #f9fafb);
+  border: 1px solid var(--color-border, #e5e7eb);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-subtle, #9ca3af);
+}
+
+.doc-drawer__timeline-content {
+  flex: 1;
+  min-width: 0;
+  padding-top: 0.25rem;
+}
+
+.doc-drawer__timeline-action {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary, #111827);
+  line-height: 1.45;
+}
+
+.doc-drawer__timeline-meta {
+  font-size: 0.6875rem;
+  color: var(--color-text-subtle, #9ca3af);
+  margin-top: 0.125rem;
+}
+
+/* ── Empty / loading states ── */
+.doc-drawer__empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--color-text-subtle, #9ca3af);
+  font-size: 0.8125rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.doc-drawer__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1.5rem;
+  color: var(--color-text-subtle, #9ca3af);
+  font-size: 0.8125rem;
+}
+
+/* Lucide spin helper */
+.spin-icon {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@media (max-width: 640px) {
+  .doc-drawer__field-grid  { grid-template-columns: 1fr; }
+  .doc-drawer__collab-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Phase 5: Collaboration additions ──────────────────────────────────────── */
+
+/* Lock notice in workflow tab */
+.doc-drawer__lock-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  margin-bottom: 0.625rem;
+  background: color-mix(in srgb, var(--color-warning, #d97706) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning, #d97706) 25%, transparent);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--color-warning, #d97706);
+}
+
+/* Stage track — 8 stages wraps naturally */
+.doc-drawer__stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  row-gap: 0.5rem;
+  align-items: center;
+}
+
+/* Comment anchor preview */
+.doc-drawer__comment-anchor {
+  margin: 0.25rem 0;
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid var(--color-primary-alpha-30, rgba(54,173,163,0.3));
+  background: var(--color-primary-alpha-4, rgba(54,173,163,0.04));
+  border-radius: 0 4px 4px 0;
+}
+
+.doc-drawer__comment-anchor-text {
+  font-size: 0.73rem;
+  color: var(--color-text-secondary);
+  font-style: italic;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Comment meta row (assignee, due date) */
+.doc-drawer__comment-meta-row {
+  display: flex;
+  gap: 0.625rem;
+  margin-top: 0.25rem;
+}
+
+.doc-drawer__comment-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.71rem;
+  color: var(--color-text-secondary);
+}
+
+/* Replies */
+.doc-drawer__replies {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--color-border);
+}
+
+.doc-drawer__reply {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.doc-drawer__reply-header {
+  display: flex;
+  gap: 0.375rem;
+  align-items: center;
+}
+
+/* Reply + assign inputs */
+.doc-drawer__reply-input,
+.doc-drawer__assign-row {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.doc-drawer__assign-row {
+  flex-direction: row;
+  align-items: flex-end;
+}
+
+.doc-drawer__assign-row > div:first-child {
+  flex: 1;
+}
+
+/* Comment action strip */
+.doc-drawer__comment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem;
+  margin-top: 0.375rem;
+}
+
+/* Version diff view */
+.doc-drawer__diff-view {
+  margin-top: 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 0.75rem;
+}
+
+.doc-drawer__diff-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  background: var(--color-surface-raised, var(--color-surface));
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+}
+
+.doc-drawer__diff-chunks {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0.375rem 0;
+}
+
+.doc-drawer__diff-chunk {
+  padding: 0.25rem 0.625rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.doc-drawer__diff-chunk--added {
+  background: color-mix(in srgb, #10b981 8%, transparent);
+  color: #065f46;
+}
+
+.doc-drawer__diff-chunk--removed {
+  background: color-mix(in srgb, #ef4444 8%, transparent);
+  color: #7f1d1d;
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+
+/* Editor: comment anchor preview chip */
+.doc-editor__comment-anchor-preview {
+  padding: 0.2rem 0.4rem;
+  margin: 0.2rem 0;
+  border-left: 2px solid var(--color-primary-alpha-30, rgba(54,173,163,0.3));
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+  font-style: italic;
+  background: var(--color-primary-alpha-3, rgba(54,173,163,0.03));
+  border-radius: 0 3px 3px 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Editor: text action button (inside comment item) */
+.doc-editor__text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.125rem 0.25rem;
+  border-radius: 3px;
+  margin-top: 0.25rem;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.doc-editor__text-action:hover {
+  color: var(--color-primary);
+  background: var(--color-primary-alpha-6);
+}
+
+/* Editor: capability notice (tracked changes) */
+.doc-editor__capability-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  background: color-mix(in srgb, var(--color-warning, #d97706) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning, #d97706) 22%, transparent);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--color-warning, #d97706) 90%, var(--color-text));
+  line-height: 1.45;
+}
+
+/* Editor: warning banner variant */
+.doc-editor__banner--warning {
+  background: color-mix(in srgb, var(--color-warning, #d97706) 10%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-warning, #d97706) 30%, transparent);
+  color: color-mix(in srgb, var(--color-warning, #d97706) 85%, var(--color-text));
+}
+
+/* ── Phase 6: Board Pack link rows ─────────────────────────────────────────── */
+
+.doc-drawer__pack-link {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--color-surface, #fff);
+  margin-bottom: 0.5rem;
+}
+
+.doc-drawer__pack-link-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-drawer__pack-link-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.doc-drawer__pack-link-name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-drawer__pack-link-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.625rem;
+  font-size: 0.7rem;
+  color: var(--color-text-subtle, #6b7280);
+}
+
+.doc-drawer__pack-version-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: color-mix(in srgb, var(--color-warning, #d97706) 85%, var(--color-text));
+  margin-top: 0.2rem;
+}
+
+.doc-drawer__text-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.doc-drawer__pack-link-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+/* ── Phase 6: Acknowledgement rows ─────────────────────────────────────────── */
+
+.doc-drawer__ack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.doc-drawer__ack-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--color-surface, #fff);
+}
+
+.doc-drawer__ack-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-drawer__ack-name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.doc-drawer__ack-meta {
+  font-size: 0.7rem;
+  color: var(--color-text-subtle, #6b7280);
+}
+
+.doc-drawer__ack-self {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-success, #16a34a) 90%, var(--color-text));
+  margin-bottom: 0.75rem;
+}
+
+/* ── Phase 6: Related records rows ─────────────────────────────────────────── */
+
+.doc-drawer__related-item {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--color-surface, #fff);
+  margin-bottom: 0.4rem;
+}
+
+.doc-drawer__related-type {
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-subtle, #6b7280);
+}
+
+.doc-drawer__related-name {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-primary);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-drawer__related-name:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+.doc-drawer__related-meta {
+  font-size: 0.7rem;
+  color: var(--color-text-subtle, #6b7280);
+  white-space: nowrap;
+}
+
+/* ── Phase 6: Save Note panel ───────────────────────────────────────────────── */
+
+.doc-drawer__note-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  background: color-mix(in srgb, var(--color-primary, #6366f1) 4%, var(--color-surface, #fff));
+}
+
+.doc-drawer__note-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.doc-drawer__note-panel-header > button { margin-left: auto; }
+
+.doc-drawer__note-privacy {
+  font-size: 0.7rem;
+  color: var(--color-text-subtle, #6b7280);
+  margin: 0;
+}
+
+/* ── Phase 6: Inline form (Board Pack add form) ─────────────────────────────── */
+
+.doc-drawer__inline-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--color-surface-raised, #f9fafb);
+  margin-bottom: 0.75rem;
+}
+
+.doc-drawer__inline-form-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.25rem;
+}
+
+/* ── Phase 6: Library form hint text ────────────────────────────────────────── */
+
+.doc-lib__form-hint {
+  font-size: 0.775rem;
+  color: var(--color-text-subtle, #6b7280);
+  margin: 0 0 0.5rem 0;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   DocumentComposerModal — source selector + collapsible sections
+   ════════════════════════════════════════════════════════════════ */
+
+.composer-source {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.625rem;
+  margin-bottom: 0.25rem;
+}
+
+@media (max-width: 520px) {
+  .composer-source { grid-template-columns: 1fr; }
+}
+
+.composer-source__card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  padding: 0.75rem 0.875rem;
+  border: 1.5px solid var(--color-border, #e5e7eb);
+  border-radius: 0.5rem;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.composer-source__card:hover {
+  border-color: var(--color-primary, #2563eb);
+  background: color-mix(in srgb, var(--color-primary, #2563eb) 4%, transparent);
+}
+
+.composer-source__card--active {
+  border-color: var(--color-primary, #2563eb);
+  background: color-mix(in srgb, var(--color-primary, #2563eb) 8%, transparent);
+}
+
+.composer-source__card-icon {
+  color: var(--color-primary, #2563eb);
+  display: flex;
+  margin-bottom: 0.125rem;
+}
+
+.composer-source__card--active .composer-source__card-icon {
+  color: var(--color-primary, #2563eb);
+}
+
+.composer-source__card-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text, #111827);
+}
+
+.composer-source__card-desc {
+  font-size: 0.7rem;
+  color: var(--color-text-subtle, #6b7280);
+  line-height: 1.4;
+}
+
+/* Collapsible sections */
+
+.composer-section {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.composer-section__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  background: var(--color-surface-raised, #f9fafb);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text, #111827);
+  transition: background 0.12s;
+}
+
+.composer-section__header:hover {
+  background: var(--color-surface-hovered, #f3f4f6);
+}
+
+.composer-section__icon {
+  color: var(--color-text-subtle, #6b7280);
+  display: flex;
+  flex-shrink: 0;
+}
+
+.composer-section__title {
+  flex: 1;
+}
+
+.composer-section__chevron {
+  color: var(--color-text-subtle, #9ca3af);
+  display: flex;
+}
+
+.composer-section__body {
+  padding: 0.875rem;
+  border-top: 1px solid var(--color-border, #e5e7eb);
+}
+
+/* ── Composer: detected file info strip ─────────────────────────────────── */
+.composer-file-info {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  background: var(--color-surface-raised, #f9fafb);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-subtle, #6b7280);
+}
+
+.composer-file-info__icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--color-text-muted, #9ca3af);
+}
+
+.composer-file-info__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text, #111827);
+  font-weight: 500;
+}
+
+.composer-file-info__badge {
+  padding: 0.125rem 0.375rem;
+  background: var(--color-primary-subtle, #dbeafe);
+  color: var(--color-primary, #2563eb);
+  border-radius: 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.composer-file-info__size {
+  flex-shrink: 0;
+  color: var(--color-text-muted, #9ca3af);
+}

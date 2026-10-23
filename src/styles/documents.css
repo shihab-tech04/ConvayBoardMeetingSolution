@@ -1,0 +1,194 @@
+/* ── documents.css ─────────────────────────────────────────────────────────────
+   Shared document-component styles: library cards, status badges, drawer
+   sections, form hints. Uses existing theme tokens; adds no new brand colours.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* ── Document type icon chip ─────────────────────────────────────────────────── */
+
+.doc-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+  white-space: nowrap;
+}
+
+.doc-type-chip--template {
+  background: color-mix(in srgb, var(--color-warning, #d97706) 12%, transparent);
+  color: color-mix(in srgb, var(--color-warning, #d97706) 85%, var(--color-text));
+}
+
+/* ── Provider status banner ──────────────────────────────────────────────────── */
+
+.doc-provider-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  font-size: 0.775rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+}
+
+.doc-provider-status--available {
+  background: color-mix(in srgb, var(--color-success, #16a34a) 8%, transparent);
+  border-color: color-mix(in srgb, var(--color-success, #16a34a) 25%, transparent);
+  color: color-mix(in srgb, var(--color-success, #16a34a) 80%, var(--color-text));
+}
+
+.doc-provider-status--unavailable {
+  background: color-mix(in srgb, var(--color-warning, #d97706) 8%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning, #d97706) 25%, transparent);
+  color: color-mix(in srgb, var(--color-warning, #d97706) 80%, var(--color-text));
+}
+
+/* ── Error / empty states (library-level) ────────────────────────────────────── */
+
+.doc-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--color-text-subtle, #6b7280);
+}
+
+.doc-state__icon {
+  opacity: 0.35;
+  margin-bottom: 0.25rem;
+}
+
+.doc-state__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.doc-state__desc {
+  font-size: 0.8125rem;
+  max-width: 32ch;
+  line-height: 1.5;
+}
+
+.doc-state__actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* ── Upload error state ──────────────────────────────────────────────────────── */
+
+.doc-upload-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-danger, #dc2626) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-danger, #dc2626) 25%, transparent);
+  color: color-mix(in srgb, var(--color-danger, #dc2626) 85%, var(--color-text));
+  font-size: 0.8125rem;
+}
+
+.doc-upload-error__title { font-weight: 600; }
+.doc-upload-error__msg   { margin-top: 0.1rem; opacity: 0.85; }
+
+/* ── Confidentiality badge ────────────────────────────────────────────────────── */
+
+.doc-confidentiality {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.125rem 0.5rem;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.doc-confidentiality--public       { background: color-mix(in srgb, var(--color-success,  #16a34a) 10%, transparent); color: color-mix(in srgb, var(--color-success,  #16a34a) 80%, var(--color-text)); }
+.doc-confidentiality--internal     { background: color-mix(in srgb, var(--color-primary)        10%, transparent); color: color-mix(in srgb, var(--color-primary)        80%, var(--color-text)); }
+.doc-confidentiality--confidential { background: color-mix(in srgb, var(--color-warning, #d97706) 10%, transparent); color: color-mix(in srgb, var(--color-warning, #d97706) 80%, var(--color-text)); }
+.doc-confidentiality--restricted   { background: color-mix(in srgb, var(--color-danger,  #dc2626) 10%, transparent); color: color-mix(in srgb, var(--color-danger,  #dc2626) 80%, var(--color-text)); }
+
+/* ── Restricted action overlay ────────────────────────────────────────────────── */
+
+.doc-restricted {
+  position: relative;
+  pointer-events: none;
+  user-select: none;
+}
+
+.doc-restricted::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--color-surface, #fff) 70%, transparent);
+  border-radius: inherit;
+}
+
+/* ── Offline banner ──────────────────────────────────────────────────────────── */
+
+.doc-offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.4rem 1rem;
+  font-size: 0.775rem;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--color-warning, #d97706) 15%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-warning, #d97706) 30%, transparent);
+  color: color-mix(in srgb, var(--color-warning, #d97706) 85%, var(--color-text));
+}
+
+/* ── Session-expired screen ──────────────────────────────────────────────────── */
+
+.doc-session-expired {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 4rem 2rem;
+  text-align: center;
+}
+
+.doc-session-expired__title {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.doc-session-expired__desc {
+  font-size: 0.8125rem;
+  color: var(--color-text-subtle);
+  max-width: 30ch;
+}
+
+/* ── Accessibility: visible focus for document rows ─────────────────────────── */
+
+.doc-row:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+/* ── Reduced-motion preference ───────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .spin-icon { animation: none !important; opacity: 0.6; }
+  .doc-state, .doc-upload-error { transition: none !important; }
+}

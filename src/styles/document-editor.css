@@ -1,0 +1,1398 @@
+/* ── document-editor.css ───────────────────────────────────────────────────────
+   Editor layout: responsive panels, ONLYOFFICE frame, error states,
+   accessibility overrides. Uses theme tokens; no new brand colours.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* ── ONLYOFFICE frame ─────────────────────────────────────────────────────────── */
+
+.oo-frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  position: relative;
+}
+
+.oo-frame__container {
+  flex: 1;
+  width: 100%;
+  /* The iframe itself will be injected by DocsAPI inside this div */
+}
+
+.oo-frame__container iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* Status overlay for loading / error states */
+.oo-frame__status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  padding: 3rem 2rem;
+  text-align: center;
+  flex: 1;
+}
+
+.oo-frame__status-icon {
+  color: var(--color-text-subtle, #9ca3af);
+  margin-bottom: 0.25rem;
+}
+
+.oo-frame__status-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.oo-frame__status-desc {
+  font-size: 0.8125rem;
+  color: var(--color-text-subtle, #6b7280);
+  max-width: 36ch;
+  line-height: 1.5;
+}
+
+/* Capability limitation notice */
+.oo-frame__cap-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+  background: color-mix(in srgb, var(--color-warning, #d97706) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-warning, #d97706) 20%, transparent);
+  color: color-mix(in srgb, var(--color-warning, #d97706) 80%, var(--color-text));
+}
+
+/* ── Editor responsive layout ─────────────────────────────────────────────────── */
+
+/* Desktop: side panels are inline, toolbar is fixed */
+@media (min-width: 1024px) {
+  .doc-editor__left-panel,
+  .doc-editor__right-panel {
+    position: static;
+    transform: none;
+    box-shadow: none;
+    border-right: 1px solid var(--color-border);
+    border-left: 1px solid var(--color-border);
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .doc-editor__toolbar {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .doc-editor__toolbar::-webkit-scrollbar { display: none; }
+}
+
+/* Tablet (641–1023px): side panels become overlays, toolbar scrolls */
+@media (min-width: 641px) and (max-width: 1023px) {
+  .doc-editor__workspace {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .doc-editor__left-panel,
+  .doc-editor__right-panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 20;
+    background: var(--color-surface, #fff);
+    box-shadow: 2px 0 12px rgba(0,0,0,0.12);
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .doc-editor__left-panel  { left: 0;  border-right: 1px solid var(--color-border); }
+  .doc-editor__right-panel { right: 0; border-left:  1px solid var(--color-border); }
+
+  /* Overlay backdrop */
+  .doc-editor__left-panel::before,
+  .doc-editor__right-panel::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.25);
+    z-index: -1;
+  }
+
+  .doc-editor__toolbar {
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .doc-editor__toolbar::-webkit-scrollbar { display: none; }
+}
+
+/* Mobile (≤ 640px): minimal layout */
+@media (max-width: 640px) {
+  /* Never squeeze the desktop canvas — show a dedicated mobile view instead */
+  .doc-editor__workspace {
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Rail icons become a horizontal bottom bar on mobile */
+  .doc-editor__left-rail,
+  .doc-editor__right-rail {
+    display: none;
+  }
+
+  .doc-editor__mobile-rail {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.375rem 0.75rem;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface, #fff);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .doc-editor__mobile-rail::-webkit-scrollbar { display: none; }
+
+  .doc-editor__mobile-rail .doc-editor__rail-btn {
+    flex-shrink: 0;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Panels become bottom sheets */
+  .doc-editor__left-panel,
+  .doc-editor__right-panel {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto;
+    height: 60vh;
+    z-index: 40;
+    background: var(--color-surface, #fff);
+    border-top: 1px solid var(--color-border);
+    border-radius: 12px 12px 0 0;
+    box-shadow: 0 -4px 24px rgba(0,0,0,0.15);
+    overflow-y: auto;
+  }
+
+  /* Toolbar horizontal scroll on mobile */
+  .doc-editor__toolbar {
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    /* Prevent page overflow */
+    max-width: 100vw;
+  }
+
+  .doc-editor__toolbar::-webkit-scrollbar { display: none; }
+
+  /* Minimum 44px tap targets for all toolbar buttons */
+  .doc-editor__toolbar-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .doc-editor__canvas {
+    /* Comfortable reading width even on small screens */
+    padding: 1rem;
+  }
+}
+
+/* ── Autosave live region ─────────────────────────────────────────────────────── */
+
+.doc-editor__autosave-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Editor error states ─────────────────────────────────────────────────────── */
+
+.doc-editor-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  padding: 3rem 2rem;
+  text-align: center;
+  flex: 1;
+  min-height: 240px;
+}
+
+.doc-editor-error__icon   { color: var(--color-text-subtle, #9ca3af); margin-bottom: 0.25rem; }
+.doc-editor-error__title  { font-size: 0.9375rem; font-weight: 600; color: var(--color-text); }
+.doc-editor-error__desc   { font-size: 0.8125rem; color: var(--color-text-subtle, #6b7280); max-width: 36ch; line-height: 1.5; }
+.doc-editor-error__actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+/* Inline converting / progress state */
+.doc-editor-converting {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+  color: var(--color-text-subtle);
+}
+
+/* ── Panel accessibility ─────────────────────────────────────────────────────── */
+
+/* Ensure all panel tabs have a visible focus ring */
+.doc-editor__rail-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+.doc-editor__panel-close:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* Toolbar buttons: visible focus */
+.doc-editor__toolbar-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* Status bar */
+.doc-editor__status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.25rem 0.875rem;
+  font-size: 0.7rem;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface, #fff);
+  color: var(--color-text-subtle, #6b7280);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+
+.doc-editor__status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.doc-editor__status-dot--saved        { background: var(--color-success, #16a34a); }
+.doc-editor__status-dot--saving       { background: var(--color-primary); }
+.doc-editor__status-dot--error        { background: var(--color-danger,  #dc2626); }
+.doc-editor__status-dot--offline      { background: var(--color-warning, #d97706); }
+.doc-editor__status-dot--locked       { background: var(--color-text-subtle, #9ca3af); }
+.doc-editor__status-dot--readonly     { background: var(--color-text-subtle, #9ca3af); }
+
+/* ── Reduced-motion ───────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .spin-icon { animation: none !important; opacity: 0.6; }
+  .doc-editor__left-panel,
+  .doc-editor__right-panel { transition: none !important; }
+}
+
+/* ── doc-workspace (shared shell for PDF + Spreadsheet) ───────────────────── */
+
+.doc-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--color-background);
+}
+
+.doc-workspace__body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.doc-workspace__editor-area {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.doc-workspace__side-panel {
+  width: 280px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--color-border);
+  overflow-y: auto;
+}
+
+.doc-workspace__action-bar {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  min-height: 36px;
+  gap: 0.5rem;
+}
+
+.doc-workspace__action-bar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.doc-workspace--loading {
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.doc-workspace--error {
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.doc-workspace__error-msg {
+  max-width: 40ch;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.doc-workspace--unsupported {
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 2rem;
+  text-align: center;
+}
+
+.doc-workspace__unsupported-icon {
+  opacity: 0.35;
+}
+
+.doc-workspace__unsupported-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.doc-workspace__unsupported-msg {
+  max-width: 40ch;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+/* ── Spreadsheet toolbar ──────────────────────────────────────────────────────── */
+
+.spreadsheet-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0.25rem 0.5rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  flex-shrink: 0;
+}
+
+.spreadsheet-toolbar::-webkit-scrollbar { display: none; }
+
+.spreadsheet-toolbar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+
+.spreadsheet-toolbar__btn:hover:not(:disabled) {
+  background: var(--color-surface-hover, rgba(0,0,0,0.05));
+  color: var(--color-text);
+}
+
+.spreadsheet-toolbar__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.spreadsheet-toolbar__btn--active {
+  background: var(--color-primary-alpha-12, rgba(99,102,241,0.12));
+  color: var(--color-primary);
+  border-color: var(--color-primary-alpha-24, rgba(99,102,241,0.24));
+}
+
+.spreadsheet-toolbar__divider {
+  width: 1px;
+  height: 18px;
+  background: var(--color-border);
+  flex-shrink: 0;
+  margin: 0 3px;
+}
+
+/* ── Spreadsheet formula bar ──────────────────────────────────────────────────── */
+
+.spreadsheet-formula-bar {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  flex-shrink: 0;
+  height: 30px;
+}
+
+.spreadsheet-formula-bar__name-box {
+  width: 72px;
+  flex-shrink: 0;
+  border: none;
+  border-right: 1px solid var(--color-border);
+  background: transparent;
+  font-size: 0.75rem;
+  text-align: center;
+  color: var(--color-text);
+  padding: 0 0.375rem;
+  height: 100%;
+}
+
+.spreadsheet-formula-bar__name-box:focus {
+  outline: none;
+  background: var(--color-surface-hover, rgba(0,0,0,0.04));
+}
+
+.spreadsheet-formula-bar__fx {
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-border);
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.spreadsheet-formula-bar__input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 0.8125rem;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  color: var(--color-text);
+  padding: 0 0.5rem;
+  height: 100%;
+}
+
+.spreadsheet-formula-bar__input:focus {
+  outline: none;
+}
+
+/* ── Spreadsheet sheet tabs ───────────────────────────────────────────────────── */
+
+.spreadsheet-sheet-tabs {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+  min-height: 30px;
+  padding-left: 0.25rem;
+  position: relative;
+}
+
+.spreadsheet-sheet-tabs::-webkit-scrollbar { display: none; }
+
+.spreadsheet-sheet-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.625rem;
+  height: 30px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  background: transparent;
+  position: relative;
+}
+
+.spreadsheet-sheet-tab--active {
+  background: var(--color-background);
+  color: var(--color-text);
+  border-color: var(--color-border);
+  font-weight: 500;
+}
+
+.spreadsheet-sheet-tab--add {
+  padding: 0 0.5rem;
+  color: var(--color-text-secondary);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.spreadsheet-sheet-tab--add:hover {
+  color: var(--color-primary);
+  background: var(--color-surface-hover, rgba(0,0,0,0.04));
+  border-radius: 4px;
+}
+
+.spreadsheet-sheet-tab__name {
+  cursor: pointer;
+}
+
+.spreadsheet-sheet-tab__rename {
+  border: 1px solid var(--color-primary);
+  background: var(--color-background);
+  font-size: 0.75rem;
+  padding: 0 0.25rem;
+  border-radius: 2px;
+  width: 80px;
+}
+
+.spreadsheet-sheet-tab__menu-wrap { position: relative; }
+
+.spreadsheet-sheet-tab__menu-btn {
+  background: none;
+  border: none;
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0 2px;
+  color: var(--color-text-secondary);
+  line-height: 1;
+}
+
+.spreadsheet-sheet-tab__context-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  padding: 0.25rem 0;
+  list-style: none;
+  min-width: 120px;
+  z-index: 50;
+}
+
+.spreadsheet-sheet-tab__context-menu li button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.375rem 0.75rem;
+  background: none;
+  border: none;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  color: var(--color-text);
+}
+
+.spreadsheet-sheet-tab__context-menu li button:hover:not(:disabled) {
+  background: var(--color-surface-hover, rgba(0,0,0,0.05));
+}
+
+.spreadsheet-sheet-tab__context-menu li button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.spreadsheet-sheet-tab__confirm {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  z-index: 50;
+}
+
+/* ── Spreadsheet import status ────────────────────────────────────────────────── */
+
+.spreadsheet-import-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.spreadsheet-import-status--warn {
+  background: var(--color-warning-surface, #fffbeb);
+  border-color: var(--color-warning-border, #fde68a);
+  color: var(--color-warning-text, #92400e);
+}
+
+.spreadsheet-import-status--error {
+  background: var(--color-error-surface, #fef2f2);
+  border-color: var(--color-error-border, #fecaca);
+  color: var(--color-error-text, #991b1b);
+}
+
+.spreadsheet-import-status__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.spreadsheet-import-status__msg { font-weight: 500; }
+
+.spreadsheet-import-status__file {
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+.spreadsheet-import-status__warnings {
+  margin: 0;
+  padding-left: 1.125rem;
+  font-size: 0.75rem;
+}
+
+.spreadsheet-import-status__close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.6;
+  padding: 2px;
+}
+
+.spreadsheet-import-status__close:hover { opacity: 1; }
+
+/* ── Spreadsheet find bar ─────────────────────────────────────────────────────── */
+
+.spreadsheet-find-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  flex-shrink: 0;
+}
+
+.spreadsheet-find-bar__input {
+  flex: 1;
+  max-width: 280px;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.spreadsheet-find-bar__input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.spreadsheet-find-bar__count {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+/* ── PDF workspace layout (supplement to documents.css) ──────────────────────── */
+
+.pdf-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-background);
+}
+
+.pdf-workspace__body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.pdf-workspace__main {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem;
+  gap: 0.75rem;
+  background: var(--color-pdf-bg, #e5e7eb);
+}
+
+.pdf-workspace__thumb-rail {
+  width: 100px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+  background: var(--color-surface);
+}
+
+.pdf-workspace__panel {
+  width: 280px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--color-border);
+  overflow-y: auto;
+}
+
+/* ── PDF page canvas ──────────────────────────────────────────────────────────── */
+
+.pdf-page-wrap {
+  position: relative;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+  border-radius: 2px;
+}
+
+.pdf-page-canvas {
+  display: block;
+}
+
+.pdf-annotation-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.pdf-annotation-layer svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── PDF toolbar ──────────────────────────────────────────────────────────────── */
+
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0.25rem 0.5rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+}
+
+.pdf-toolbar::-webkit-scrollbar { display: none; }
+
+.pdf-toolbar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  transition: background 0.1s, color 0.1s;
+  gap: 3px;
+}
+
+.pdf-toolbar__btn:hover:not(:disabled) {
+  background: var(--color-surface-hover, rgba(0,0,0,0.05));
+  color: var(--color-text);
+}
+
+.pdf-toolbar__btn:disabled { opacity: 0.4; cursor: default; }
+
+.pdf-toolbar__btn--active {
+  background: var(--color-primary-alpha-12, rgba(99,102,241,0.12));
+  color: var(--color-primary);
+  border-color: var(--color-primary-alpha-24, rgba(99,102,241,0.24));
+}
+
+.pdf-toolbar__divider {
+  width: 1px;
+  height: 18px;
+  background: var(--color-border);
+  flex-shrink: 0;
+  margin: 0 3px;
+}
+
+.pdf-toolbar__zoom-input {
+  width: 52px;
+  text-align: center;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  padding: 0 0.25rem;
+  height: 22px;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.pdf-toolbar__page-input {
+  width: 36px;
+  text-align: center;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  padding: 0 0.25rem;
+  height: 22px;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.pdf-toolbar__page-sep {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  padding: 0 0.25rem;
+}
+
+/* ── PDF thumbnail rail ───────────────────────────────────────────────────────── */
+
+.pdf-thumb-rail {
+  padding: 0.5rem 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.pdf-thumb {
+  cursor: pointer;
+  border: 2px solid transparent;
+  border-radius: 3px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.pdf-thumb--active { border-color: var(--color-primary); }
+
+.pdf-thumb canvas { display: block; }
+
+.pdf-thumb__label {
+  font-size: 0.6875rem;
+  text-align: center;
+  color: var(--color-text-secondary);
+  padding: 2px 0;
+}
+
+/* ── PDF search panel ─────────────────────────────────────────────────────────── */
+
+.pdf-search-panel {
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.pdf-search-panel__input-row {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.pdf-search-panel__input {
+  flex: 1;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.pdf-search-panel__input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.pdf-search-panel__count {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.pdf-search-panel__result {
+  cursor: pointer;
+  padding: 0.375rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  color: var(--color-text);
+  border: 1px solid transparent;
+}
+
+.pdf-search-panel__result:hover { background: var(--color-surface-hover, rgba(0,0,0,0.04)); }
+.pdf-search-panel__result--active { border-color: var(--color-primary); background: var(--color-primary-alpha-8, rgba(99,102,241,0.08)); }
+
+.pdf-search-panel__result-page {
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+}
+
+.pdf-search-panel__no-text {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+}
+
+/* ── PDF comments panel ───────────────────────────────────────────────────────── */
+
+.pdf-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.pdf-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text);
+  flex-shrink: 0;
+}
+
+.pdf-panel__filter {
+  margin-left: auto;
+  font-size: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-background);
+  color: var(--color-text);
+  padding: 1px 4px;
+}
+
+.pdf-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pdf-panel__add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.pdf-panel__add-hint {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.pdf-panel__note-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  resize: vertical;
+  background: var(--color-background);
+  color: var(--color-text);
+  font-family: inherit;
+}
+
+.pdf-panel__note-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.pdf-panel__empty {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  padding: 0.5rem;
+  text-align: center;
+}
+
+.pdf-panel__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pdf-panel__item {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.pdf-panel__item--resolved { opacity: 0.55; }
+
+.pdf-panel__item-head {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+}
+
+.pdf-panel__item-author { font-weight: 600; color: var(--color-text); }
+
+.pdf-panel__item-page-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.pdf-panel__item-resolve {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  padding: 2px;
+  border-radius: 4px;
+}
+
+.pdf-panel__item-resolve:hover { color: var(--color-success, #10b981); }
+
+.pdf-panel__item-note {
+  font-size: 0.8125rem;
+  color: var(--color-text);
+  line-height: 1.4;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   DocumentEditorShell — shared editor layout
+   ════════════════════════════════════════════════════════════════ */
+
+.doc-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--color-background, #ffffff);
+}
+
+/* Header */
+
+.doc-shell__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 3rem;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface-raised, #f9fafb);
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.doc-shell__header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-shell__header-center {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.doc-shell__header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  justify-content: flex-end;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Banner */
+
+.doc-shell__banner {
+  padding: 0.375rem 1rem;
+  font-size: 0.8125rem;
+  background: var(--color-warning-surface, #fef3c7);
+  color: var(--color-warning-text, #92400e);
+  border-bottom: 1px solid var(--color-warning-border, #fde68a);
+  flex-shrink: 0;
+}
+
+/* Toolbar */
+
+.doc-shell__toolbar {
+  padding: 0 0.5rem;
+  min-height: 2.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface-raised, #f9fafb);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.doc-shell__toolbar::-webkit-scrollbar { display: none; }
+
+/* Body */
+
+.doc-shell__body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Left panel */
+
+.doc-shell__left {
+  border-right: 1px solid var(--color-border, #e5e7eb);
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--color-surface-subtle, #f9fafb);
+  flex-shrink: 0;
+}
+
+/* Canvas */
+
+.doc-shell__canvas {
+  flex: 1;
+  overflow: auto;
+  min-width: 0;
+  position: relative;
+}
+
+/* Right panel */
+
+.doc-shell__right {
+  border-left: 1px solid var(--color-border, #e5e7eb);
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--color-surface-subtle, #f9fafb);
+  flex-shrink: 0;
+}
+
+/* Status bar */
+
+.doc-shell__status {
+  height: 1.75rem;
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  gap: 1rem;
+  font-size: 0.725rem;
+  color: var(--color-text-subtle, #6b7280);
+  border-top: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface-raised, #f9fafb);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* Save badge */
+
+.shell-save-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+}
+
+.shell-save-badge--saving  { color: var(--color-text-subtle, #6b7280); }
+.shell-save-badge--saved   { color: var(--color-success, #059669); }
+.shell-save-badge--error   { color: var(--color-error, #dc2626); background: color-mix(in srgb, var(--color-error, #dc2626) 8%, transparent); }
+.shell-save-badge--muted   { color: var(--color-text-subtle, #9ca3af); }
+.shell-save-badge--warning { color: var(--color-warning, #d97706); background: color-mix(in srgb, var(--color-warning, #d97706) 8%, transparent); }
+
+/* Responsive — collapse panels at narrow widths */
+
+@media (max-width: 768px) {
+  .doc-shell__left  { display: none; }
+  .doc-shell__right { display: none; }
+}
+
+@media (max-width: 640px) {
+  .doc-shell__header { height: 2.75rem; }
+  .doc-shell__header-center { display: none; }
+  .doc-shell__toolbar { min-height: 2rem; }
+}
+
+/* ── UnifiedDocumentViewer — full-screen portal overlay ─────────────────────── */
+
+.unified-doc-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  background: var(--background, #fff);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* PDF workspace fills the overlay */
+.unified-doc-viewer > .doc-workspace,
+.unified-doc-viewer > .doc-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ── Image viewer ────────────────────────────────────────────────────────────── */
+
+.unified-doc-viewer__image-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.unified-doc-viewer__image-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  background: var(--background, #fff);
+  flex-shrink: 0;
+}
+
+.unified-doc-viewer__image-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--foreground, #111827);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unified-doc-viewer__image-body {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  overflow: auto;
+  background: var(--muted, #f9fafb);
+}
+
+.unified-doc-viewer__image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.12);
+}
+
+/* ── Unsupported state ───────────────────────────────────────────────────────── */
+
+.unified-doc-viewer__unsupported {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 100%;
+  padding: 2rem;
+  text-align: center;
+  position: relative;
+}
+
+.unified-doc-viewer__unsupported-title {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--foreground, #111827);
+}
+
+.unified-doc-viewer__unsupported-desc {
+  font-size: 0.875rem;
+  color: var(--muted-foreground, #6b7280);
+  max-width: 32rem;
+}
+
+/* ── Close button ────────────────────────────────────────────────────────────── */
+
+.unified-doc-viewer__close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.375rem;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground, #6b7280);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.unified-doc-viewer__close-btn:hover {
+  background: var(--muted, #f3f4f6);
+  color: var(--foreground, #111827);
+}
+
+.unified-doc-viewer__close-btn--top {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+}
