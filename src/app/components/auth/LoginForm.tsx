@@ -5,6 +5,7 @@ import { login } from "../../store/authSlice";
 import { setCurrentUser } from "../../store/currentUserSlice";
 import { convayAuth, profileToCurrentUser } from "../../services/supabase/convayAuth";
 import { reloadAccessSnapshot } from "../../services/supabase/convayAccess";
+import { clearEntityRegistryCache } from "../../hooks/useEntityRegistry";
 import { NCCBankBoardLogo } from "../navigation/NCCBankBoardLogo";
 import { AppTextField } from "../forms/AppTextField";
 import { AppPasswordField } from "../forms/AppPasswordField";
@@ -32,6 +33,7 @@ export function LoginForm({ isDesktop, onForgotPassword }: LoginFormProps) {
     setSignInError("");
     try {
       const profile = await convayAuth.signIn(userId, password, rememberMe);
+      clearEntityRegistryCache();
       await reloadAccessSnapshot();
       dispatch(setCurrentUser(profileToCurrentUser(profile)));
       startTransition(() => { dispatch(login({ userId: profile.user_id })); });
