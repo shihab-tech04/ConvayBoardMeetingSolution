@@ -1175,11 +1175,19 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                   <SecondaryButton type="button" onClick={() => setEntryStep(s => Math.max(0, s - 1))}>Back</SecondaryButton>
                 )}
                 {cfg.onSaveDraft && (
-                  <SecondaryButton type="button" onClick={() => {
+                  <SecondaryButton type="button" onClick={async () => {
                     const merged = { ...stepValues, ...latestEntryValues.current, _current_step: entryStep };
-                    const result = cfg.onSaveDraft!(merged, wizardDraftId ?? undefined);
-                    if (typeof result === "string" && result) setWizardDraftId(result);
-                    closeEntry();
+                    try {
+                      const result = await cfg.onSaveDraft!(merged, wizardDraftId ?? undefined);
+                      if (typeof result === "string" && result) {
+                        setWizardDraftId(result);
+                        closeEntry();
+                      } else {
+                        toast.error("The draft was not saved.");
+                      }
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : "Unable to save draft");
+                    }
                   }}>Save Draft</SecondaryButton>
                 )}
                 {isLastStep ? (
