@@ -2,6 +2,8 @@ import { useState, startTransition } from "react";
 import { useDispatch } from "react-redux";
 import type { AppDispatch } from "../../store/store";
 import { login } from "../../store/authSlice";
+import { setCurrentUser } from "../../store/currentUserSlice";
+import { convayAuth, profileToCurrentUser } from "../../services/supabase/convayAuth";
 import { NCCBankBoardLogo } from "../navigation/NCCBankBoardLogo";
 import { AppTextField } from "../forms/AppTextField";
 import { AppPasswordField } from "../forms/AppPasswordField";
@@ -21,15 +23,21 @@ export function LoginForm({ isDesktop, onForgotPassword }: LoginFormProps) {
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [signInError, setSignInError] = useState("");
 
-  const handleSignIn = () => {
+  const handleSignIn = async () => {
+    if (isLoading) return;
     setIsLoading(true);
-    setTimeout(() => {
+    setSignInError("");
+    try {
+      const profile = await convayAuth.signIn(userId, password, rememberMe);
+      dispatch(setCurrentUser(profileToCurrentUser(profile)));
+      startTransition(() => dispatch(login({ userId: profile.user_id })));
+    } catch (error) {
+      setSignInError(error instanceof Error ? error.message : "Sign-in failed.");
+    } finally {
       setIsLoading(false);
-      startTransition(() => {
-        dispatch(login({ userId: userId || undefined }));
-      });
-    }, 800);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -74,6 +82,8 @@ export function LoginForm({ isDesktop, onForgotPassword }: LoginFormProps) {
           autoComplete="current-password"
         />
 
+        {signInError && <p role="alert" className="text-red-600 text-sm">{signInError}</p>}
+
         <div className="lp-form__row">
           <AppCheckbox
             id="login-remember-me"
@@ -89,7 +99,7 @@ export function LoginForm({ isDesktop, onForgotPassword }: LoginFormProps) {
 
       {/* Submit */}
       <div className="lp-form__submit-wrap">
-        <Button className="pl-[38px] pl-[41px] pl-[45px] pl-[47px] pl-[48px] pl-[49px] pl-[51px] pl-[58px] pl-[59px] pl-[59px] pl-[59px] pl-[59px] pl-[59px] pl-[58px] pl-[53px] pl-[47px] pl-[45px] pl-[40px] pl-[36px] pl-[34px] pl-[30px] pl-[24px] pl-[9px] p-[0px]"
+        <Button 
           type="button"
           variant="primary"
           size="lg"
