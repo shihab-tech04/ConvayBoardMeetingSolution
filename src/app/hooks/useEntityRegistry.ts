@@ -8,9 +8,9 @@ export interface EntityRecord {
 }
 export interface EntityRegistry<T extends EntityRecord> {
   items: T[];
-  add: (item: T) => void;
-  update: (id: string, patch: Partial<T>) => void;
-  remove: (id: string) => void;
+  add: (item: T) => void | Promise<boolean>;
+  update: (id: string, patch: Partial<T>) => void | Promise<boolean>;
+  remove: (id: string) => void | Promise<boolean>;
   getById: (id: string) => T | undefined;
   loading?: boolean;
   error?: string | null;
@@ -149,7 +149,7 @@ export function createEntityRegistry<T extends EntityRecord>(
     const state = store<T>(storageKey);
     if (NO_LEGACY_RECORDS.has(storageKey)) {
       toast.error("Use the authorized User, Role or Permission Management screen.");
-      return;
+      return Promise.resolve(false);
     }
     // Never update local state before the server acknowledges the write.
     // A single queue prevents overlapping writes from silently losing revisions.
@@ -175,12 +175,15 @@ export function createEntityRegistry<T extends EntityRecord>(
       state.error = null;
       signal(eventName);
     });
-    state.queue = queued.catch(error => {
+    const operation = queued.then(() => true).catch(error => {
       state.error = error instanceof Error ? error.message : "Unable to save changes";
       toast.error(state.error);
       signal(eventName);
       void load(true).catch(() => undefined);
+      return false;
     });
+    state.queue = operation.then(() => undefined);
+    return operation;
   }
 
   return function useServerRegistry(): EntityRegistry<T> {
@@ -204,11 +207,11 @@ export function createEntityRegistry<T extends EntityRecord>(
       };
     }, []);
     const state = store<T>(storageKey);
-    const add = useCallback((item: T) => { mutate("create", item); }, []);
+    const add = useCallback((item: T) => mutate("create", item), []);
     const update = useCallback((id: string, patch: Partial<T>) => {
-      mutate("update", { id }, patch);
+      return mutate("update", { id }, patch);
     }, []);
-    const remove = useCallback((id: string) => { mutate("delete", { id }); }, []);
+    const remove = useCallback((id: string) => mutate("delete", { id }), []);
     const getById = useCallback((id: string) =>
       store<T>(storageKey).items.find(x => x.id === id), []);
     const refresh = useCallback(() => load(true), []);
