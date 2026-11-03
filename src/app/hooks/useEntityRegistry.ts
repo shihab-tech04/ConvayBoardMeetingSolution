@@ -4,8 +4,9 @@ import { convayAuth } from "../services/supabase/convayAuth";
 
 export interface EntityRecord {
   id: string;
+  [key: string]: unknown;
 }
-export interface EntityRegistry<T extends EntityRecord> {
+export interface EntityRegistry<T extends { id: string }> {
   items: T[];
   add: (item: T) => void | Promise<boolean>;
   update: (id: string, patch: Partial<T>) => void | Promise<boolean>;
@@ -16,7 +17,7 @@ export interface EntityRegistry<T extends EntityRecord> {
   refresh?: () => Promise<void>;
 }
 
-interface Cache<T extends EntityRecord> {
+interface Cache<T extends { id: string }> {
   items: T[];
   versions: Map<string, number>;
   loaded: boolean;
@@ -28,7 +29,7 @@ const caches = new Map<string, Cache<EntityRecord>>();
 const NO_LEGACY_RECORDS = new Set(["bms.users", "bms.roles.canonical"]);
 const fixtureMode = import.meta.env.MODE === "test";
 
-function store<T extends EntityRecord>(key: string): Cache<T> {
+function store<T extends { id: string }>(key: string): Cache<T> {
   let item = caches.get(key);
   if (!item) {
     item = {
@@ -58,7 +59,7 @@ export function clearEntityRegistryCache() {
  * All server writes are serialized per collection and revision-checked; failures
  * are surfaced to the user rather than silently saved in the browser.
  */
-export function createEntityRegistry<T extends EntityRecord>(
+export function createEntityRegistry<T extends { id: string }>(
   storageKey: string,
   eventName: string,
   mockData: T[],
