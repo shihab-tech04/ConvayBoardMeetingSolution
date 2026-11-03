@@ -64,9 +64,12 @@ Deno.serve(async req=>{
   const user=auth.user;
   const {data:profile,error:profileError}=await db.from("user_profiles")
    .select("user_id,account_role,account_status").eq("user_id",user.id).maybeSingle();
-  if(profileError || !profile || profile.account_status!=="active"){
-   return reply(403,{error:"Account is not active"});
+  if(profileError){
+   console.error("RBAC profile lookup failed", profileError.code);
+   return reply(503,{error:"Unable to verify account access. Please retry."});
   }
+  if(!profile)return reply(403,{error:"Account profile is not configured"});
+  if(profile.account_status!=="active")return reply(403,{error:"Account is not active"});
   const isAdmin=profile.account_role==="super_admin";
   const raw=await req.text();
   if(raw.length>25000)return reply(413,{error:"Request too large"});
