@@ -6,6 +6,7 @@ import { login, logout } from "../store/authSlice";
 import { setCurrentUser } from "../store/currentUserSlice";
 import { convayAuth, profileToCurrentUser } from "../services/supabase/convayAuth";
 import { reloadAccessSnapshot, clearAccessSnapshot } from "../services/supabase/convayAccess";
+import { clearEntityRegistryCache } from "../hooks/useEntityRegistry";
 import { useAppearance } from "../hooks/useAppearance";
 import { LoginPage } from "../pages/auth/LoginPage";
 import { AppShell } from "./AppShell";
@@ -37,11 +38,12 @@ export function AppRoot() {
         dispatch(setCurrentUser(profileToCurrentUser(profile)));
         dispatch(login({ userId: profile.user_id }));
       } else {
+        clearEntityRegistryCache();
         clearAccessSnapshot();
         dispatch(logout());
       }
     }).catch(() => {
-      if (!cancelled) { clearAccessSnapshot(); dispatch(logout()); }
+      if (!cancelled) { clearEntityRegistryCache(); clearAccessSnapshot(); dispatch(logout()); }
     }).finally(() => {
       if (!cancelled) setChecking(false);
     });
