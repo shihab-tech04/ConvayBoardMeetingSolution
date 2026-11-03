@@ -32,7 +32,7 @@ export function LoginForm({ isDesktop, onForgotPassword }: LoginFormProps) {
     try {
       const profile = await convayAuth.signIn(userId, password, rememberMe);
       dispatch(setCurrentUser(profileToCurrentUser(profile)));
-      startTransition(() => dispatch(login({ userId: profile.user_id })));
+      startTransition(() => { dispatch(login({ userId: profile.user_id })); });
     } catch (error) {
       setSignInError(error instanceof Error ? error.message : "Sign-in failed.");
     } finally {
