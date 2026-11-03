@@ -88,9 +88,9 @@ export interface PageCfg {
     onValuesChange: (patch: Record<string, EntryFormValue>) => void,
   ) => React.ReactNode>;
   /** Called after a row is created. Use to sync with external registries. */
-  onRowCreate?: (values: Record<string, unknown>) => void;
+  onRowCreate?: (values: Record<string, unknown>) => void | boolean | Promise<void | boolean>;
   /** Called after a row is updated. Use to sync with external registries. */
-  onRowUpdate?: (id: string, values: Record<string, unknown>) => void;
+  onRowUpdate?: (id: string, values: Record<string, unknown>) => void | boolean | Promise<void | boolean>;
   /** Override the primary submit button label on the last wizard step (default "Save"). */
   lastStepSubmitLabel?: string;
   /** When set, shows a "Save Draft" secondary button on every wizard step.
