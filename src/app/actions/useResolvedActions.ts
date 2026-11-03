@@ -1,6 +1,7 @@
 import { useMemo, useCallback } from "react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { useAccessSnapshot } from "../services/supabase/convayAccess";
+import { filterActionsByAccess, withResolverAliases } from "../services/supabase/actionPermissions";
 import {
   useMeetingRegistry,
   useParticipantRegistry,
@@ -107,7 +108,7 @@ export function useResolvedActions(entity: EntityType) {
           })),
       };
 
-      return resolveRecordActions({
+      const actions = resolveRecordActions({
         entity,
         record: row as Record<string, unknown>,
         currentUser: {
@@ -117,17 +118,19 @@ export function useResolvedActions(entity: EntityType) {
           employeeId: currentUser.employeeId,
         },
         userRole,
-        permissions,
+        permissions: withResolverAliases(permissions),
         meetingRoles: extraRoles,
         now: new Date(),
         relationships,
       });
+      return filterActionsByAccess(entity, actions, permissions, access.is_super_admin);
     },
     [
       entity,
       currentUser,
       userRole,
       permissions,
+      access.is_super_admin,
       participants,
       participantLinks,
       rsvpRecords,
