@@ -19,6 +19,7 @@ export interface ConvayProfile {
   employee_id?: string | null;
   created_at?: string;
   updated_at?: string;
+  last_sign_in_at?: string | null;
 }
 interface Tokens {
   access_token: string;
