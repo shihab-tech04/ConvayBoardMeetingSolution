@@ -80,7 +80,7 @@ describe("OnlyOfficeEditorProvider — server configured", () => {
   });
 
   it("never exposes a JWT or document key on the provider object", () => {
-    const p = new OnlyOfficeEditorProvider(SERVER) as Record<string, unknown>;
+    const p = new OnlyOfficeEditorProvider(SERVER) as unknown as Record<string, unknown>;
     expect(p["token"]).toBeUndefined();
     expect(p["jwt"]).toBeUndefined();
     expect(p["documentKey"]).toBeUndefined();
