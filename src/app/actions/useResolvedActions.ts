@@ -1,7 +1,6 @@
 import { useMemo, useCallback } from "react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
-import { useUserRegistry } from "../hooks/useUserRegistry";
-import { useRoleRegistry } from "../hooks/useRoleRegistry";
+import { useAccessSnapshot } from "../services/supabase/convayAccess";
 import {
   useMeetingRegistry,
   useParticipantRegistry,
@@ -28,21 +27,14 @@ import type { TableRow } from "../pages/modulePageUtils";
  */
 export function useResolvedActions(entity: EntityType) {
   const currentUser = useCurrentUser();
-  const { users } = useUserRegistry();
-  const { roles } = useRoleRegistry();
-
-  // Look up current user's system role and permissions
+  const access = useAccessSnapshot();
   const { userRole, permissions } = useMemo(() => {
-    const sysUser = users.find(
-      u => u.name === currentUser.name || u.employeeId === currentUser.employeeId,
-    );
-    const roleName = sysUser?.role ?? "";
-    const role = roles.find(r => r.name === roleName);
+    const assigned = access.roles.filter(r => access.user_role_ids.includes(r.id));
     return {
-      userRole: roleName,
-      permissions: (role?.permissions ?? []) as string[],
+      userRole: assigned.map(r => r.name).join(", ") || "",
+      permissions: access.loaded ? [...access.effective_permissions] : [],
     };
-  }, [users, roles, currentUser.name, currentUser.employeeId]);
+  }, [access]);
 
   // Pre-load relationship registries so the resolver can see live data
   const { items: participants } = useParticipantRegistry();
