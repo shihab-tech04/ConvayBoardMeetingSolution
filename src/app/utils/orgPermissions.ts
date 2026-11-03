@@ -17,9 +17,7 @@
  * Everyone else: view-only (structure only).
  */
 
-import { useMemo } from "react";
-import { useBmsUserRegistry } from "../data/bmsUsers";
-import { useCurrentUser } from "../hooks/useCurrentUser";
+import { useAccessSnapshot, hasAccess } from "../services/supabase/convayAccess";
 
 // ── Permission keys ────────────────────────────────────────────────────────────
 
@@ -90,49 +88,17 @@ const DENY_ALL = buildPermissions([]);
  * Always deny-by-default — only explicitly granted permissions return true.
  */
 export function useOrgPermissions(): OrgPermissions {
-  const currentUser = useCurrentUser();
-  const bmsUsers    = useBmsUserRegistry();
-
-  return useMemo(() => {
-    if (!currentUser?.id) return DENY_ALL;
-
-    // Resolve the canonical BmsUser for the current user
-    const bmsUser = bmsUsers.items.find(
-      (u) => u.id === currentUser.id || u.employee_id === currentUser.employeeId,
-    );
-
-    // Collect all role names the user holds
-    const roleNames: string[] = [];
-    if (bmsUser?.role_ids?.length) {
-      // If role names are embedded as IDs that look like names, include them
-      for (const rid of bmsUser.role_ids) {
-        roleNames.push(rid.toLowerCase());
-      }
-    }
-    // Also check designation as a fallback
-    if (currentUser.designation) {
-      roleNames.push(currentUser.designation.toLowerCase());
-    }
-
-    // Determine grant tier (first match wins)
-    for (const rn of roleNames) {
-      if (FULL_ACCESS_ROLES.has(rn)) return buildPermissions(ALL);
-      if (MANAGEMENT_ROLES.has(rn))  return buildPermissions(MANAGEMENT);
-    }
-
-    // Special-case: Meeting Secretary gets management rights in dev mock
-    const isMeetingSecretary =
-      currentUser.designation?.toLowerCase().includes("secretary") ||
-      currentUser.designation?.toLowerCase().includes("admin");
-    if (isMeetingSecretary) return buildPermissions(ALL);
-
-    for (const rn of roleNames) {
-      if (READ_ACCESS_ROLES.has(rn)) return buildPermissions(READ_ONLY);
-    }
-
-    // Default: view structure only
-    return buildPermissions(["view_structure"]);
-  }, [currentUser, bmsUsers.items]);
+  const access = useAccessSnapshot();
+  const view = hasAccess("gov_org_view", access);
+  const manage = hasAccess("gov_org_manage", access);
+  const audit = hasAccess("admin_audit_log", access);
+  return buildPermissions([
+    ...(view || manage ? ["view_structure", "view_history"] as OrgPermission[] : []),
+    ...(manage ? ["create_units", "edit_units", "move_units", "assign_heads",
+      "assign_users", "transfer_users", "activate_units", "deactivate_units",
+      "archive_units"] as OrgPermission[] : []),
+    ...(audit ? ["view_audit"] as OrgPermission[] : []),
+  ]);
 }
 
 /**
