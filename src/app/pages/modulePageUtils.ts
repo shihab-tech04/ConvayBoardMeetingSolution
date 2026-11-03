@@ -96,7 +96,7 @@ export interface PageCfg {
   /** When set, shows a "Save Draft" secondary button on every wizard step.
    *  Receives merged current+accumulated values and the existing draft ID (if any).
    *  Should return the saved meeting/draft ID (string) so subsequent saves can upsert instead of insert. */
-  onSaveDraft?: (values: Record<string, unknown>, draftId?: string) => string | void;
+  onSaveDraft?: (values: Record<string, unknown>, draftId?: string) => string | void | Promise<string | void>;
   /** Contextual search placeholder text (e.g. "Search meetings", "Search agenda items"). Falls back to "Search {entity}". */
   searchPlaceholder?: string;
   /** Explicit drawer title. If absent, GenPage auto-detects from row field names. */
