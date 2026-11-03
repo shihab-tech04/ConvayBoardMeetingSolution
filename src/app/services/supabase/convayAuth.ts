@@ -200,6 +200,26 @@ export const convayAuth = {
   },
 
 
+
+  async applyBatch(operations: Array<{
+    entity_key: string;
+    action: "create" | "update" | "delete";
+    record_id?: string;
+    payload?: { id?: string; [key: string]: unknown };
+  }>): Promise<number> {
+    if (!operations.length) throw new Error("No changes supplied");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_apply_entity_batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_ops: operations }),
+    });
+    const result = await res.json() as number;
+    if (result !== operations.length) {
+      throw new Error("The meeting could not be saved completely");
+    }
+    return result;
+  },
+
   async registry<T extends { id: string }>(
     entity: string,
     action: "list" | "create" | "update" | "delete",
