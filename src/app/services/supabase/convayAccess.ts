@@ -111,7 +111,7 @@ const direct: Record<string, string> = {
   "governance-org/designations-positions": "gov_org_view",
   "governance-org/participant-groups": "gov_group_view",
   "archive-reports/meeting-archive": "arc_view",
-  "archive-reports/minutes": "min_view",
+  "archive-reports/minutes": "arc_view",
   "archive-reports/registers/resolution-register": "res_view",
   "archive-reports/registers/decision-register": "dec_view",
   "archive-reports/registers/action-register": "act_view",
@@ -122,7 +122,7 @@ const direct: Record<string, string> = {
   "archive-reports/reports-analytics/governance": "rep_governance",
   "archive-reports/reports-analytics/decisions-actions": "rep_decisions",
   "archive-reports/reports-analytics/financial-resource-impact": "rep_meeting",
-  "archive-reports/audit-trail": "admin_audit",
+  "archive-reports/audit-trail": "admin_audit_log",
   "administration/roles-permissions/roles": "admin_roles",
   "administration/roles-permissions/permissions": "admin_roles",
 };
