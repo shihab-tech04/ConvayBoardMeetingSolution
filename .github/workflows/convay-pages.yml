@@ -33,8 +33,7 @@ jobs:
           cache: pnpm
       - name: Install dependencies from committed lockfile
         run: pnpm install --frozen-lockfile
-      - name: Report existing TypeScript diagnostics (non-blocking)
-        continue-on-error: true
+      - name: Require error-free TypeScript verification
         run: pnpm exec tsc --noEmit --project tsconfig.release.json
       - name: Run application tests
         run: pnpm test
