@@ -8,6 +8,8 @@ import { AppModal } from "../../components/modals/AppModal";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import { AppTextField } from "../../components/forms/AppTextField";
 import { AppPasswordField } from "../../components/forms/AppPasswordField";
+import { AppCheckbox } from "../../components/forms/AppCheckbox";
+import { useAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
 import { ResponsiveOverlay } from "../../components/shared/ResponsiveOverlay";
 import { UnifiedDataTable } from "../../components/tables";
 import { fc, BADGE } from "../modulePageUtils";
@@ -40,6 +42,7 @@ function csv(value: unknown) {
 
 export function SupabaseUserManagementPage() {
   const navigate = useNavigate();
+  const access = useAccessSnapshot();
   const [users, setUsers] = useState<ConvayProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -54,6 +57,9 @@ export function SupabaseUserManagementPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ id: string; action: StatusAction } | null>(null);
   const [form, setForm] = useState<FormState>(blank);
+  const [roleAssignId, setRoleAssignId] = useState<string | null>(null);
+  const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
+  const [assignError, setAssignError] = useState("");
 
   const loadUsers = async () => {
     setLoading(true);
@@ -88,7 +94,9 @@ export function SupabaseUserManagementPage() {
     name: u.display_name,
     email: u.email,
     userType: u.user_type || "Internal Employee",
-    primaryRole: u.account_role === "super_admin" ? "Super Admin" : "User",
+    primaryRole: u.account_role === "super_admin" ? "Super Admin" :
+      access.user_assignments.filter(a => a.user_id === u.user_id)
+        .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ") || "Unassigned",
     accountStatus: displayStatus(u.account_status),
     lastActive: u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleString() : "—",
   }));
@@ -99,6 +107,27 @@ export function SupabaseUserManagementPage() {
     { label: "Super Admins", value: users.filter(u => u.account_role === "super_admin").length, Icon: Shield, tone: "primary" as const },
   ];
 
+  const openRoleAssignment = (user: ConvayProfile) => {
+    setSelectedId(null);
+    setRoleAssignId(user.user_id);
+    setSelectedRoles(access.user_assignments.filter(a => a.user_id === user.user_id).map(a => a.role_id));
+    setAssignError("");
+  };
+  const saveRoleAssignments = async () => {
+    if (!roleAssignId || working) return;
+    setWorking(true);
+    setAssignError("");
+    try {
+      await convayAuth.access("assign_roles", { user_id: roleAssignId, role_ids: selectedRoles });
+      await reloadAccessSnapshot();
+      setRoleAssignId(null);
+      toast.success("User roles updated");
+    } catch (error) {
+      setAssignError(error instanceof Error ? error.message : "Unable to assign roles");
+    } finally {
+      setWorking(false);
+    }
+  };
   const closeForm = () => {
     if (working) return;
     setMode(null);
@@ -264,6 +293,7 @@ export function SupabaseUserManagementPage() {
               <div className="flex flex-col gap-2">
                 <Button variant="primary" size="lg" fullWidth onClick={() => openEdit(selected)}>Edit User</Button>
                 <Button variant="secondary" size="md" fullWidth onClick={() => openPassword(selected)}>Set Password</Button>
+                <Button variant="secondary" size="md" fullWidth onClick={() => openRoleAssignment(selected)}>Assign Roles</Button>
                 <Button variant="secondary" size="md" fullWidth onClick={() => {
                   setConfirm({ id: selected.user_id, action: selected.account_status === "active" ? "suspended" : "active" });
                 }}>{selected.account_status === "active" ? "Suspend User" : "Activate User"}</Button>
@@ -281,7 +311,9 @@ export function SupabaseUserManagementPage() {
             <h3>{selected.display_name}</h3>
             <p>Username: {selected.username}</p>
             <p>Email: {selected.email}</p>
-            <p>Role: {selected.account_role === "super_admin" ? "Super Admin" : "User"}</p>
+            <p>Roles: {selected.account_role === "super_admin" ? "Super Admin" :
+              access.user_assignments.filter(a => a.user_id === selected.user_id)
+                .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ") || "Unassigned"}</p>
             <p>Status: {displayStatus(selected.account_status)}</p>
             {selected.phone && <p>Phone: {selected.phone}</p>}
           </div>
@@ -318,6 +350,27 @@ export function SupabaseUserManagementPage() {
               placeholder="Set login password"/>
           )}
           {formError && <p role="alert" className="text-red-600 text-sm">{formError}</p>}
+        </div>
+      </AppModal>
+      <AppModal open={roleAssignId !== null}
+        title="Assign User Roles"
+        size="md"
+        onClose={() => { if (!working) setRoleAssignId(null); }}
+        footer={<div className="flex justify-end gap-2">
+          <Button variant="ghost" size="lg" onClick={() => setRoleAssignId(null)} disabled={working}>Cancel</Button>
+          <Button variant="primary" size="lg" onClick={() => { void saveRoleAssignments(); }} loading={working}>Save Roles</Button>
+        </div>}>
+        <div className="flex flex-col gap-3">
+          <p>Select which application roles this user may use. Permissions take effect from the selected roles.</p>
+          {access.roles.filter(r => r.status === "Active" && !r.is_system_role).length === 0 &&
+            <p>No custom roles yet. Create one from Role Management.</p>}
+          {access.roles.filter(r => r.status === "Active" && !r.is_system_role).map(r => (
+            <AppCheckbox key={r.id} id={"assign-" + r.id} label={r.name}
+              checked={selectedRoles.includes(r.id)}
+              onChange={checked => setSelectedRoles(old => checked
+                ? [...old, r.id] : old.filter(id => id !== r.id))} />
+          ))}
+          {assignError && <p role="alert" className="text-red-600 text-sm">{assignError}</p>}
         </div>
       </AppModal>
       {confirm && (
