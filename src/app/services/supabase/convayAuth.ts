@@ -177,6 +177,67 @@ export const convayAuth = {
     return body as T;
   },
 
+
+  async registry<T extends { id: string }>(
+    entity: string,
+    action: "list" | "create" | "update" | "delete",
+    record?: T,
+    version?: number,
+  ): Promise<{ records: Array<{ payload: T; revision: number }>; revision?: number }> {
+    const session = await validSession();
+    if (!session) throw new Error("Your session has expired. Sign in again.");
+    const endpoint = new URL(URL + "/rest/v1/convay_entity_records");
+    const headers: Record<string, string> = {
+      apikey: API_KEY,
+      Authorization: "Bearer " + session.accessToken,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    endpoint.searchParams.set("entity_key", "eq." + entity);
+    if (action === "list") {
+      const rows: Array<{ payload: T; revision: number }> = [];
+      // Use explicit pages rather than silently dropping records at the PostgREST max_rows limit.
+      let page = 0;
+      while (page < 100) {
+        const url = new URL(endpoint);
+        url.searchParams.set("select", "payload,revision");
+        url.searchParams.set("order", "updated_at.desc");
+        url.searchParams.set("limit", "1000");
+        url.searchParams.set("offset", String(page * 1000));
+        const res = await fetch(url.toString(), { headers, cache: "no-store" });
+        if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to load " + entity));
+        const batch = await res.json() as Array<{ payload: T; revision: number }>;
+        if (!Array.isArray(batch)) throw new Error("Invalid record response");
+        rows.push(...batch);
+        if (batch.length < 1000) break;
+        page += 1;
+      }
+      return { records: rows };
+    }
+    if (!record?.id) throw new Error("A record ID is required");
+    const mutatingUrl = new URL(endpoint);
+    mutatingUrl.searchParams.set("record_id", "eq." + record.id);
+    mutatingUrl.searchParams.set("select", "record_id,revision");
+    if (action !== "create" && typeof version !== "number") {
+      throw new Error("Record revision is missing. Reload before editing.");
+    }
+    if (action !== "create") mutatingUrl.searchParams.set("revision", "eq." + version);
+    const method = action === "create" ? "POST" : action === "update" ? "PATCH" : "DELETE";
+    headers.Prefer = "return=representation";
+    const body = action === "create"
+      ? JSON.stringify({ entity_key: entity, record_id: record.id, payload: record })
+      : action === "update" ? JSON.stringify({ payload: record }) : undefined;
+    const url = action === "create" ? new URL(URL + "/rest/v1/convay_entity_records?select=record_id,revision") : mutatingUrl;
+    const res = await fetch(url.toString(), { method, headers, body });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to save " + entity));
+    const result = await res.json() as Array<{ record_id: string; revision: number }>;
+    if (!Array.isArray(result) || result.length !== 1 || result[0].record_id !== record.id) {
+      throw new Error("The record changed or is inaccessible. Reload and try again.");
+    }
+    return { records: [], revision: result[0].revision };
+  },
+
+
   async users(action: "list" | "create" | "update" | "set_status" | "set_password" | "delete", payload: UserMutation = {}):
     Promise<{ users?: ConvayProfile[]; user?: ConvayProfile; ok?: boolean }> {
     const session = await validSession();
