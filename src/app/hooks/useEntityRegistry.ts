@@ -1,102 +1,221 @@
 import { useState, useEffect, useCallback } from "react";
+import { toast } from "sonner";
+import { convayAuth } from "../services/supabase/convayAuth";
 
 export interface EntityRecord {
   id: string;
   [key: string]: unknown;
 }
-
 export interface EntityRegistry<T extends EntityRecord> {
   items: T[];
   add: (item: T) => void;
   update: (id: string, patch: Partial<T>) => void;
   remove: (id: string) => void;
   getById: (id: string) => T | undefined;
+  loading?: boolean;
+  error?: string | null;
+  refresh?: () => Promise<void>;
+}
+
+interface Cache<T extends EntityRecord> {
+  items: T[];
+  versions: Map<string, number>;
+  loaded: boolean;
+  pending: Promise<void> | null;
+  queue: Promise<void>;
+  error: string | null;
+}
+const caches = new Map<string, Cache<EntityRecord>>();
+const NO_LEGACY_RECORDS = new Set(["bms.users", "bms.roles.canonical"]);
+const fixtureMode = import.meta.env.MODE === "test";
+
+function store<T extends EntityRecord>(key: string): Cache<T> {
+  let item = caches.get(key);
+  if (!item) {
+    item = {
+      items: [], versions: new Map(), loaded: false,
+      pending: null, queue: Promise.resolve(), error: null,
+    };
+    caches.set(key, item);
+  }
+  return item as Cache<T>;
+}
+function signal(eventName: string) {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(eventName));
+}
+export function clearEntityRegistryCache() {
+  for (const [key, state] of caches) {
+    state.items = []; state.versions.clear(); state.loaded = false;
+    state.error = null;
+  }
+  caches.clear();
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("convay:entity-cache-cleared"));
 }
 
 /**
- * Factory that produces a registry hook for any entity type.
- * Follows the same localStorage + custom-event pattern as useUserRegistry.
- *
- * Usage:
- *   export const useMeetingRegistry = createEntityRegistry<Meeting>(
- *     "bms.meetings", "bms:meetings-updated", MOCK_MEETINGS
- *   );
+ * Entity registry compatibility adapter.
+ * Runtime: 49 allowlisted SQL-backed registries, no sample records or localStorage.
+ * Unit-test mode: existing deterministic fixtures for legacy tests only.
+ * All server writes are serialized per collection and revision-checked; failures
+ * are surfaced to the user rather than silently saved in the browser.
  */
 export function createEntityRegistry<T extends EntityRecord>(
   storageKey: string,
   eventName: string,
   mockData: T[],
 ): () => EntityRegistry<T> {
-  function loadCustom(): T[] {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      return raw ? (JSON.parse(raw) as T[]) : [];
-    } catch {
-      return [];
+  if (fixtureMode) {
+    function read(): T[] {
+      try { return JSON.parse(localStorage.getItem(storageKey) || "[]") as T[]; }
+      catch { return []; }
     }
-  }
-
-  function saveCustom(items: T[]): void {
-    try {
+    function merge(custom: T[]) {
+      const byId = new Map(custom.map(x => [x.id, x]));
+      const oldIds = new Set(mockData.map(x => x.id));
+      return [
+        ...custom.filter(x => !oldIds.has(x.id)),
+        ...mockData.map(x => byId.get(x.id) ?? x),
+      ];
+    }
+    function save(items: T[]) {
       localStorage.setItem(storageKey, JSON.stringify(items));
-      window.dispatchEvent(new CustomEvent(eventName));
-    } catch { /* ignore */ }
+      signal(eventName);
+    }
+    return function useTestRegistry() {
+      const [custom, setCustom] = useState(read);
+      useEffect(() => {
+        const update = () => setCustom(read());
+        window.addEventListener("storage", update);
+        window.addEventListener(eventName, update);
+        return () => {
+          window.removeEventListener("storage", update);
+          window.removeEventListener(eventName, update);
+        };
+      }, []);
+      const add = useCallback((item: T) => {
+        const next = [item, ...read()];
+        save(next); setCustom(next);
+      }, []);
+      const update = useCallback((id: string, patch: Partial<T>) => {
+        const target = merge(read()).find(x => x.id === id);
+        if (!target) return;
+        const nextItem = { ...target, ...patch };
+        const originals = read();
+        const next = originals.some(x => x.id === id)
+          ? originals.map(x => x.id === id ? nextItem : x)
+          : [...originals, nextItem];
+        save(next); setCustom(next);
+      }, []);
+      const remove = useCallback((id: string) => {
+        const next = read().filter(x => x.id !== id);
+        save(next); setCustom(next);
+      }, []);
+      const getById = useCallback((id: string) => merge(read()).find(x => x.id === id), []);
+      return { items: merge(custom), add, update, remove, getById };
+    };
   }
 
-  function mergeWithMock(custom: T[]): T[] {
-    const customById = new Map(custom.map(i => [i.id, i]));
-    const merged = mockData.map(i => customById.get(i.id) ?? i);
-    const baseIds = new Set(mockData.map(i => i.id));
-    const newItems = custom.filter(i => !baseIds.has(i.id));
-    return [...newItems, ...merged];
+  const load = async (force = false) => {
+    const state = store<T>(storageKey);
+    if (NO_LEGACY_RECORDS.has(storageKey)) {
+      state.loaded = true;
+      state.items = [];
+      state.versions.clear();
+      signal(eventName);
+      return;
+    }
+    if (state.pending) return state.pending;
+    if (state.loaded && !force) return;
+    const promise = (async () => {
+      try {
+        const result = await convayAuth.registry<T>(storageKey, "list");
+        state.items = result.records.map(x => x.payload);
+        state.versions = new Map(result.records.map(x => [x.payload.id, x.revision]));
+        state.loaded = true;
+        state.error = null;
+        signal(eventName);
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "Records could not be loaded";
+        state.loaded = false;
+        signal(eventName);
+        throw error;
+      }
+    })();
+    state.pending = promise;
+    try { await promise; } finally { state.pending = null; }
+  };
+
+  function mutate(action: "create" | "update" | "delete", item: T | { id: string }, patch?: Partial<T>) {
+    const state = store<T>(storageKey);
+    if (NO_LEGACY_RECORDS.has(storageKey)) {
+      toast.error("Use the authorized User, Role or Permission Management screen.");
+      return;
+    }
+    // Never update local state before the server acknowledges the write.
+    // A single queue prevents overlapping writes from silently losing revisions.
+    const queued = state.queue.then(async () => {
+      if (!state.loaded) await load();
+      const previous = state.items.find(x => x.id === item.id);
+      const revision = state.versions.get(item.id);
+      if (action === "create" && previous) throw new Error("This record already exists");
+      if (action !== "create" && (!previous || revision === undefined)) {
+        throw new Error("Record not found. Refresh the page and try again.");
+      }
+      const full = action === "update" ? { ...previous!, ...patch, id: item.id } :
+        action === "create" ? item as T : { id: item.id } as T;
+      const result = await convayAuth.registry<T>(storageKey, action, full, revision);
+      if (action === "delete") {
+        state.items = state.items.filter(x => x.id !== item.id);
+        state.versions.delete(item.id);
+      } else {
+        state.items = action === "create"
+          ? [full, ...state.items] : state.items.map(x => x.id === item.id ? full : x);
+        state.versions.set(item.id, result.revision!);
+      }
+      state.error = null;
+      signal(eventName);
+    });
+    state.queue = queued.catch(error => {
+      state.error = error instanceof Error ? error.message : "Unable to save changes";
+      toast.error(state.error);
+      signal(eventName);
+      void load(true).catch(() => undefined);
+    });
   }
 
-  return function useRegistry(): EntityRegistry<T> {
-    const [custom, setCustom] = useState<T[]>(loadCustom);
-
+  return function useServerRegistry(): EntityRegistry<T> {
+    const [, rerender] = useState(0);
     useEffect(() => {
-      const sync = () => setCustom(loadCustom());
-      window.addEventListener("storage", sync);
+      let active = true;
+      const sync = () => { if (active) rerender(x => x + 1); };
       window.addEventListener(eventName, sync);
+      window.addEventListener("convay:entity-cache-cleared", sync);
+      // Browser-local seed data is intentionally never imported into production SQL.
+      void load().catch(() => undefined);
+      const refreshWhenVisible = () => {
+        if (document.visibilityState === "visible") void load(true).catch(() => undefined);
+      };
+      document.addEventListener("visibilitychange", refreshWhenVisible);
       return () => {
-        window.removeEventListener("storage", sync);
+        active = false;
         window.removeEventListener(eventName, sync);
+        window.removeEventListener("convay:entity-cache-cleared", sync);
+        document.removeEventListener("visibilitychange", refreshWhenVisible);
       };
     }, []);
-
-    const items: T[] = mergeWithMock(custom);
-
-    const add = useCallback((item: T) => {
-      const existing = loadCustom();
-      const updated = [item, ...existing];
-      setCustom(updated);
-      saveCustom(updated);
-    }, []);
-
+    const state = store<T>(storageKey);
+    const add = useCallback((item: T) => { mutate("create", item); }, []);
     const update = useCallback((id: string, patch: Partial<T>) => {
-      const all = mergeWithMock(loadCustom());
-      const target = all.find(i => i.id === id);
-      if (!target) return;
-      const updatedItem: T = { ...target, ...patch };
-      const existing = loadCustom();
-      const idx = existing.findIndex(i => i.id === id);
-      const updated = idx >= 0
-        ? existing.map(i => (i.id === id ? updatedItem : i))
-        : [...existing, updatedItem];
-      setCustom(updated);
-      saveCustom(updated);
+      mutate("update", { id }, patch);
     }, []);
-
-    const remove = useCallback((id: string) => {
-      const updated = loadCustom().filter(i => i.id !== id);
-      setCustom(updated);
-      saveCustom(updated);
-    }, []);
-
-    const getById = useCallback((id: string): T | undefined => {
-      return mergeWithMock(loadCustom()).find(i => i.id === id);
-    }, []);
-
-    return { items, add, update, remove, getById };
+    const remove = useCallback((id: string) => { mutate("delete", { id }); }, []);
+    const getById = useCallback((id: string) =>
+      store<T>(storageKey).items.find(x => x.id === id), []);
+    const refresh = useCallback(() => load(true), []);
+    return {
+      items: state.items, add, update, remove, getById, refresh,
+      loading: !state.loaded && !NO_LEGACY_RECORDS.has(storageKey),
+      error: state.error,
+    };
   };
 }
