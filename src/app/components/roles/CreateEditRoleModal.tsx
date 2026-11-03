@@ -6,7 +6,6 @@ import { AppTextArea } from "../forms/AppTextArea";
 import { SToggle } from "../forms/SToggle";
 import { StatusBadge } from "../badges/StatusBadge";
 import { type SystemRole } from "../../data/mockData";
-import { SETTINGS_ACCESS_LEVELS } from "../../data/constants";
 import { usePermissionRegistry } from "../../hooks/usePermissionRegistry";
 import { PermissionsPanel } from "./PermissionsPanel";
 import { RolePreviewCard } from "./RolePreviewCard";
@@ -41,7 +40,7 @@ export function CreateEditRoleModal({
   const [status, setStatus]                   = useState<"Active" | "Inactive">("Active");
   const [selectedPermIds, setSelectedPermIds] = useState<string[]>([]);
   // level kept for SystemRole type-safety — never exposed in the UI
-  const [level, setLevel]                     = useState(SETTINGS_ACCESS_LEVELS[0]);
+  const [level, setLevel]                     = useState("Custom");
 
   useEffect(() => {
     if (!open) return;
@@ -51,7 +50,7 @@ export function CreateEditRoleModal({
     setDescription(role?.description ?? "");
     setStatus(role?.status ?? "Active");
     setSelectedPermIds(role?.permissions ?? []);
-    setLevel(role?.level ?? SETTINGS_ACCESS_LEVELS[0]);
+    setLevel(role?.level ?? "Custom");
   }, [open, roleId, roles]);
 
   // ── Save ─────────────────────────────────────────────────────────────────
