@@ -1081,7 +1081,7 @@ export function OnlineReturnRegisterPage() {
       const chairpersonName = resolveUserName(String(values.chairperson ?? ""));
       const secretaryName   = resolveUserName(String(values.secretary   ?? ""));
       const organizerName   = resolveUserName(String(values.organizer   ?? ""));
-      registry.update(id, {
+      return registry.update(id, {
         meeting_title:       String(values.meeting_title    ?? ""),
         meeting_type:        String(values.meeting_type     ?? ""),
         committee:           String(values.committee        ?? ""),
