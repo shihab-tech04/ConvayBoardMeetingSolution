@@ -5,6 +5,7 @@ import type { AppDispatch } from "../store/store";
 import { logout } from "../store/authSlice";
 import { convayAuth } from "../services/supabase/convayAuth";
 import { clearAccessSnapshot } from "../services/supabase/convayAccess";
+import { clearEntityRegistryCache } from "../hooks/useEntityRegistry";
 import { useSettings } from "../hooks/useSettings";
 import { FONTS } from "../data/fonts";
 import { useNavigation } from "../hooks/useNavigation";
@@ -36,6 +37,7 @@ export function AppShell() {
 
   const handleConfirmSignOut = () => {
     setSignOutOpen(false);
+    clearEntityRegistryCache();
     clearAccessSnapshot();
     void convayAuth.signOut();
     dispatch(logout());
