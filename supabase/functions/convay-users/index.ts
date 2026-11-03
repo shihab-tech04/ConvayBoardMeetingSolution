@@ -78,7 +78,21 @@ Deno.serve(async (req: Request) => {
       const { data, error } = await admin.from("user_profiles")
         .select(fields).order("created_at", { ascending: false });
       if (error) return response(500, { error: "Unable to load users" });
-      return response(200, { users: data });
+      // Last active time is owned by Auth; never invent it in the browser.
+      const lastSignIn = new Map<string, string | null>();
+      let authPageNumber = 1;
+      while (authPageNumber <= 100) {
+        const { data: authPage, error: authListError } =
+          await admin.auth.admin.listUsers({ page: authPageNumber, perPage: 1000 });
+        if (authListError || !authPage) break;
+        for (const u of authPage.users) lastSignIn.set(u.id, u.last_sign_in_at || null);
+        if (!authPage.nextPage || authPage.nextPage <= authPageNumber) break;
+        authPageNumber = authPage.nextPage;
+      }
+      const rows = (data ?? []).map(u => ({
+        ...u, last_sign_in_at: lastSignIn.get(u.user_id) ?? null,
+      }));
+      return response(200, { users: rows });
     }
     if (action === "create") {
       const problem = failOnBadInput(body, true);
