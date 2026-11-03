@@ -122,19 +122,32 @@ export const supabaseDocumentContentStore = {
     getText("pdfann-snap:" + id + ":" + version),
 
   async putOriginalFile(documentId: string, file: File, versionId?: string): Promise<string> {
-    const path = filePath(documentId, versionId);
     const id = "file:" + documentId + ":" + (versionId ?? "latest");
+    // Immutable object paths avoid overwriting a working original before
+    // the SQL metadata points at the new upload.
+    const path = filePath(documentId, versionId) + "/" + crypto.randomUUID();
     await convayAuth.authenticatedRequest(storage("convay-documents/" + path), {
       method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream", "x-upsert": "true" },
+      headers: { "Content-Type": file.type || "application/octet-stream" },
       body: file,
     });
-    await save({
-      id, document_id: documentId, version_id: versionId ?? null,
-      content_type: "original_file", content: null, storage_path: path,
-      mime_type: file.type || "application/octet-stream", file_name: file.name,
-      size: file.size,
-    });
+    try {
+      await save({
+        id, document_id: documentId, version_id: versionId ?? null,
+        content_type: "original_file", content: null, storage_path: path,
+        mime_type: file.type || "application/octet-stream", file_name: file.name,
+        size: file.size,
+      });
+    } catch (error) {
+      try {
+        await convayAuth.authenticatedRequest(
+          storage("convay-documents/" + path), { method: "DELETE" },
+        );
+      } catch (cleanupError) {
+        console.error("Uploaded object cleanup failed", cleanupError);
+      }
+      throw error;
+    }
     return id;
   },
   async getOriginalFile(documentId: string, versionId?: string): Promise<File | null> {
