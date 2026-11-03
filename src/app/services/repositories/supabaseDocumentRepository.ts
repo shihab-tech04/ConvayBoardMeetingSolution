@@ -80,8 +80,41 @@ export class SupabaseDocumentRepository implements DocumentRepository {
     return editRecord("bms.documents", id, patch);
   }
   async remove(id: string): Promise<void> {
-    await removeRecord<BoardDocument>("bms.documents", id);
-    await documentContentStore.deleteByDocument(id);
+    // The SQL transaction deletes the parent and all dependent content together.
+    // A private queue records any Storage files that still require deletion.
+    const response = await convayAuth.authenticatedRequest(
+      "/rest/v1/rpc/convay_remove_document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ p_document_id: id }),
+      },
+    );
+    const paths = await response.json() as string[];
+    const removed: string[] = [];
+    const failures: string[] = [];
+    for (const path of paths) {
+      try {
+        await convayAuth.authenticatedRequest(
+          "/storage/v1/object/convay-documents/" + path, { method: "DELETE" },
+        );
+        removed.push(path);
+      } catch {
+        failures.push(path);
+      }
+    }
+    if (removed.length > 0) {
+      await convayAuth.authenticatedRequest("/rest/v1/rpc/convay_confirm_storage_cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ p_storage_paths: removed }),
+      });
+    }
+    if (failures.length > 0) {
+      throw new Error(
+        "Document was deleted, but some files could not be removed. " +
+        "Their cleanup has been recorded for administrator recovery.",
+      );
+    }
   }
   async listVersions(documentId: string): Promise<DocumentVersion[]> {
     return (await listRecords<DocumentVersion>("bms.docversions")).map(x => x.payload)
