@@ -65,7 +65,7 @@ export function ConflictDeclarationPage() {
     entryBtn:      "Declare Conflict",
     formFields:    dynamicConflictFields,
     onRowUpdate: (id, values) => {
-      updateConflict(id, {
+      return updateConflict(id, {
         meeting_title: values.meeting_title != null ? String(values.meeting_title) : undefined,
         agenda_item:   values.agenda_item   != null ? String(values.agenda_item)   : undefined,
         conflict_type: values.conflict_type != null ? String(values.conflict_type) : undefined,
@@ -77,7 +77,7 @@ export function ConflictDeclarationPage() {
     },
     onRowCreate: (values) => {
       const conflictId = generateId("COI", conflicts.map(c => c.conflict_id));
-      addConflict({
+      const saved = addConflict({
         id: conflictId, conflict_id: conflictId,
         meeting_id:    String(values.meeting_id    ?? ""),
         meeting_title: String(values.meeting_title ?? ""),
@@ -90,7 +90,7 @@ export function ConflictDeclarationPage() {
         review_status: "Pending",
         created_at:    new Date().toISOString(),
       });
-      toast.success(`Conflict declaration ${conflictId} recorded.`);
+      return saved;
     },
   };
 
