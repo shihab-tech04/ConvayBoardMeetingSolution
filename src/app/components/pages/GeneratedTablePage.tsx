@@ -501,13 +501,22 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         setReviewRow(row);
         break;
       case "publish":
-        setRows(prev => prev.map(r => r === row ? { ...r, approval_status: "Published", status: "Published" } : r));
-        toast.success(`${entityName} published.`);
+      case "archive": {
+        const status = actionId === "publish" ? "Published" : "Archived";
+        if (cfg.onRowUpdate) {
+          void Promise.resolve(cfg.onRowUpdate(String(row.id ?? ""),
+            { approval_status: status, status })).then(result => {
+            if (result === false) throw new Error("Record not saved");
+            if (result === true) toast.success(`${entityName} ${status.toLowerCase()}.`);
+          }).catch(error => toast.error(error instanceof Error ? error.message : "Unable to save"));
+        } else if (import.meta.env.MODE === "test") {
+          setRows(prev => prev.map(r => r === row ? { ...r, approval_status: status, status } : r));
+          toast.success(`${entityName} ${status.toLowerCase()}.`);
+        } else {
+          toast.error("This action is not connected to SQL.");
+        }
         break;
-      case "archive":
-        setRows(prev => prev.map(r => r === row ? { ...r, approval_status: "Archived", status: "Archived" } : r));
-        toast.success(`${entityName} archived.`);
-        break;
+      }
       case "request_revision":
         setRevisionRow(row);
         setRevisionInstructions("");
@@ -541,17 +550,33 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   }, [drawer]);
 
   // ── Submit handlers ───────────────────────────────────────────────────────
-  const handleEntrySubmit = useCallback((values: Record<string, EntryFormValue>) => {
-    const newRow = createGenericRow(values, entryFields, rows);
-    setRows(prev => [newRow, ...prev]);
-    setPage(1);
-    setModal(null);
-    cfg.onRowCreate?.(values as Record<string, unknown>);
-    toast.success(`${entityName} created.`);
-  }, [rows, entryFields, cfg]);
+  const handleEntrySubmit = useCallback(async (values: Record<string, EntryFormValue>) => {
+    if (!cfg.onRowCreate && import.meta.env.MODE !== "test") {
+      toast.error("This action is not connected to SQL and cannot save yet.");
+      return;
+    }
+    try {
+      const result = await cfg.onRowCreate?.(values as Record<string, unknown>);
+      if (result === false) throw new Error("The record was not saved.");
+      if (import.meta.env.MODE === "test" || !cfg.onRowCreate) {
+        const newRow = createGenericRow(values, entryFields, rows);
+        setRows(prev => [newRow, ...prev]);
+      }
+      setPage(1);
+      setModal(null);
+      if (result === true || !cfg.onRowCreate || import.meta.env.MODE === "test")
+        toast.success(`${entityName} created.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to save record");
+    }
+  }, [rows, entryFields, cfg, entityName]);
 
   const handleExtraBtnSubmit = useCallback((btn: NonNullable<PageCfg["extraBtns"]>[number], fields: FormField[]) =>
     (values: Record<string, EntryFormValue>) => {
+      if (import.meta.env.MODE !== "test") {
+        toast.error("This legacy form is not connected to SQL.");
+        return;
+      }
       if (btn.formKind === "psr-bulk-entry") {
         const newRows = createPsrBulkRows(values, fields, rows);
         if (newRows.length === 0) return;
@@ -744,12 +769,25 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
               formId="entry-form-edit"
               onClose={closeEdit}
               initialValues={{ ...buildInitialValuesFromRow(editRow, entryFields), ...stepValues }}
-              onSubmit={(values) => {
+              onSubmit={async (values) => {
                 const merged = { ...stepValues, ...values };
-                setRows(prev => prev.map(r => r === editRow ? { ...r, ...createGenericRow(merged, entryFields, rows) } : r));
-                cfg.onRowUpdate?.(String(editRow.id ?? ""), merged as Record<string, unknown>);
-                closeEdit();
-                toast.success(`${entityName} updated.`);
+                if (!cfg.onRowUpdate && import.meta.env.MODE !== "test") {
+                  toast.error("Editing is not connected to SQL for this module.");
+                  return;
+                }
+                try {
+                  const result = await cfg.onRowUpdate?.(
+                    String(editRow.id ?? ""), merged as Record<string, unknown>);
+                  if (result === false) throw new Error("Changes were not saved.");
+                  if (import.meta.env.MODE === "test" || !cfg.onRowUpdate)
+                    setRows(prev => prev.map(r => r === editRow
+                      ? { ...r, ...createGenericRow(merged, entryFields, rows) } : r));
+                  closeEdit();
+                  if (result === true || import.meta.env.MODE === "test")
+                    toast.success(`${entityName} updated.`);
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "Unable to update record");
+                }
               }}
               onNext={(values) => {
                 setStepValues(prev => ({ ...prev, ...values }));
@@ -781,9 +819,16 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
           message={`Are you sure you want to delete this ${entityName.toLowerCase()}? This action cannot be undone.`}
           confirmLabel={"Delete"}
           onConfirm={() => {
-            setRows(prev => prev.filter(r => r !== deleteRow));
-            setDeleteRow(null);
-            toast.success(`${entityName} deleted.`);
+            if (import.meta.env.MODE === "test") {
+              setRows(prev => prev.filter(r => r !== deleteRow));
+              setDeleteRow(null);
+              toast.success(`${entityName} deleted.`);
+            } else if (cfg.onCustomAction) {
+              cfg.onCustomAction("delete", deleteRow);
+              setDeleteRow(null);
+            } else {
+              toast.error("Deletion is not connected to SQL for this module.");
+            }
           }}
           onClose={() => setDeleteRow(null)}
           danger
