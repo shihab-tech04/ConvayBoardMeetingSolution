@@ -12,6 +12,20 @@ export function MainContentArea() {
   useEffect(() => {
     void reloadAccessSnapshot().catch(() => {});
   }, [location.pathname]);
+  useEffect(() => {
+    // Another browser session can change this user's role or permissions.
+    // Refresh when this application returns to the foreground.
+    const refresh = () => { void reloadAccessSnapshot().catch(() => {}); };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
   const { activeMain, activeSub, activeThird } = useRouteNav();
   const navigate = useNavigate();
   const mainItem = getVisibleNav().find(n => n.id === activeMain);
