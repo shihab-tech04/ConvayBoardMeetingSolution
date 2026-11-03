@@ -123,6 +123,7 @@ export const supabaseDocumentContentStore = {
 
   async putOriginalFile(documentId: string, file: File, versionId?: string): Promise<string> {
     const id = "file:" + documentId + ":" + (versionId ?? "latest");
+    const previous = await byId(id).catch(() => null);
     // Immutable object paths avoid overwriting a working original before
     // the SQL metadata points at the new upload.
     const path = filePath(documentId, versionId) + "/" + crypto.randomUUID();
@@ -147,6 +148,22 @@ export const supabaseDocumentContentStore = {
         console.error("Uploaded object cleanup failed", cleanupError);
       }
       throw error;
+    }
+    if (previous?.storage_path && previous.storage_path !== path) {
+      try {
+        await convayAuth.authenticatedRequest(
+          storage("convay-documents/" + previous.storage_path),
+          { method: "DELETE" },
+        );
+        await convayAuth.authenticatedRequest("/rest/v1/rpc/convay_confirm_storage_cleanup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ p_storage_paths: [previous.storage_path] }),
+        });
+      } catch (cleanupError) {
+        // SQL has durably queued this displaced original for later retry.
+        console.warn("Earlier document file remains queued for cleanup", cleanupError);
+      }
     }
     return id;
   },
