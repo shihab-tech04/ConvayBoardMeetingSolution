@@ -178,6 +178,28 @@ export const convayAuth = {
   },
 
 
+
+  /** Authenticated REST/Storage transport, never a service-role key. */
+  async authenticatedRequest(path: string, init: RequestInit = {}): Promise<Response> {
+    const session = await validSession();
+    if (!session) throw new Error("Session expired. Sign in again.");
+    const res = await fetch(URL + path, {
+      ...init,
+      headers: {
+        apikey: API_KEY,
+        Authorization: "Bearer " + session.accessToken,
+        ...init.headers,
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      const body = await responseBody(res);
+      throw new Error(errorMessage(body, "Request failed (" + res.status + ")"));
+    }
+    return res;
+  },
+
+
   async registry<T extends { id: string }>(
     entity: string,
     action: "list" | "create" | "update" | "delete",
