@@ -1,3 +1,4 @@
+import { useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import { SidebarLogo } from "./SidebarLogo";
@@ -140,6 +141,7 @@ function FirstLayerNavItem({
 // ── PrimarySidebar ────────────────────────────────────────────────────────────
 // Reads activeMain from Redux; navigation config from data imports.
 export function PrimarySidebar({ onNavClick, onLogoClick }: PrimarySidebarProps) {
+  useAccessSnapshot(); // Re-render when live role grants change.
   const { activeMain } = useRouteNav();
 
   const getNavLabel = (item: NavItem): string => item.label;

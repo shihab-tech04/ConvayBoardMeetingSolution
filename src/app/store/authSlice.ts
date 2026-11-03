@@ -10,23 +10,14 @@ export interface AuthState {
 const AUTH_KEY = "gov_ui_auth";
 
 function loadAuth(): AuthState {
-  try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(AUTH_KEY) : null;
-    if (!raw) return { isAuthenticated: false, userId: null };
-    const parsed = JSON.parse(raw) as Partial<AuthState>;
-    return {
-      isAuthenticated: parsed.isAuthenticated ?? false,
-      userId: parsed.userId ?? null,
-    };
-  } catch {
-    return { isAuthenticated: false, userId: null };
-  }
+  // Do not trust old localStorage authentication flags.
+  return { isAuthenticated: false, userId: null };
 }
 
 export function saveAuth(state: AuthState): void {
   try {
     if (typeof window !== "undefined") {
-      localStorage.setItem(AUTH_KEY, JSON.stringify(state));
+      localStorage.removeItem(AUTH_KEY);
     }
   } catch {
     // Ignore storage errors
@@ -39,7 +30,7 @@ const authSlice = createSlice({
   initialState: loadAuth,
   reducers: {
     login(state, action: PayloadAction<{ userId?: string }>) {
-      state.isAuthenticated = true;
+      state.isAuthenticated = Boolean(action.payload.userId);
       state.userId = action.payload.userId ?? null;
     },
     logout(state) {

@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { toast } from "sonner";
 import { Plus, ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import { Button } from "../../components/buttons/Button";
 import { handleExportDisabled } from "../../utils/exportDisabled";
@@ -49,7 +50,7 @@ export function PermissionListPage() {
 
   const {
     flatPermissions, permissionGroups, allPermissionIds,
-    addPermission, updatePermission, deleteCustomPermission, updateBasePermission,
+    addPermission, updatePermission, deleteCustomPermission, updateBasePermission, loading, error, refresh,
   } = usePermissionRegistry();
   const [search, setSearch]         = useState("");
   const [page, setPage]             = useState(1);
@@ -139,11 +140,16 @@ export function PermissionListPage() {
     updatedAt:   String(row.updatedAt),
   });
 
-  const handleDelete = (id: string) => {
-    deleteCustomPermission(id);
-    setDeleteId(null);
-    setViewRow(null);
-    setPage(1);
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteCustomPermission(id);
+      setDeleteId(null);
+      setViewRow(null);
+      setPage(1);
+      toast.success("Permission deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to delete permission");
+    }
   };
 
   // Build drawer-friendly row: "name" triggers summary card, "summary_subtitle" renders under name
@@ -252,11 +258,12 @@ export function PermissionListPage() {
         onFilterChange={(k, v) => setFVals((p) => ({ ...p, [k]: v }))}
         onApplyFilters={() => { setApplied(fVals); setPage(1); }}
         onResetFilters={() => { setFVals({}); setApplied({}); setPage(1); }}
-        onExport={() => handleExportDisabled("Download/export is currently disabled.")}
+        onExport={() => { const csv=[["Permission","Group","Method","Endpoint","Status"],...flatPermissions.map(p=>[p.label,p.groupLabel,p.method??"",p.endpoint??"",p.status??""])].map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n"); const a=document.createElement("a"); const url=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.href=url; a.download="convay-permissions.csv"; a.click(); URL.revokeObjectURL(url); }}
         page={page}
         perPage={PER_PAGE}
         onPageChange={setPage}
         mobileCardMapping={MOBILE_MAPPING}
+        loading={loading} error={error ?? undefined} onRetry={() => { void refresh(); }}
         aria-label="Permission List"
       />
 
@@ -279,17 +286,17 @@ export function PermissionListPage() {
         existingIds={existingIds}
         existingEndpoints={existingEndpoints}
         onClose={() => { setAddOpen(false); setEditPerm(null); }}
-        onSave={(perm) => {
+        onSave={async (perm) => {
           if (editPerm) {
             const isBaseEdit = !flatPermissions.find((p) => p.id === perm.id)?.isCustom;
             if (isBaseEdit) {
-              updateBasePermission(perm.id, {
+              await updateBasePermission(perm.id, {
                 endpoint: perm.endpoint, method: perm.method,
                 serviceName: perm.serviceName, accessLabel: perm.accessLabel,
                 status: perm.status,
               });
             } else {
-              updatePermission(perm.id, {
+              await updatePermission(perm.id, {
                 label: perm.label, groupId: perm.groupId,
                 endpoint: perm.endpoint, method: perm.method,
                 serviceName: perm.serviceName, accessLabel: perm.accessLabel,
@@ -297,9 +304,10 @@ export function PermissionListPage() {
               });
             }
           } else {
-            addPermission(perm);
+            await addPermission(perm);
           }
           setPage(1);
+          toast.success(editPerm ? "Permission updated" : "Permission created");
         }}
       />
 
@@ -309,7 +317,7 @@ export function PermissionListPage() {
           title="Delete Permission"
           message={`Are you sure you want to delete "${flatPermissions.find((p) => p.id === deleteId)?.label}"? This cannot be undone.`}
           confirmLabel="Delete"
-          onConfirm={() => handleDelete(deleteId)}
+          onConfirm={() => { void handleDelete(deleteId); }}
           onClose={() => setDeleteId(null)}
           danger
         />

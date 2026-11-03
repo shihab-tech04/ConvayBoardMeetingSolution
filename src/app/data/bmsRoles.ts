@@ -1,3 +1,6 @@
+import { useMemo } from "react";
+import { useAccessSnapshot, reloadAccessSnapshot } from "../services/supabase/convayAccess";
+import type { EntityRegistry } from "../hooks/useEntityRegistry";
 /**
  * BmsRole — the canonical role model for the Board Meeting Solution.
  *
@@ -284,8 +287,27 @@ export const MOCK_BMS_ROLES: BmsRole[] = [
 
 // ── Role registry ──────────────────────────────────────────────────────────────
 
-export const useBmsRoleRegistry = createEntityRegistry<BmsRole>(
-  "bms.roles.canonical",
-  "bms:roles-updated",
-  MOCK_BMS_ROLES,
+const useTestBmsRoles = createEntityRegistry<BmsRole>(
+  "bms.roles.canonical", "bms:roles-updated", MOCK_BMS_ROLES,
 );
+function useLiveBmsRoles(): EntityRegistry<BmsRole> {
+  const access = useAccessSnapshot();
+  const items = useMemo(() => access.roles.map(r => ({
+    id: r.id, name: r.name, description: r.description,
+    permission_ids: r.permission_ids, status: r.status,
+    is_system_role: r.is_system_role, level: r.level,
+    usersCount: r.users_count,
+    updated_at: r.updated_at,
+  } satisfies BmsRole)), [access.roles]);
+  const forbidden = () => {
+    throw new Error("Roles can be changed only in Role Management");
+  };
+  return {
+    items, loading: !access.loaded, error: access.error,
+    refresh: async () => { await reloadAccessSnapshot(); },
+    add: forbidden, update: forbidden, remove: forbidden,
+    getById: (id: string) => items.find(r => r.id === id),
+  };
+}
+export const useBmsRoleRegistry: () => EntityRegistry<BmsRole> =
+  import.meta.env.MODE === "test" ? useTestBmsRoles : useLiveBmsRoles;

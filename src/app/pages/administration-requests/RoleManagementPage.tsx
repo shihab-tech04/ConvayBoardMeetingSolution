@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { toast } from "sonner";
 import { ExpandableText } from "../../components/shared/SafeText";
 import { Plus, Copy, Pencil, Trash2, Lock, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "../../components/buttons/Button";
@@ -58,7 +59,7 @@ function matchUserCount(count: number, option: string): boolean {
 
 export function RoleManagementPage() {
   const { permissionGroups, allPermissionIds } = usePermissionRegistry();
-  const { roles, addRole, updateRole, deleteRole, duplicateRole } = useRoleRegistry();
+  const { roles, addRole, updateRole, deleteRole, duplicateRole, isProtectedRole, loading, error, refresh } = useRoleRegistry();
 
   const [selectedRoleId,    setSelectedRoleId]    = useState<string | null>(null);
   const [roleSearch,        setRoleSearch]         = useState("");
@@ -134,15 +135,21 @@ export function RoleManagementPage() {
   }, [roles]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
-  const handleSaveRole = (saved: SystemRole) => {
-    const exists = roles.some((r) => r.id === saved.id);
-    if (exists) updateRole(saved); else addRole(saved);
-    setSelectedRoleId(saved.id);
+  const handleSaveRole = async (saved: SystemRole) => {
+    const exists = roles.some(r => r.id === saved.id);
+    const result = exists ? await updateRole(saved) : await addRole(saved);
+    setSelectedRoleId(result.id);
+    toast.success(exists ? "Role updated" : "Role created");
   };
 
-  const handleDuplicate = (role: SystemRole) => {
-    const cloned = duplicateRole(role);
-    setSelectedRoleId(cloned.id);
+  const handleDuplicate = async (role: SystemRole) => {
+    try {
+      const cloned = await duplicateRole(role);
+      setSelectedRoleId(cloned.id);
+      toast.success("Role duplicated");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to duplicate role");
+    }
   };
 
   const handleRowClick = (row: TableRow) => {
@@ -151,18 +158,23 @@ export function RoleManagementPage() {
     setDetailsOpen(true);
   };
 
-  const handleDelete = (roleId: string) => {
-    deleteRole(roleId);
-    if (selectedRoleId === roleId) { setSelectedRoleId(null); setDetailsOpen(false); }
-    setConfirmDeleteRole(null);
+  const handleDelete = async (roleId: string) => {
+    try {
+      await deleteRole(roleId);
+      if (selectedRoleId === roleId) { setSelectedRoleId(null); setDetailsOpen(false); }
+      setConfirmDeleteRole(null);
+      toast.success("Role deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to delete role");
+    }
   };
 
   // ── Drawer footer ─────────────────────────────────────────────────────────
-  const detailsFooter = selectedRole ? (
+  const detailsFooter = selectedRole && !isProtectedRole(selectedRole.id) ? (
     <div className="user-drawer-footer">
       <div className="user-drawer-footer__grid">
         <Button variant="secondary" size="md" leadingIcon={Pencil} onClick={() => { setEditRoleId(selectedRole.id); setDetailsOpen(false); }}>{"Edit"}</Button>
-        <Button variant="secondary" size="md" leadingIcon={Copy} onClick={() => { handleDuplicate(selectedRole); setDetailsOpen(false); }}>{"Duplicate Role"}</Button>
+        <Button variant="secondary" size="md" leadingIcon={Copy} onClick={() => { void handleDuplicate(selectedRole); setDetailsOpen(false); }}>{"Duplicate Role"}</Button>
       </div>
       <div className="user-drawer-footer__divider" />
       <Button variant="destructive" size="md" fullWidth leadingIcon={Trash2} onClick={() => { setConfirmDeleteRole(selectedRole.id); setDetailsOpen(false); }}>{"Delete"}</Button>
@@ -215,11 +227,12 @@ export function RoleManagementPage() {
         onFilterChange={(k, v) => setFVals((p) => ({ ...p, [k]: v }))}
         onApplyFilters={applyFilters}
         onResetFilters={clearFilters}
-        onExport={() => handleExportDisabled("Download/export is currently disabled.")}
+        onExport={() => { const csv = [["Role","Status","Users","Permissions"],...roles.map(r=>[r.name,r.status,String(r.usersCount),String(r.permissions.length)])].map(row=>row.map(x=>`"${x.replace(/"/g,'""')}"`).join(",")).join("\r\n"); const a=document.createElement("a"); const url=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.href=url; a.download="convay-roles.csv"; a.click(); URL.revokeObjectURL(url); }}
         page={page}
         perPage={PER_PAGE}
         onPageChange={setPage}
         mobileCardMapping={ROLE_MOBILE_MAPPING}
+        loading={loading} error={error ?? undefined} onRetry={() => { void refresh(); }}
         aria-label="Role Management"
       />
 
@@ -302,7 +315,7 @@ export function RoleManagementPage() {
           title={"Delete Role"}
           message={`Delete Role "${roles.find((r) => r.id === confirmDeleteRole)?.name}"? users are currently assigned this role. They will lose access to associated permissions.`}
           confirmLabel={"Delete Role"}
-          onConfirm={() => handleDelete(confirmDeleteRole)}
+          onConfirm={() => { void handleDelete(confirmDeleteRole); }}
           onClose={() => setConfirmDeleteRole(null)}
           danger
         />

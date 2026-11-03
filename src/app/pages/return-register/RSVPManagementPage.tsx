@@ -70,7 +70,7 @@ export function RSVPManagementPage() {
     formFields:    dynamicFields,
     onRowCreate: (values) => {
       const rsvpId = generateId("RSV", rsvpRecords.map(r => r.rsvp_id));
-      addRSVP({
+      return addRSVP({
         id: rsvpId, rsvp_id: rsvpId,
         meeting_id:       String(values.meeting_id       ?? ""),
         meeting_title:    String(values.meeting_title    ?? ""),

@@ -1,3 +1,4 @@
+import { readAccessSnapshot, mayVisitPath } from "../services/supabase/convayAccess";
 import {
   LayoutDashboard, BarChart2, FileCheck, ShieldCheck, Briefcase, Settings2,
   Tag, FileX, Activity, Scale, ScrollText, Building2, ArrowUpCircle, Landmark,
@@ -54,17 +55,32 @@ export interface MainNavDef {
  * of the raw NAVIGATION array, so Phase 2 items are hidden from a single source.
  */
 export function getVisibleNav(): MainNavDef[] {
-  return NAVIGATION.map((main) => {
-    const visibleChildren = main.children
-      .filter((sub) => sub.visibility !== "phase2")
-      .map((sub) => ({
-        ...sub,
-        children: sub.children?.filter((third) => third.visibility !== "phase2"),
-      }));
-    return { ...main, children: visibleChildren };
-  }).filter(
-    (main) => main.visibility !== "phase2" && main.children.length > 0,
-  );
+  const access = readAccessSnapshot();
+  if (!access.loaded) return [];
+  return NAVIGATION
+    .filter(main => main.visibility !== "phase2")
+    .map(main => ({
+      ...main,
+      children: main.children
+        .filter(sub => sub.visibility !== "phase2")
+        .map(sub => {
+          const accessibleThird = sub.children?.filter(third =>
+            third.visibility !== "phase2" &&
+            (access.is_super_admin || (
+              main.id !== "administration" &&
+              mayVisitPath("/" + main.id + "/" + sub.id + "/" + third.id, access)
+            )));
+          return { ...sub, children: accessibleThird };
+        })
+        .filter(sub => {
+          if (main.id === "administration") return access.is_super_admin &&
+            (!sub.children || sub.children.length > 0);
+          if (sub.id === "users-assignments") return access.is_super_admin;
+          if (sub.children) return sub.children.length > 0;
+          return mayVisitPath("/" + main.id + "/" + sub.id, access);
+        }),
+    }))
+    .filter(main => main.children.length > 0);
 }
 
 export const NAVIGATION: MainNavDef[] = [

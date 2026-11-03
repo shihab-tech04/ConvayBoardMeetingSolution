@@ -1,3 +1,6 @@
+import { useState, useEffect, useCallback } from "react";
+import { convayAuth } from "../services/supabase/convayAuth";
+import type { EntityRegistry } from "../hooks/useEntityRegistry";
 /**
  * BmsUser — the canonical user model for the Board Meeting Solution.
  *
@@ -214,11 +217,57 @@ export const MOCK_BMS_USERS: BmsUser[] = MOCK_USERS.map(systemUserToBmsUser);
 
 // ── User registry ──────────────────────────────────────────────────────────────
 
-export const useBmsUserRegistry = createEntityRegistry<BmsUser>(
-  "bms.users",
-  "bms:users-updated",
-  MOCK_BMS_USERS,
+const useTestBmsUsers = createEntityRegistry<BmsUser>(
+  "bms.users", "bms:users-updated", MOCK_BMS_USERS,
 );
+
+/** The production member directory contains only real active Supabase users. */
+function useLiveBmsUsers(): EntityRegistry<BmsUser> {
+  const [items, setItems] = useState<BmsUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const rows = await convayAuth.memberDirectory();
+      setItems(rows.map(row => ({
+        id: row.user_id,
+        name: row.display_name,
+        display_name: row.display_name,
+        employee_id: row.employee_id || row.user_id,
+        email: row.email,
+        phone: row.phone || "",
+        user_type: (row.user_type || "Internal Employee") as UserType,
+        account_status: "active" as AccountStatus,
+        accountActive: true,
+        status: "Active" as const,
+        role_ids: row.role_ids,
+        primary_role_id: row.role_ids[0],
+        role_id: row.role_ids[0],
+        role: row.role_names.join(", "),
+        designation: "",
+      })));
+      setError(null);
+    } catch (e) {
+      setItems([]);
+      setError(e instanceof Error ? e.message : "Member list unavailable");
+    } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+  const forbidden = () => {
+    // Existing User Management page performs privileged writes via convay-users.
+    throw new Error("Manage user accounts through the authorized User Management page");
+  };
+  return {
+    items, loading, error, refresh,
+    add: forbidden,
+    update: forbidden,
+    remove: forbidden,
+    getById: (id: string) => items.find(x => x.id === id),
+  };
+}
+export const useBmsUserRegistry: () => EntityRegistry<BmsUser> =
+  import.meta.env.MODE === "test" ? useTestBmsUsers : useLiveBmsUsers;
 
 // ── User invitation ────────────────────────────────────────────────────────────
 

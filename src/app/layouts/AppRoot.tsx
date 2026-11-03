@@ -2,6 +2,11 @@ import { useEffect, useState, startTransition } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "../store/store";
 import { setIsDesktop } from "../store/uiSlice";
+import { login, logout } from "../store/authSlice";
+import { setCurrentUser } from "../store/currentUserSlice";
+import { convayAuth, profileToCurrentUser } from "../services/supabase/convayAuth";
+import { reloadAccessSnapshot, clearAccessSnapshot } from "../services/supabase/convayAccess";
+import { clearEntityRegistryCache } from "../hooks/useEntityRegistry";
 import { useAppearance } from "../hooks/useAppearance";
 import { LoginPage } from "../pages/auth/LoginPage";
 import { AppShell } from "./AppShell";
@@ -17,10 +22,33 @@ export function AppRoot() {
   const dispatch = useDispatch<AppDispatch>();
   const isAuthenticated = useSelector((s: RootState) => s.auth.isAuthenticated);
   // Defer the shell swap so lazy route components suspend inside a transition
-  const [showShell, setShowShell] = useState(isAuthenticated);
+  const [showShell, setShowShell] = useState(false);
+  const [checking, setChecking] = useState(true);
   useEffect(() => {
     startTransition(() => setShowShell(isAuthenticated));
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void convayAuth.restore().then(async profile => {
+      if (cancelled) return;
+      if (profile) {
+        await reloadAccessSnapshot();
+        if (cancelled) return;
+        dispatch(setCurrentUser(profileToCurrentUser(profile)));
+        dispatch(login({ userId: profile.user_id }));
+      } else {
+        clearEntityRegistryCache();
+        clearAccessSnapshot();
+        dispatch(logout());
+      }
+    }).catch(() => {
+      if (!cancelled) { clearEntityRegistryCache(); clearAccessSnapshot(); dispatch(logout()); }
+    }).finally(() => {
+      if (!cancelled) setChecking(false);
+    });
+    return () => { cancelled = true; };
+  }, [dispatch]);
 
   useAppearance();
 
@@ -33,7 +61,7 @@ export function AppRoot() {
 
   return (
     <HelpProvider>
-      {showShell ? <AppShell /> : <LoginPage />}
+      {checking ? <div className="lp-root" role="status"><p>Verifying your session…</p></div> : showShell ? <AppShell /> : <LoginPage />}
       <HelpDrawer />
     </HelpProvider>
   );

@@ -1,3 +1,4 @@
+import { supabaseDocumentContentStore } from "./supabaseDocumentContentStore";
 import Dexie, { type Table } from "dexie";
 import type { StoredContent } from "../types/documents";
 
@@ -19,7 +20,7 @@ function uuid(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-export const documentContentStore = {
+const localDocumentContentStore = {
   /** Store editor JSON content for a document/version. */
   async putEditorContent(
     documentId: string,
@@ -226,3 +227,9 @@ export const documentContentStore = {
     return entry ? (entry.content as string) : null;
   },
 };
+
+
+/** Production document contents are authoritative in Supabase. Dexie remains for isolated unit tests. */
+export const documentContentStore = import.meta.env.MODE === "test"
+  ? localDocumentContentStore
+  : supabaseDocumentContentStore;

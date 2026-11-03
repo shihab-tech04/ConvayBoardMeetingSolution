@@ -1,3 +1,4 @@
+import { useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getVisibleNav } from "../../data/navigation";
@@ -161,6 +162,7 @@ export function SecondarySidebar({
   onThirdNavClick,
   onMobileClose,
 }: SecondarySidebarProps) {
+  useAccessSnapshot();
   const { activeMain, activeSub, activeThird } = useRouteNav();
   const { secNavWidth, secNavCompact } = useSecNavWidth();
 
@@ -171,9 +173,9 @@ export function SecondarySidebar({
 
   const getNavLabel = (_parentId: string, _childId: string, _labelKey: string | undefined, fallback: string): string => fallback;
 
-  const sectionLabel = activeMainItem.labelKey
+  const sectionLabel = activeMainItem?.labelKey
     ? translate(activeMainItem.labelKey, activeMainItem.label)
-    : activeMainItem.label;
+    : activeMainItem?.label ?? "Navigation";
 
   return (
     <div

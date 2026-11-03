@@ -1,0 +1,58 @@
+name: Convay pre-release history recovery
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verified-history-backup:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Clone full Git history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch all named branches and tags
+        run: |
+          set -euo pipefail
+          git fetch --force --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          git fetch --force origin '+refs/tags/*:refs/tags/*'
+          git show-ref --verify refs/remotes/origin/main
+          test "$(git rev-parse refs/remotes/origin/main)" = "4251a6c4d12bead868f0694971eef2b72f4e88b5" || {
+            echo "Main advanced — revalidate backup source against release checkpoint"; exit 1;
+          }
+
+      - name: Create complete Git bundle, verify checksum and restore
+        run: |
+          set -euo pipefail
+          mkdir -p recovery
+          git bundle create recovery/convay-pre-release-full-history.bundle --all
+          git bundle verify recovery/convay-pre-release-full-history.bundle
+          (
+            cd recovery
+            sha256sum convay-pre-release-full-history.bundle > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+          git clone --mirror recovery/convay-pre-release-full-history.bundle "$RUNNER_TEMP/convay-git-restore.git"
+          git --git-dir="$RUNNER_TEMP/convay-git-restore.git" fsck --full --no-reflogs
+          git --git-dir="$RUNNER_TEMP/convay-git-restore.git" cat-file -e '4251a6c4d12bead868f0694971eef2b72f4e88b5^{commit}'
+          git --git-dir="$RUNNER_TEMP/convay-git-restore.git" show '4251a6c4d12bead868f0694971eef2b72f4e88b5:package.json' > "$RUNNER_TEMP/restored-package.json"
+          cmp package.json "$RUNNER_TEMP/restored-package.json"
+          printf 'SOURCE_MAIN_SHA=%s\n' "$(git rev-parse refs/remotes/origin/main)" > recovery/RESTORE_CHECK.txt
+          printf 'RESTORE_PASS=true\n' >> recovery/RESTORE_CHECK.txt
+          printf 'GIT_HEAD_COUNT=%s\n' "$(git for-each-ref --format='%(refname)' refs/remotes/origin/ | wc -l)" >> recovery/RESTORE_CHECK.txt
+          echo "Verified full-history bundle checksum, restored objects and package file"
+
+      - name: Publish recovery bundle for independent Drive archival
+        uses: actions/upload-artifact@v4
+        with:
+          name: convay-full-history-pre-release
+          path: recovery/
+          retention-days: 30
+          if-no-files-found: error

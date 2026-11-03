@@ -93,7 +93,7 @@ export function ReturnViewApprovalPage() {
     ] satisfies StatusTabDef[],
     onCustomAction:  handleCustomAction,
     onRowUpdate: (id, values) => {
-      registry.update(id, {
+      return registry.update(id, {
         meeting_title:    values.meeting_title    != null ? String(values.meeting_title)    : undefined,
         meeting_type:     values.meeting_type     != null ? String(values.meeting_type)     : undefined,
         committee:        values.committee        != null ? String(values.committee)        : undefined,

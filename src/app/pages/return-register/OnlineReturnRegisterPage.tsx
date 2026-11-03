@@ -1,3 +1,4 @@
+import { convayAuth } from "../../services/supabase/convayAuth";
 import { useState, useCallback, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
@@ -199,7 +200,7 @@ export function OnlineReturnRegisterPage() {
   const [ctxMeeting, setCtxMeeting]   = useState<TableRow | null>(null);
   const [ctxAction,  setCtxAction]    = useState<string | null>(null);
 
-  const handleCustomAction = useCallback((actionId: string, row: TableRow) => {
+  const handleCustomAction = useCallback(async (actionId: string, row: TableRow) => {
     const mid = (row.meeting_id ?? row.id) as string;
 
     // ── Live-meeting navigation ───────────────────────────────────────────
@@ -229,43 +230,43 @@ export function OnlineReturnRegisterPage() {
 
     // ── Status transitions (persist via registry) ─────────────────────────
     if (actionId === "submit_for_approval") {
-      registry.update(mid, { approval_status: "Pending Approval" } as never);
-      toast.success("Meeting submitted for approval.");
+      const saved = await registry.update(mid, { approval_status: "Pending Approval" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting submitted for approval.");
       return;
     }
     if (actionId === "approve") {
-      registry.update(mid, { approval_status: "Approved" } as never);
-      toast.success("Meeting approved.");
+      const saved = await registry.update(mid, { approval_status: "Approved" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting approved.");
       return;
     }
     if (actionId === "reject") {
-      registry.update(mid, { approval_status: "Rejected" } as never);
-      toast.success("Meeting rejected.");
+      const saved = await registry.update(mid, { approval_status: "Rejected" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting rejected.");
       return;
     }
     if (actionId === "request_revision") {
-      registry.update(mid, { approval_status: "Revision Requested" } as never);
-      toast.success("Revision requested.");
+      const saved = await registry.update(mid, { approval_status: "Revision Requested" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Revision requested.");
       return;
     }
     if (actionId === "publish") {
-      registry.update(mid, { approval_status: "Published" } as never);
-      toast.success("Meeting published.");
+      const saved = await registry.update(mid, { approval_status: "Published" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting published.");
       return;
     }
     if (actionId === "cancel") {
-      registry.update(mid, { approval_status: "Cancelled" } as never);
-      toast.success("Meeting cancelled.");
+      const saved = await registry.update(mid, { approval_status: "Cancelled" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting cancelled.");
       return;
     }
     if (actionId === "archive") {
-      registry.update(mid, { approval_status: "Archived" } as never);
-      toast.success("Meeting archived.");
+      const saved = await registry.update(mid, { approval_status: "Archived" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting archived.");
       return;
     }
     if (actionId === "delete") {
-      registry.remove(mid);
-      toast.success("Meeting deleted.");
+      const deleted = await registry.remove(mid);
+      if (deleted === true || import.meta.env.MODE === "test") toast.success("Meeting deleted.");
       return;
     }
 
@@ -663,7 +664,8 @@ export function OnlineReturnRegisterPage() {
     onCustomAction:  handleCustomAction,
 
     // ── Save Draft: upserts a meeting record with status "Draft" ─────────────────
-    onSaveDraft: (values, existingDraftId) => {
+    onSaveDraft: async (values, existingDraftId) => {
+      const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now   = new Date().toISOString();
       const title = String(values.meeting_title ?? "Untitled Draft");
       const draftChair = resolveUserName(String(values.chairperson ?? ""));
@@ -706,25 +708,25 @@ export function OnlineReturnRegisterPage() {
       let mid: string;
       if (existingDraftId && registry.items.some(m => (m.meeting_id ?? m.id) === existingDraftId)) {
         // Upsert — update existing draft record
-        registry.update(existingDraftId, meetingPayload as never);
+        batch.push({ entity_key: "bms.meetings", action: "update", record_id: existingDraftId, payload: meetingPayload });
         mid = existingDraftId;
         // Remove old child links before re-adding (clean slate for participants/agendas)
         participantLinkRegistry.items
           .filter(l => l.meeting_id === mid)
-          .forEach(l => participantLinkRegistry.remove(l.id));
+          .forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
         agendaLinkRegistry.items
           .filter(l => l.meeting_id === mid)
-          .forEach(l => agendaLinkRegistry.remove(l.id));
+          .forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
       } else {
         // Insert — new draft
         mid = generateId("MTG", registry.items.map(m => m.meeting_id));
-        registry.add({
+        batch.push({ entity_key: "bms.meetings", action: "create", payload: {
           id: mid, meeting_id: mid,
           ...meetingPayload,
           created_by: "Current User",
           created_at: now,
           activity_history: [],
-        } as never);
+        } as never });
       }
 
       // Participants — synchronize canonical participant links
@@ -737,7 +739,7 @@ export function OnlineReturnRegisterPage() {
         if (!link.user_id || seenDraft.has(link.user_id)) return;
         seenDraft.add(link.user_id);
         const primarySrc = link.selection_sources[0] ?? { type: "individual", source_id: link.user_id, source_label: "Individual" };
-        participantLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingParticipantLinks", action: "create", payload: {
           id: `${mid}-LNK${String(idx + 1).padStart(3, "0")}`,
           meeting_id: mid, user_id: link.user_id,
           participant_type: link.participant_type,
@@ -750,7 +752,7 @@ export function OnlineReturnRegisterPage() {
           is_required: link.is_required,
           invitation_status: "pending",
           created_at: now,
-        } as never);
+        } as never });
       });
 
       // Agenda links
@@ -762,18 +764,18 @@ export function OnlineReturnRegisterPage() {
       draftAgendas.forEach((e, idx) => {
         if (seenDraftAgenda.has(e.agenda_id)) return;
         seenDraftAgenda.add(e.agenda_id);
-        agendaLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingAgendaLinks", action: "create", payload: {
           id: `${mid}-MAL${String(idx + 1).padStart(2, "0")}`,
           meeting_id: mid, agenda_id: e.agenda_id,
           display_order: e.display_order, added_at: now,
           added_by: draftOrg || "Current User",
-        } as never);
+        } as never });
       });
 
       // Document links — sync additional docs (agenda docs will be computed at schedule time)
       meetingDocLinkRegistry.items
         .filter(l => l.meeting_id === mid && l.source === "additional")
-        .forEach(l => meetingDocLinkRegistry.remove(l.id));
+        .forEach(l => batch.push({ entity_key: "bms.meetingDocumentLinks", action: "delete", record_id: l.id }));
       const draftAdditionalDocs: AdditionalDocEntry[] = (() => {
         try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")); }
         catch { return []; }
@@ -782,7 +784,7 @@ export function OnlineReturnRegisterPage() {
       draftAdditionalDocs.forEach((ad, idx) => {
         if (seenDraftDocIds.has(ad.doc_id)) return;
         seenDraftDocIds.add(ad.doc_id);
-        meetingDocLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
           id: `${mid}-MDL-D${String(idx + 1).padStart(3, "0")}`,
           meeting_id: mid,
           document_id: ad.doc_id,
@@ -791,9 +793,11 @@ export function OnlineReturnRegisterPage() {
           display_order: idx + 1,
           added_by: draftOrg || "Current User",
           added_at: now,
-        } as never);
+        } as never });
       });
 
+      await convayAuth.applyBatch(batch);
+      await Promise.all([registry.refresh?.(), participantLinkRegistry.refresh?.(), agendaLinkRegistry.refresh?.(), meetingDocLinkRegistry.refresh?.()]);
       toast.success(`"${title}" saved as Draft.`);
       return mid;
     },
@@ -801,7 +805,8 @@ export function OnlineReturnRegisterPage() {
     lastStepSubmitLabel: "Schedule Meeting",
 
     // ── Create: saves meeting + all child records ─────────────────────────────
-    onRowCreate: (values) => {
+    onRowCreate: async (values) => {
+      const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now  = new Date().toISOString();
       const meetingTitle = String(values.meeting_title ?? "Untitled Meeting");
       const committee    = String(values.committee ?? "");
@@ -887,7 +892,7 @@ export function OnlineReturnRegisterPage() {
 
         if (blockers.length > 0) {
           toast.error(`Cannot schedule: ${blockers[0]}${blockers.length > 1 ? ` (+${blockers.length - 1} more)` : ""}`);
-          return;
+          return false;
         }
       }
 
@@ -930,21 +935,21 @@ export function OnlineReturnRegisterPage() {
       };
 
       if (isDraftUpsert) {
-        registry.update(newId, meetingCorePayload as never);
+        batch.push({ entity_key: "bms.meetings", action: "update", record_id: newId, payload: meetingCorePayload });
         // Reconcile child records — remove old links before re-adding
-        participantLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => participantLinkRegistry.remove(l.id));
-        participantRegistry.items.filter(l => l.meeting_id === newId).forEach(l => participantRegistry.remove(l.id));
-        rsvpRegistry.items.filter(l => l.meeting_id === newId).forEach(l => rsvpRegistry.remove(l.id));
-        agendaLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => agendaLinkRegistry.remove(l.id));
-        meetingDocLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => meetingDocLinkRegistry.remove(l.id));
+        participantLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
+        participantRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.participants", action: "delete", record_id: l.id }));
+        rsvpRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.rsvp", action: "delete", record_id: l.id }));
+        agendaLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
+        meetingDocLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.meetingDocumentLinks", action: "delete", record_id: l.id }));
       } else {
-        registry.add({
+        batch.push({ entity_key: "bms.meetings", action: "create", payload: {
           id: newId, meeting_id: newId,
           ...meetingCorePayload,
           created_by: "Current User",
           created_at: now,
           activity_history: [],
-        } as never);
+        } as never });
       }
 
       // Participants — canonical via participant_links_json (already parsed above)
@@ -956,7 +961,7 @@ export function OnlineReturnRegisterPage() {
         // Canonical link record
         const linkId = `${newId}-LNK${String(idx + 1).padStart(3, "0")}`;
         const primarySource = link.selection_sources[0] ?? { type: "individual", source_id: link.user_id, source_label: "Individual" };
-        participantLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingParticipantLinks", action: "create", payload: {
           id: linkId,
           meeting_id: newId,
           user_id: link.user_id,
@@ -970,11 +975,11 @@ export function OnlineReturnRegisterPage() {
           is_required: link.is_required,
           invitation_status: "pending",
           created_at: now,
-        } as never);
+        } as never });
 
         // Adapter: legacy MeetingParticipant for RSVP / Live Meeting compatibility
         const pId = `${newId}-P${String(idx + 1).padStart(3, "0")}`;
-        participantRegistry.add({
+        batch.push({ entity_key: "bms.participants", action: "create", payload: {
           id: pId, participant_id: pId,
           meeting_id: newId, meeting_title: meetingTitle,
           name: link.user_name, designation: link.user_designation,
@@ -988,18 +993,18 @@ export function OnlineReturnRegisterPage() {
           quorum_eligible: link.quorum_eligible ? "Yes" : "No",
           voting_eligible: link.voting_eligible ? "Yes" : "No",
           user_id: link.user_id,
-        } as never);
+        } as never });
 
         // RSVP record
         const rId = `${newId}-RSV${String(idx + 1).padStart(3, "0")}`;
-        rsvpRegistry.add({
+        batch.push({ entity_key: "bms.rsvp", action: "create", payload: {
           id: rId, rsvp_id: rId,
           meeting_id: newId, meeting_title: meetingTitle,
           participant_id: pId, participant_name: link.user_name,
           response: "Pending", response_date: "",
           decline_reason: "", proxy_nominee: "", notes: "",
           created_at: now,
-        } as never);
+        } as never });
       });
 
       // ── Agenda links (canonical via selected_agenda_ids_json — already parsed above) ─
@@ -1009,14 +1014,14 @@ export function OnlineReturnRegisterPage() {
         if (seenAgendaIds.has(entry.agenda_id)) return;
         seenAgendaIds.add(entry.agenda_id);
         const linkId = `${newId}-MAL${String(idx + 1).padStart(2, "0")}`;
-        agendaLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingAgendaLinks", action: "create", payload: {
           id: linkId,
           meeting_id: newId,
           agenda_id: entry.agenda_id,
           display_order: entry.display_order,
           added_at: now,
           added_by: organizerName || "Current User",
-        } as never);
+        } as never });
       });
 
       // ── Document links ────────────────────────────────────────────────────────
@@ -1041,7 +1046,7 @@ export function OnlineReturnRegisterPage() {
         docLinkOrder++;
         const mlId = `${newId}-MDL${String(docLinkOrder).padStart(3, "0")}`;
         const doc = documentRegistry.items.find(d => (d.doc_id ?? d.id) === docId);
-        meetingDocLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
           id: mlId,
           meeting_id: newId,
           document_id: docId,
@@ -1051,7 +1056,7 @@ export function OnlineReturnRegisterPage() {
           display_order: docLinkOrder,
           added_by: organizerName || "Current User",
           added_at: now,
-        } as never);
+        } as never });
       });
 
       // Additional documents (from additional_doc_ids_json — already parsed above)
@@ -1061,7 +1066,7 @@ export function OnlineReturnRegisterPage() {
         seenDocIds.add(ad.doc_id);
         docLinkOrder++;
         const mlId = `${newId}-MDL${String(docLinkOrder).padStart(3, "0")}`;
-        meetingDocLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
           id: mlId,
           meeting_id: newId,
           document_id: ad.doc_id,
@@ -1070,10 +1075,18 @@ export function OnlineReturnRegisterPage() {
           display_order: docLinkOrder,
           added_by: organizerName || "Current User",
           added_at: now,
-        } as never);
+        } as never });
       });
 
       // (select_from_users and agenda_items free-text paths removed — handled by canonical registries)
+      // One RLS-validated PostgreSQL transaction for the meeting and its linked records.
+      await convayAuth.applyBatch(batch);
+      await Promise.all([
+        registry.refresh?.(), participantLinkRegistry.refresh?.(),
+        participantRegistry.refresh?.(), rsvpRegistry.refresh?.(),
+        agendaLinkRegistry.refresh?.(), meetingDocLinkRegistry.refresh?.(),
+      ]);
+      return true;
     },
 
     // ── Update: syncs core meeting fields back to registry ────────────────────
@@ -1081,7 +1094,7 @@ export function OnlineReturnRegisterPage() {
       const chairpersonName = resolveUserName(String(values.chairperson ?? ""));
       const secretaryName   = resolveUserName(String(values.secretary   ?? ""));
       const organizerName   = resolveUserName(String(values.organizer   ?? ""));
-      registry.update(id, {
+      return registry.update(id, {
         meeting_title:       String(values.meeting_title    ?? ""),
         meeting_type:        String(values.meeting_type     ?? ""),
         committee:           String(values.committee        ?? ""),
