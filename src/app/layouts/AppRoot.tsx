@@ -5,6 +5,7 @@ import { setIsDesktop } from "../store/uiSlice";
 import { login, logout } from "../store/authSlice";
 import { setCurrentUser } from "../store/currentUserSlice";
 import { convayAuth, profileToCurrentUser } from "../services/supabase/convayAuth";
+import { reloadAccessSnapshot, clearAccessSnapshot } from "../services/supabase/convayAccess";
 import { useAppearance } from "../hooks/useAppearance";
 import { LoginPage } from "../pages/auth/LoginPage";
 import { AppShell } from "./AppShell";
@@ -28,16 +29,19 @@ export function AppRoot() {
 
   useEffect(() => {
     let cancelled = false;
-    void convayAuth.restore().then(profile => {
+    void convayAuth.restore().then(async profile => {
       if (cancelled) return;
       if (profile) {
+        await reloadAccessSnapshot();
+        if (cancelled) return;
         dispatch(setCurrentUser(profileToCurrentUser(profile)));
         dispatch(login({ userId: profile.user_id }));
       } else {
+        clearAccessSnapshot();
         dispatch(logout());
       }
     }).catch(() => {
-      if (!cancelled) dispatch(logout());
+      if (!cancelled) { clearAccessSnapshot(); dispatch(logout()); }
     }).finally(() => {
       if (!cancelled) setChecking(false);
     });
