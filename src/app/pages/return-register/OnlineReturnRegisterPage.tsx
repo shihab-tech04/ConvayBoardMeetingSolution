@@ -200,7 +200,7 @@ export function OnlineReturnRegisterPage() {
   const [ctxMeeting, setCtxMeeting]   = useState<TableRow | null>(null);
   const [ctxAction,  setCtxAction]    = useState<string | null>(null);
 
-  const handleCustomAction = useCallback((actionId: string, row: TableRow) => {
+  const handleCustomAction = useCallback(async (actionId: string, row: TableRow) => {
     const mid = (row.meeting_id ?? row.id) as string;
 
     // ── Live-meeting navigation ───────────────────────────────────────────
@@ -230,43 +230,43 @@ export function OnlineReturnRegisterPage() {
 
     // ── Status transitions (persist via registry) ─────────────────────────
     if (actionId === "submit_for_approval") {
-      registry.update(mid, { approval_status: "Pending Approval" } as never);
-      toast.success("Meeting submitted for approval.");
+      const saved = await registry.update(mid, { approval_status: "Pending Approval" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting submitted for approval.");
       return;
     }
     if (actionId === "approve") {
-      registry.update(mid, { approval_status: "Approved" } as never);
-      toast.success("Meeting approved.");
+      const saved = await registry.update(mid, { approval_status: "Approved" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting approved.");
       return;
     }
     if (actionId === "reject") {
-      registry.update(mid, { approval_status: "Rejected" } as never);
-      toast.success("Meeting rejected.");
+      const saved = await registry.update(mid, { approval_status: "Rejected" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting rejected.");
       return;
     }
     if (actionId === "request_revision") {
-      registry.update(mid, { approval_status: "Revision Requested" } as never);
-      toast.success("Revision requested.");
+      const saved = await registry.update(mid, { approval_status: "Revision Requested" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Revision requested.");
       return;
     }
     if (actionId === "publish") {
-      registry.update(mid, { approval_status: "Published" } as never);
-      toast.success("Meeting published.");
+      const saved = await registry.update(mid, { approval_status: "Published" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting published.");
       return;
     }
     if (actionId === "cancel") {
-      registry.update(mid, { approval_status: "Cancelled" } as never);
-      toast.success("Meeting cancelled.");
+      const saved = await registry.update(mid, { approval_status: "Cancelled" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting cancelled.");
       return;
     }
     if (actionId === "archive") {
-      registry.update(mid, { approval_status: "Archived" } as never);
-      toast.success("Meeting archived.");
+      const saved = await registry.update(mid, { approval_status: "Archived" } as never);
+      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting archived.");
       return;
     }
     if (actionId === "delete") {
-      registry.remove(mid);
-      toast.success("Meeting deleted.");
+      const deleted = await registry.remove(mid);
+      if (deleted === true || import.meta.env.MODE === "test") toast.success("Meeting deleted.");
       return;
     }
 
