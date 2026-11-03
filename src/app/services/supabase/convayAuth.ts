@@ -201,6 +201,21 @@ export const convayAuth = {
 
 
 
+
+  async memberDirectory(): Promise<Array<{
+    user_id: string; display_name: string; email: string; phone: string | null;
+    employee_id: string | null; user_type: string; role_ids: string[]; role_names: string[];
+  }>> {
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_member_directory", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const records = await res.json();
+    if (!Array.isArray(records)) throw new Error("Invalid member directory response");
+    return records;
+  },
+
   async applyBatch(operations: Array<{
     entity_key: string;
     action: "create" | "update" | "delete";
