@@ -664,7 +664,8 @@ export function OnlineReturnRegisterPage() {
     onCustomAction:  handleCustomAction,
 
     // ── Save Draft: upserts a meeting record with status "Draft" ─────────────────
-    onSaveDraft: (values, existingDraftId) => {
+    onSaveDraft: async (values, existingDraftId) => {
+      const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now   = new Date().toISOString();
       const title = String(values.meeting_title ?? "Untitled Draft");
       const draftChair = resolveUserName(String(values.chairperson ?? ""));
@@ -707,25 +708,25 @@ export function OnlineReturnRegisterPage() {
       let mid: string;
       if (existingDraftId && registry.items.some(m => (m.meeting_id ?? m.id) === existingDraftId)) {
         // Upsert — update existing draft record
-        registry.update(existingDraftId, meetingPayload as never);
+        batch.push({ entity_key: "bms.meetings", action: "update", record_id: existingDraftId, payload: meetingPayload });
         mid = existingDraftId;
         // Remove old child links before re-adding (clean slate for participants/agendas)
         participantLinkRegistry.items
           .filter(l => l.meeting_id === mid)
-          .forEach(l => participantLinkRegistry.remove(l.id));
+          .forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
         agendaLinkRegistry.items
           .filter(l => l.meeting_id === mid)
-          .forEach(l => agendaLinkRegistry.remove(l.id));
+          .forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
       } else {
         // Insert — new draft
         mid = generateId("MTG", registry.items.map(m => m.meeting_id));
-        registry.add({
+        batch.push({ entity_key: "bms.meetings", action: "create", payload: {
           id: mid, meeting_id: mid,
           ...meetingPayload,
           created_by: "Current User",
           created_at: now,
           activity_history: [],
-        } as never);
+        } as never });
       }
 
       // Participants — synchronize canonical participant links
@@ -738,7 +739,7 @@ export function OnlineReturnRegisterPage() {
         if (!link.user_id || seenDraft.has(link.user_id)) return;
         seenDraft.add(link.user_id);
         const primarySrc = link.selection_sources[0] ?? { type: "individual", source_id: link.user_id, source_label: "Individual" };
-        participantLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingParticipantLinks", action: "create", payload: {
           id: `${mid}-LNK${String(idx + 1).padStart(3, "0")}`,
           meeting_id: mid, user_id: link.user_id,
           participant_type: link.participant_type,
@@ -751,7 +752,7 @@ export function OnlineReturnRegisterPage() {
           is_required: link.is_required,
           invitation_status: "pending",
           created_at: now,
-        } as never);
+        } as never });
       });
 
       // Agenda links
@@ -763,18 +764,18 @@ export function OnlineReturnRegisterPage() {
       draftAgendas.forEach((e, idx) => {
         if (seenDraftAgenda.has(e.agenda_id)) return;
         seenDraftAgenda.add(e.agenda_id);
-        agendaLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingAgendaLinks", action: "create", payload: {
           id: `${mid}-MAL${String(idx + 1).padStart(2, "0")}`,
           meeting_id: mid, agenda_id: e.agenda_id,
           display_order: e.display_order, added_at: now,
           added_by: draftOrg || "Current User",
-        } as never);
+        } as never });
       });
 
       // Document links — sync additional docs (agenda docs will be computed at schedule time)
       meetingDocLinkRegistry.items
         .filter(l => l.meeting_id === mid && l.source === "additional")
-        .forEach(l => meetingDocLinkRegistry.remove(l.id));
+        .forEach(l => batch.push({ entity_key: "bms.meetingDocumentLinks", action: "delete", record_id: l.id }));
       const draftAdditionalDocs: AdditionalDocEntry[] = (() => {
         try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")); }
         catch { return []; }
@@ -783,7 +784,7 @@ export function OnlineReturnRegisterPage() {
       draftAdditionalDocs.forEach((ad, idx) => {
         if (seenDraftDocIds.has(ad.doc_id)) return;
         seenDraftDocIds.add(ad.doc_id);
-        meetingDocLinkRegistry.add({
+        batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
           id: `${mid}-MDL-D${String(idx + 1).padStart(3, "0")}`,
           meeting_id: mid,
           document_id: ad.doc_id,
@@ -792,9 +793,11 @@ export function OnlineReturnRegisterPage() {
           display_order: idx + 1,
           added_by: draftOrg || "Current User",
           added_at: now,
-        } as never);
+        } as never });
       });
 
+      await convayAuth.applyBatch(batch);
+      await Promise.all([registry.refresh?.(), participantLinkRegistry.refresh?.(), agendaLinkRegistry.refresh?.(), meetingDocLinkRegistry.refresh?.()]);
       toast.success(`"${title}" saved as Draft.`);
       return mid;
     },
