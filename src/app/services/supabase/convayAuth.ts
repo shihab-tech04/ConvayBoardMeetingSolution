@@ -3,7 +3,7 @@
  * Uses the project's public publishable key; never stores a service-role key.
  * Auth credentials and password verification are handled by Supabase Auth.
  */
-const URL = "https://cnrueblhgvdonplirlhv.supabase.co";
+const SUPABASE_URL = "https://cnrueblhgvdonplirlhv.supabase.co";
 const API_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_6ojMU_R8I-sLQQFR64RTQw_p8qZasMm";
 const SESSION_KEY = "convay.supabase.session.v1";
 
@@ -84,7 +84,7 @@ function toSession(tokens: Tokens): StoredSession {
 }
 async function refresh(existing: StoredSession): Promise<StoredSession | null> {
   try {
-    const res = await fetch(URL + "/auth/v1/token?grant_type=refresh_token", {
+    const res = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=refresh_token", {
       method: "POST",
       headers: { apikey: API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: existing.refreshToken }),
@@ -110,7 +110,7 @@ async function selfProfile(session: StoredSession): Promise<ConvayProfile> {
     select: "user_id,username,display_name,email,account_role,account_status,phone,user_type,employee_id,created_at,updated_at",
     user_id: "eq." + session.userId,
   });
-  const res = await fetch(URL + "/rest/v1/user_profiles?" + query.toString(), {
+  const res = await fetch(SUPABASE_URL + "/rest/v1/user_profiles?" + query.toString(), {
     headers: { apikey: API_KEY, Authorization: "Bearer " + session.accessToken },
     cache: "no-store",
   });
@@ -128,7 +128,7 @@ export const convayAuth = {
     if (!entry || !password) throw new Error("Enter your username or email and password");
     // The sole Super Admin may use their short username; other users use email.
     const email = entry.toLowerCase() === "shihab" ? "shihabshajib01@gmail.com" : entry;
-    const res = await fetch(URL + "/auth/v1/token?grant_type=password", {
+    const res = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=password", {
       method: "POST",
       headers: { apikey: API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -155,7 +155,7 @@ export const convayAuth = {
     eraseSession();
     if (!session) return;
     try {
-      await fetch(URL + "/auth/v1/logout", {
+      await fetch(SUPABASE_URL + "/auth/v1/logout", {
         method: "POST",
         headers: { apikey: API_KEY, Authorization: "Bearer " + session.accessToken },
       });
@@ -166,7 +166,7 @@ export const convayAuth = {
   async access<T = Record<string, unknown>>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
     const session = await validSession();
     if (!session) throw new Error("Session expired. Please sign in again.");
-    const res = await fetch(URL + "/functions/v1/convay-access", {
+    const res = await fetch(SUPABASE_URL + "/functions/v1/convay-access", {
       method: "POST",
       headers: { apikey: API_KEY, Authorization: "Bearer " + session.accessToken,
         "Content-Type": "application/json" },
@@ -183,7 +183,7 @@ export const convayAuth = {
   async authenticatedRequest(path: string, init: RequestInit = {}): Promise<Response> {
     const session = await validSession();
     if (!session) throw new Error("Session expired. Sign in again.");
-    const res = await fetch(URL + path, {
+    const res = await fetch(SUPABASE_URL + path, {
       ...init,
       headers: {
         apikey: API_KEY,
@@ -208,7 +208,7 @@ export const convayAuth = {
   ): Promise<{ records: Array<{ payload: T; revision: number }>; revision?: number }> {
     const session = await validSession();
     if (!session) throw new Error("Your session has expired. Sign in again.");
-    const endpoint = new URL(URL + "/rest/v1/convay_entity_records");
+    const endpoint = new URL(SUPABASE_URL + "/rest/v1/convay_entity_records");
     const headers: Record<string, string> = {
       apikey: API_KEY,
       Authorization: "Bearer " + session.accessToken,
@@ -249,7 +249,7 @@ export const convayAuth = {
     const body = action === "create"
       ? JSON.stringify({ entity_key: entity, record_id: record.id, payload: record })
       : action === "update" ? JSON.stringify({ payload: record }) : undefined;
-    const url = action === "create" ? new URL(URL + "/rest/v1/convay_entity_records?select=record_id,revision") : mutatingUrl;
+    const url = action === "create" ? new URL(SUPABASE_URL + "/rest/v1/convay_entity_records?select=record_id,revision") : mutatingUrl;
     const res = await fetch(url.toString(), { method, headers, body });
     if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to save " + entity));
     const result = await res.json() as Array<{ record_id: string; revision: number }>;
@@ -264,7 +264,7 @@ export const convayAuth = {
     Promise<{ users?: ConvayProfile[]; user?: ConvayProfile; ok?: boolean }> {
     const session = await validSession();
     if (!session) throw new Error("Session expired. Please sign in again.");
-    const res = await fetch(URL + "/functions/v1/convay-users", {
+    const res = await fetch(SUPABASE_URL + "/functions/v1/convay-users", {
       method: "POST",
       headers: {
         apikey: API_KEY,
