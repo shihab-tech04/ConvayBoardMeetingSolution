@@ -3,6 +3,7 @@ import { useDispatch } from "react-redux";
 import { preloadAllRoutes } from "../routes";
 import type { AppDispatch } from "../store/store";
 import { logout } from "../store/authSlice";
+import { convayAuth } from "../services/supabase/convayAuth";
 import { useSettings } from "../hooks/useSettings";
 import { FONTS } from "../data/fonts";
 import { useNavigation } from "../hooks/useNavigation";
@@ -34,6 +35,7 @@ export function AppShell() {
 
   const handleConfirmSignOut = () => {
     setSignOutOpen(false);
+    void convayAuth.signOut();
     dispatch(logout());
   };
 
