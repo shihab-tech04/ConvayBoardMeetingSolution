@@ -88,7 +88,7 @@ export function SupabaseUserManagementPage() {
     userType: u.user_type || "Internal Employee",
     primaryRole: u.account_role === "super_admin" ? "Super Admin" : "User",
     accountStatus: displayStatus(u.account_status),
-    lastActive: "—",
+    lastActive: u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleString() : "—",
   }));
   const stats = [
     { label: "Total Users", value: users.length, Icon: Users, tone: "primary" as const },
