@@ -348,7 +348,7 @@ describe("systemUserToBmsUser", () => {
 
   it("produces valid created_at ISO string", () => {
     const bu = systemUserToBmsUser(MOCK_USERS[0]);
-    expect(() => new Date(bu.created_at)).not.toThrow();
+    expect(() => new Date(String(bu.created_at))).not.toThrow();
   });
 });
 
