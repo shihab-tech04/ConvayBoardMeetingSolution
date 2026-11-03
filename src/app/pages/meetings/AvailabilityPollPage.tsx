@@ -65,7 +65,7 @@ export function AvailabilityPollPage() {
     entryBtn:      "Create Availability Poll",
     formFields:    dynamicFields,
     onRowUpdate: (id, values) => {
-      updatePoll(id, {
+      return updatePoll(id, {
         poll_title:            values.poll_title            != null ? String(values.poll_title)            : undefined,
         related_meeting_id:    values.related_meeting_id    != null ? String(values.related_meeting_id)    : undefined,
         related_meeting_title: values.related_meeting_title != null ? String(values.related_meeting_title) : undefined,
@@ -80,7 +80,7 @@ export function AvailabilityPollPage() {
     },
     onRowCreate: (values) => {
       const pollId = `POL-${Date.now()}`;
-      addPoll({
+      return addPoll({
         id: pollId, poll_id: pollId,
         poll_title:            String(values.poll_title            ?? "New Poll"),
         related_meeting_id:    String(values.related_meeting_id    ?? ""),
