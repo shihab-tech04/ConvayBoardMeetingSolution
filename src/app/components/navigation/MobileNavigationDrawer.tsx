@@ -1,3 +1,4 @@
+import { useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { useState } from "react";
 import { ChevronRight, Palette } from "lucide-react";
 import { getVisibleNav } from "../../data/navigation";
@@ -33,6 +34,7 @@ export function MobileNavigationDrawer({
   onThirdNavClick,
   onClose,
 }: MobileNavigationDrawerProps) {
+  useAccessSnapshot();
   const { activeMain, activeSub, activeThird } = useRouteNav();
 
   const visibleNav = getVisibleNav();
