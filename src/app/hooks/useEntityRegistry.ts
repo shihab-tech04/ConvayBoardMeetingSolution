@@ -4,7 +4,6 @@ import { convayAuth } from "../services/supabase/convayAuth";
 
 export interface EntityRecord {
   id: string;
-  [key: string]: unknown;
 }
 export interface EntityRegistry<T extends EntityRecord> {
   items: T[];
