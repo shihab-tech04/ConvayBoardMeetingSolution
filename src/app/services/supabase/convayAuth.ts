@@ -162,6 +162,21 @@ export const convayAuth = {
     } catch { /* Local session cleared even if the network is unavailable. */ }
   },
 
+
+  async access<T = Record<string, unknown>>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
+    const session = await validSession();
+    if (!session) throw new Error("Session expired. Please sign in again.");
+    const res = await fetch(URL + "/functions/v1/convay-access", {
+      method: "POST",
+      headers: { apikey: API_KEY, Authorization: "Bearer " + session.accessToken,
+        "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const body = await responseBody(res);
+    if (!res.ok) throw new Error(errorMessage(body, "Unable to update access"));
+    return body as T;
+  },
+
   async users(action: "list" | "create" | "update" | "set_status" | "set_password" | "delete", payload: UserMutation = {}):
     Promise<{ users?: ConvayProfile[]; user?: ConvayProfile; ok?: boolean }> {
     const session = await validSession();
