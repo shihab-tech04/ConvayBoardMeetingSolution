@@ -18,7 +18,7 @@ interface CreateEditRoleModalProps {
   roleId: string | null;
   roles: SystemRole[];
   onClose: () => void;
-  onSave: (role: SystemRole) => void;
+  onSave: (role: SystemRole) => Promise<void> | void;
 }
 
 const STEP_LABELS = ["Role Details", "Permissions", "Final Review"] as const;
@@ -33,6 +33,8 @@ export function CreateEditRoleModal({
   const { allPermissionIds, permissionGroups } = usePermissionRegistry();
 
   // ── State ────────────────────────────────────────────────────────────────
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [step, setStep]                       = useState(0);
   const [name, setName]                       = useState("");
   const [description, setDescription]         = useState("");
@@ -53,10 +55,14 @@ export function CreateEditRoleModal({
   }, [open, roleId, roles]);
 
   // ── Save ─────────────────────────────────────────────────────────────────
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    setSaveError("");
+    try {
     if (!name.trim()) return;
     const existingRole = roleId ? roles.find((r) => r.id === roleId) : undefined;
-    onSave({
+    await onSave({
       id: roleId ?? `r${Date.now()}`,
       name: name.trim(),
       description: description.trim(),
@@ -66,6 +72,9 @@ export function CreateEditRoleModal({
       permissions: selectedPermIds,
     });
     onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Unable to save role");
+    } finally { setSaving(false); }
   };
 
   const canNext = name.trim().length > 0;
@@ -81,7 +90,7 @@ export function CreateEditRoleModal({
         {step < STEP_LABELS.length - 1 ? (
           <Button variant="primary" size="lg" onClick={() => setStep((s) => s + 1)} disabled={step === 0 && !canNext}>{"Next"}</Button>
         ) : (
-          <Button variant="primary" size="lg" onClick={handleSave} disabled={!canNext}>
+          <Button variant="primary" size="lg" onClick={() => void handleSave()} loading={saving} disabled={!canNext || saving}>
             {roleId ? "Save Changes" : "Create Role"}
           </Button>
         )}
@@ -98,6 +107,7 @@ export function CreateEditRoleModal({
       size="xl"
       footer={footer}
     >
+      {saveError && <p role="alert" className="text-red-600 text-sm">{saveError}</p>}
       {/* ── Unified wizard wrapper — gives stable height across all steps ── */}
       <div className="crm-modal-flow">
 
