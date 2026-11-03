@@ -111,7 +111,7 @@ export function Register5Page({ isApproval }: { isApproval?: boolean }) {
       if (isApproval) {
         const existingIds = noteReg.items.map((n: PrivateNote) => n.note_id);
         const newId = generateId("NOTE", existingIds);
-        noteReg.add({
+        return noteReg.add({
           id: String(Date.now()),
           note_id: newId,
           note_title: String(data.note_title ?? ""),
@@ -129,7 +129,7 @@ export function Register5Page({ isApproval }: { isApproval?: boolean }) {
       } else {
         const existingIds = questionReg.items.map((q: BoardQuestion) => q.question_id);
         const newId = generateId("QST", existingIds);
-        questionReg.add({
+        return questionReg.add({
           id: String(Date.now()),
           question_id: newId,
           question_text: String(data.question_text ?? ""),
