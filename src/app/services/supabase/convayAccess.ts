@@ -125,6 +125,24 @@ const direct: Record<string, string> = {
   "archive-reports/audit-trail": "admin_audit_log",
   "administration/roles-permissions/roles": "admin_roles",
   "administration/roles-permissions/permissions": "admin_roles",
+  "administration/workflows/workflow-definitions": "admin_workflows",
+  "administration/workflows/approval-rules": "admin_approvals",
+  "administration/workflows/review-revision-rules": "admin_approvals",
+  "administration/workflows/workflow-history": "admin_workflows",
+  "administration/meeting-configuration/meeting-types": "admin_config",
+  "administration/meeting-configuration/quorum-rules": "admin_config",
+  "administration/meeting-configuration/voting-methods": "admin_config",
+  "administration/meeting-configuration/statuses-numbering": "admin_config",
+  "administration/templates/meeting-agenda-templates": "admin_templates",
+  "administration/templates/minutes-resolution-templates": "admin_templates",
+  "administration/templates/document-templates": "admin_templates",
+  "administration/templates/communication-templates": "admin_templates",
+  "administration/notifications/notification-rules": "admin_notifications",
+  "administration/notifications/message-templates": "admin_notifications",
+  "administration/notifications/delivery-logs": "admin_notifications",
+  "administration/integrations": "admin_integrations",
+  "administration/security-retention/security-policies": "admin_config",
+  "administration/security-retention/retention-legal-holds": "admin_retention",
 };
 // Parent/redirect URLs resolve to their child authorization boundary.
 export function permissionForPath(path: string): string | null {
@@ -134,7 +152,7 @@ export function permissionForPath(path: string): string | null {
     return clean.endsWith("/live") ? "mtg_join" : "mtg_view";
   if (/^agenda-documents\/document-library\/[^/]+\/editor$/.test(clean))
     return "doc_view";
-  if (clean.startsWith("administration/")) return "admin_roles";
+  if (clean.startsWith("administration/")) return null;
   if (clean.startsWith("governance-org/")) return "gov_org_view";
   if (clean.startsWith("archive-reports/")) return "arc_view";
   if (clean.startsWith("meetings/")) return "mtg_view";
@@ -146,6 +164,7 @@ export function permissionForPath(path: string): string | null {
 export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   if (!state.loaded) return false;
   if (state.is_super_admin) return true;
+  if (/^\/(?:administration\/roles-permissions(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(path)) return false;
   const required = permissionForPath(path);
   return !!required && hasAccess(required, state);
 }
