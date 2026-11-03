@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
 import { Eye, Shield, UserCheck, UserPlus, UserX, Users } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../../components/buttons/Button";
@@ -38,6 +39,7 @@ function csv(value: unknown) {
 }
 
 export function SupabaseUserManagementPage() {
+  const navigate = useNavigate();
   const [users, setUsers] = useState<ConvayProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -221,6 +223,7 @@ export function SupabaseUserManagementPage() {
             <p className="user-management__subtitle">{users.length} users · Manage system users and access</p>
           </div>
           <div className="user-management__actions">
+            <Button variant="secondary" size="sm" leadingIcon={Shield} onClick={() => navigate("/administration/roles-permissions/roles")}>Manage Roles</Button>
             <Button variant="primary" size="lg" leadingIcon={UserPlus} onClick={openCreate}>Add User</Button>
           </div>
         </div>
