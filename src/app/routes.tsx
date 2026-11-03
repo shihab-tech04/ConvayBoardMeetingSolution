@@ -1,4 +1,7 @@
 import { createBrowserRouter, redirect } from "react-router";
+import { useSelector } from "react-redux";
+import type { RootState } from "./store/store";
+import type { ReactNode } from "react";
 import { AppRoot } from "./layouts/AppRoot";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 
@@ -23,7 +26,7 @@ import { DoubleEntryStatusPage }    from "./pages/psr-verification/DoubleEntrySt
 import { InvalidListPage }          from "./pages/psr-verification/InvalidListPage";
 import { ApprovalListPage }         from "./pages/psr-verification/ApprovalListPage";
 import { TransferHistoryPage }      from "./pages/psr-verification/TransferHistoryPage";
-import { UserManagementPage }       from "./pages/administration-requests/UserManagementPage";
+import { SupabaseUserManagementPage } from "./pages/administration-requests/SupabaseUserManagementPage";
 import { RoleManagementPage }       from "./pages/administration-requests/RoleManagementPage";
 import { PermissionListPage }       from "./pages/administration-requests/PermissionListPage";
 import { ParticipantGroupsPage }    from "./pages/governance/ParticipantGroupsPage";
@@ -71,6 +74,15 @@ function GovernanceReportRoute()        { return <GovernanceReportPage />; }
 function DecisionsActionsRoute()        { return <DecisionsActionsAnalyticsPage />; }
 function FinancialResourceImpactRoute() { return <FinancialResourceImpactPage />; }
 function AuditTrailRoute()              { return <ReportViewPage reportId="user-activity-report" />; }
+
+function AdminOnly({ children }: { children: ReactNode }) {
+  const allowed = useSelector((state: RootState) => state.auth.isAuthenticated && state.currentUser.role === "super_admin");
+  if (!allowed) return <div className="table-page"><h1>Access denied</h1><p>Only the Super Admin can manage users, roles and permissions.</p></div>;
+  return <>{children}</>;
+}
+function UsersAdminRoute() { return <AdminOnly><SupabaseUserManagementPage /></AdminOnly>; }
+function RolesAdminRoute() { return <AdminOnly><RoleManagementPage /></AdminOnly>; }
+function PermissionsAdminRoute() { return <AdminOnly><PermissionListPage /></AdminOnly>; }
 
 // preloadAllRoutes is a no-op now — all routes are statically imported
 export function preloadAllRoutes() {}
@@ -121,7 +133,7 @@ export const router = createBrowserRouter([
       // ── Governance & Organization ─────────────────────────────────────────
       { path: "governance-org/governance-bodies",      Component: InvalidListPage },
       { path: "governance-org/organization-structure", Component: OrganizationStructurePage },
-      { path: "governance-org/users-assignments",      Component: UserManagementPage },
+      { path: "governance-org/users-assignments",      Component: UsersAdminRoute },
       { path: "governance-org/designations-positions", Component: TransferHistoryPage },
       { path: "governance-org/participant-groups",     Component: ParticipantGroupsPage },
 
@@ -147,8 +159,8 @@ export const router = createBrowserRouter([
 
       // ── Administration ────────────────────────────────────────────────────
       { path: "administration/roles-permissions",             loader: async () => redirect("/administration/roles-permissions/roles") },
-      { path: "administration/roles-permissions/roles",       Component: RoleManagementPage },
-      { path: "administration/roles-permissions/permissions", Component: PermissionListPage },
+      { path: "administration/roles-permissions/roles",       Component: RolesAdminRoute },
+      { path: "administration/roles-permissions/permissions", Component: PermissionsAdminRoute },
       { path: "administration/workflows",                       loader: async () => redirect("/administration/workflows/workflow-definitions") },
       { path: "administration/workflows/workflow-definitions",  Component: WorkflowDefinitionsPage },
       { path: "administration/workflows/approval-rules",        Component: ApprovalRulesPage },
