@@ -14,7 +14,7 @@ interface Props {
   existingIds: string[];
   existingEndpoints: { endpoint: string; method: string }[];
   onClose: () => void;
-  onSave: (perm: Omit<CustomPermission, "isCustom" | "createdAt" | "updatedAt">) => void;
+  onSave: (perm: Omit<CustomPermission, "isCustom" | "createdAt" | "updatedAt">) => Promise<void> | void;
 }
 
 const METHOD_OPTS = ["GET", "POST", "PUT", "DELETE"];
@@ -32,6 +32,8 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
   const toGroupId   = (label: string) => permissionGroups.find((g) => g.label === label)?.id ?? "";
   const toGroupLabel = (id: string)   => permissionGroups.find((g) => g.id === id)?.label ?? "";
 
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [name, setName]           = useState("");
   const [groupLabel, setGroupLabel] = useState(groupOpts[0] ?? "");
   const [endpoint, setEndpoint]   = useState("");
@@ -81,11 +83,14 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
     return ok;
   };
 
-  const handleSave = () => {
-    if (!validate()) return;
+  const handleSave = async () => {
+    if (!validate() || saving) return;
+    setSaving(true);
+    setSaveError("");
+    try {
     const groupId = toGroupId(groupLabel);
     const id = isEdit ? editing!.id : genId(groupId, name.trim());
-    onSave({
+    await onSave({
       id,
       label: name.trim(),
       groupId,
@@ -96,6 +101,9 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
       status: active ? "Active" : "Inactive",
     });
     onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Unable to save permission");
+    } finally { setSaving(false); }
   };
 
   const canSave = name.trim() && endpoint.trim() && service.trim();
@@ -103,7 +111,7 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
   const footer = (
     <div className="crm-footer">
       <Button variant="ghost" size="lg" onClick={onClose}>Cancel</Button>
-      <Button variant="primary" size="lg" onClick={handleSave} disabled={!canSave}>
+      <Button variant="primary" size="lg" onClick={() => void handleSave()} loading={saving} disabled={!canSave || saving}>
         {isEdit ? "Save Changes" : "Add Permission"}
       </Button>
     </div>
@@ -195,6 +203,7 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
           />
         </div>
       </div>
+      {saveError && <p role="alert" className="text-red-600 text-sm">{saveError}</p>}
     </AppModal>
   );
 }
