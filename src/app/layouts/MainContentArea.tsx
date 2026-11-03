@@ -1,11 +1,17 @@
-import { Suspense, startTransition } from "react";
-import { Outlet, useNavigate } from "react-router";
+import { useAccessSnapshot, reloadAccessSnapshot, mayVisitPath } from "../services/supabase/convayAccess";
+import { Suspense, startTransition, useEffect } from "react";
+import { Outlet, useNavigate, useLocation } from "react-router";
 import { PageLoader } from "../components/shared/PageLoader";
 import { TabBar } from "../components/tabs/TabBar";
 import { getVisibleNav } from "../data/navigation";
 import { useRouteNav } from "../hooks/useRouteNav";
 
 export function MainContentArea() {
+  const location = useLocation();
+  const access = useAccessSnapshot();
+  useEffect(() => {
+    void reloadAccessSnapshot().catch(() => {});
+  }, [location.pathname]);
   const { activeMain, activeSub, activeThird } = useRouteNav();
   const navigate = useNavigate();
   const mainItem = getVisibleNav().find(n => n.id === activeMain);
@@ -16,6 +22,7 @@ export function MainContentArea() {
     startTransition(() => navigate(`/${activeMain}/${activeSub}/${tabId}`));
   };
 
+  const authorized = mayVisitPath(location.pathname, access);
   return (
     <main id="main-content" tabIndex={-1} className="app-page-content app-page-content--workspace">
       {tabs && tabs.length > 0 && (
@@ -28,7 +35,7 @@ export function MainContentArea() {
         </div>
       )}
       <Suspense fallback={<PageLoader />}>
-        <Outlet />
+        {authorized ? <Outlet /> : <div className="table-page" role="alert"><h1>Access denied</h1><p>Your role does not have permission to open this feature.</p></div>}
       </Suspense>
     </main>
   );
