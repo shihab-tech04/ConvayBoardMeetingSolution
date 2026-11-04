@@ -36,18 +36,11 @@ const appliedMigrations = [
 ];
 
 describe("Convay source migration history matches applied Supabase version IDs", () => {
-  it("preserves distinct version IDs and audits the one exact duplicate migration", () => {
+  it("has unique migration names and version IDs", () => {
     const names = files.map((file) => file.replace(/^\d+_/, "").replace(/\.sql$/, ""));
     const versions = files.map((file) => file.slice(0, 14));
+    expect(new Set(names).size).toBe(files.length);
     expect(new Set(versions).size).toBe(files.length);
-    const duplicates = [...new Set(names.filter((name,i) => names.indexOf(name)!==i))];
-    // Supabase independently recorded the same transaction twice, three seconds
-    // apart, with the identical SQL checksum. Preserve both original IDs.
-    expect(duplicates).toEqual(["convay_document_workspace_registry_parity"]);
-    const originals = ["20261104171825","20261104171828"].map((version) =>
-      readFileSync(join(directory, `${version}_convay_document_workspace_registry_parity.sql`),"utf8")
-    );
-    expect(originals[0]).toBe(originals[1]);
   });
 
   it.each(appliedMigrations)("%s uses its actual applied Supabase version %s", (name, version) => {
