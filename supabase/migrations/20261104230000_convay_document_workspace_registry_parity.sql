@@ -172,7 +172,9 @@ declare
  v_name text;
 begin
  if tg_op='DELETE' then
-   if old.entity_key in ('bms.doc.acknowledgements','bms.doc.approvals_v2') then
+   if old.entity_key in ('bms.doc.acknowledgements','bms.doc.approvals_v2')
+     and not (current_user='postgres'
+       and current_setting('convay.authorized_document_cleanup',true)='true') then
      raise exception 'Document acknowledgements and approvals are append-only'
        using errcode='42501';
    end if;
@@ -235,6 +237,9 @@ begin
  into v_record_id,v_external_id from public.convay_entity_records d
  where d.entity_key='bms.documents' and (d.record_id=p_doc or d.payload->>'doc_id'=p_doc);
  if v_record_id is null then raise exception 'Document not found'; end if;
+ -- Only this privileged, permission-checked transaction may delete append-only
+ -- child evidence while removing the authorized parent document.
+ perform set_config('convay.authorized_document_cleanup','true',true);
  select coalesce(array_agg(distinct storage_path),array[]::text[]) into v_paths
  from public.convay_document_content
  where document_id in (p_doc,v_record_id,v_external_id) and storage_path is not null;
@@ -251,5 +256,6 @@ begin
  where entity_key='bms.documents' and record_id=v_record_id;
  get diagnostics v_deleted = row_count;
  if v_deleted<>1 then raise exception 'Document not found'; end if;
+ perform set_config('convay.authorized_document_cleanup','',true);
  return v_paths;
 end $function$;
