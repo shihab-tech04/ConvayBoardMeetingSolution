@@ -664,6 +664,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // Chat is also displayed from confirmed SQL interactions, never optimistic local messages.
   const chatMessages = useMemo<ChatMessage[]>(() => interactionItems
     .filter(event => event.meeting_id === meetingId && event.interaction_type === "chat")
+    .sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))
     .map(event => ({
       id: event.id,
       from: typeof event.metadata?.sender === "string" ? event.metadata.sender : event.user_id,
@@ -671,8 +672,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       time: typeof event.created_at === "string"
         ? new Date(event.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
         : "",
-    }))
-    .sort((a, b) => a.id.localeCompare(b.id)), [interactionItems, meetingId]);
+    })), [interactionItems, meetingId]);
   const sendingChat = useRef(false);
   const postingComment = useRef(false);
   const [chatBusy, setChatBusy] = useState(false);
@@ -1141,7 +1141,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         metadata: { sender: currentUser.name, time: createdAt },
         created_at: createdAt,
       } as never);
-      if (saved === true) setChatInput("");
+      if (saved === true) setChatInput(previous => previous.trim() === body ? "" : previous);
     } finally {
       sendingChat.current = false;
       setChatBusy(false);
@@ -2135,7 +2135,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       const inputVal = agendaCommentInputs[aKey] ?? "";
                       const setInput = (v: string) => setAgendaCommentInputs(p => ({ ...p, [aKey]: v }));
                       const submitComment = async () => {
-                        if (await postAgendaComment(aKey, inputVal)) setInput("");
+                        if (await postAgendaComment(aKey, inputVal)) setAgendaCommentInputs(previous => ({ ...previous, [aKey]: previous[aKey] === inputVal ? "" : previous[aKey] }));
                       };
                       return (
                         <>
@@ -2479,7 +2479,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                   const dCommentInput = agendaCommentInputs[detailItem.key] ?? "";
                   const dSetCommentInput = (v: string) => setAgendaCommentInputs(p => ({ ...p, [detailItem.key]: v }));
                   const dPostComment = async () => {
-                    if (await postAgendaComment(detailItem.key, dCommentInput)) dSetCommentInput("");
+                    if (await postAgendaComment(detailItem.key, dCommentInput)) setAgendaCommentInputs(previous => ({ ...previous, [detailItem.key]: previous[detailItem.key] === dCommentInput ? "" : previous[detailItem.key] }));
                   };
 
                   const purposeColors: Record<string, string> = {
