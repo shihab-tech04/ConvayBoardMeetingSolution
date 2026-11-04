@@ -554,6 +554,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const hasLeadership = access.is_super_admin || canRecord(myRole);
   // Match user-facing controls to the actual SQL permission catalogue.
   const canRecordMeeting = hasLeadership && hasGrant("mtg_start");
+  const canManageVotes = canRecordMeeting && hasGrant("mtg_join");
   const canControlMeeting = (access.is_super_admin || canControl(myRole)) &&
     hasGrant("mtg_start") && hasGrant("mtg_update");
   const canManageAgenda = hasLeadership && hasGrant("mtg_update");
@@ -954,6 +955,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
   const openVoteForMotion = (motion: LiveMotion, voteType: string, threshold: string) => {
+    if (!canManageVotes) { toast.error("Voting management permission required."); return; }
     if (activeVote?.status === "Open") { toast.error("A vote is already open. Close it first."); return; }
     const thresholdPct = calcThresholdPct(threshold);
     const vId = mkId("VT");
@@ -979,7 +981,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       toast.error("Only present, eligible, non-recused participants may vote.");
       return;
     }
-    if (participantId === currentUser.id ? !canCastOwnBallot : !canRecordMeeting) {
+    if (participantId === currentUser.id ? !canCastOwnBallot : !canManageVotes) {
       toast.error("You do not have permission to record this vote.");
       return;
     }
@@ -991,7 +993,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       updated.abstentions   = Object.values(updated.castVotes).filter(v => v === "Abstain").length;
       return updated;
     });
-  }, [activeVote, isVotingEligible, currentUser.id, canCastOwnBallot, canRecordMeeting]);
+  }, [activeVote, isVotingEligible, currentUser.id, canCastOwnBallot, canManageVotes]);
 
   // A vote becomes official only when every ballot and summary record commit together.
   const closingVoteRequest = useRef(false);
@@ -1000,7 +1002,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (!activeVote || activeVote.status !== "Open" || closingVoteRequest.current) return;
     if (!meetingId) { toast.error("Meeting unavailable. Refresh before closing this vote."); return; }
     if (!quorumMet) { toast.error("Quorum is not met. Voting cannot be finalized."); return; }
-    if (!canRecordMeeting) { toast.error("Only the Chair or Secretary can close a vote."); return; }
+    if (!canManageVotes) { toast.error("Voting management permission required to close a vote."); return; }
 
     // A motion result must never diverge from the official SQL motions register.
     const storedMotion = activeVote.motionId
@@ -1101,7 +1103,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       closingVoteRequest.current = false;
       setClosingVoteBusy(false);
     }
-  }, [activeVote, meetingId, quorumMet, canRecordMeeting, voteItems, motionItems, participants, currentUser.name, refreshVoteRecords, refreshMotionRecords]);
+  }, [activeVote, meetingId, quorumMet, canManageVotes, voteItems, motionItems, participants, currentUser.name, refreshVoteRecords, refreshMotionRecords]);
 
   const cancelVote = useCallback(() => {
     if (!activeVote) return;
@@ -1110,7 +1112,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   }, [activeVote]);
 
   const reopenVote = useCallback((reason: string) => {
-    if (!activeVote || !canRecordMeeting) { toast.error("Only the Chair or Secretary can reopen a vote."); return; }
+    if (!activeVote || !canManageVotes) { toast.error("Voting management permission required to reopen a vote."); return; }
     setActiveVote(prev => {
       if (!prev) return prev;
       return {
@@ -1121,7 +1123,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       };
     });
     toast.success("Vote reopened with reason recorded.");
-  }, [activeVote, myRole]);
+  }, [activeVote, canManageVotes]);
 
   // ── Record creators ────────────────────────────────────────────────────────
   const handleMotionSubmit = async (values: Record<string, EntryFormValue>) => {
@@ -1140,6 +1142,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   };
 
   const handleVoteSubmit = (values: Record<string, EntryFormValue>) => {
+    if (!canManageVotes) { toast.error("Voting management permission required."); return; }
     const motionId = String(values.related_motion ?? "");
     const motion   = motions.find(m => m.id === motionId) ?? { id: "", title: String(values.vote_title ?? "Vote"), proposedBy: "", secondedBy: "", status: "Proposed" as const };
     const voteType = String(values.vote_type ?? "Open");
@@ -3330,8 +3333,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                         <button onClick={() => setMotionOpen(true)} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "#334155", color: "#f1f5f9", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>+ Motion</button>
                         <button
                           onClick={() => setVoteOpen(true)}
-                          disabled={!quorumMet || activeVote?.status === "Open"}
-                          title={!quorumMet ? "No quorum" : activeVote?.status === "Open" ? "A vote is already open" : "Open vote"}
+                          disabled={!canManageVotes || !quorumMet || activeVote?.status === "Open"}
+                          title={!canManageVotes ? "Voting permission required" : !quorumMet ? "No quorum" : activeVote?.status === "Open" ? "A vote is already open" : "Open vote"}
                           style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: quorumMet && activeVote?.status !== "Open" ? "var(--color-primary)" : "#334155", color: quorumMet && activeVote?.status !== "Open" ? "#fff" : "#64748b", border: "none", cursor: quorumMet && activeVote?.status !== "Open" ? "pointer" : "not-allowed", fontSize: "0.68rem", fontWeight: 600 }}>
                           + Vote
                         </button>
@@ -3456,7 +3459,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                         {canRecordMeeting && m.status === "Proposed" && !activeVote?.id && (
                           <>
                             <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Seconded" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#1e3a5f", color: "#60a5fa", border: "none", cursor: "pointer", fontSize: "0.65rem" }}>Second</button>
-                            <button onClick={() => setVoteOpen(true)} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.65rem" }}>Put to Vote</button>
+                            <button onClick={() => setVoteOpen(true)} disabled={!canManageVotes} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: canManageVotes ? "pointer" : "not-allowed", fontSize: "0.65rem" }}>Put to Vote</button>
                           </>
                         )}
                         
