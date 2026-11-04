@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-const source = readFileSync("supabase/migrations/20261104130000_convay_link_reference_integrity.sql", "utf8");
+const source = readFileSync("supabase/migrations/20261104053441_convay_link_reference_integrity.sql", "utf8");
 
 describe("Convay meeting link relational integrity", () => {
   it("uses deferred constraint enforcement to support one atomic parent/child batch", () => {
