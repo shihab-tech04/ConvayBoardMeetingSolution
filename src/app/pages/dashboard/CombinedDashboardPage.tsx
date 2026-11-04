@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router";
 import {
   Calendar, Clock, AlertCircle, Video, MapPin, Monitor,
@@ -31,6 +31,8 @@ import {
   userIsMinutesOwner,
 } from "./homeWorkspaceUtils";
 import { friendlyDate, friendlyTime } from "./dateUtils";
+import { calendarDateWindows } from "./calendarDateWindows";
+import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -161,19 +163,34 @@ function FeaturedMeetingCard({
 
 export function CombinedDashboardPage({ title }: { title?: string } = {}) {
   const navigate = useNavigate();
-  const now      = new Date();
-  const today    = now.toISOString().slice(0, 10);
+  const now = new Date();
+  const calendarWindow = calendarDateWindows(now);
+  const today = calendarWindow.today;
 
   const currentUser = useCurrentUser();
   const userName    = (currentUser.name ?? "").toLowerCase();
 
-  const { items: meetings }     = useMeetingRegistry();
-  const { items: actions }      = useActionItemRegistry();
-  const { items: boardPacks }   = useBoardPackRegistry();
-  const { items: rsvps }        = useRSVPRegistry();
-  const { items: minutes }      = useMinutesRegistry();
-  const { items: participants } = useParticipantRegistry();
+  const meetingRegistry = useMeetingRegistry();
+  const actionRegistry = useActionItemRegistry();
+  const boardPackRegistry = useBoardPackRegistry();
+  const rsvpRegistry = useRSVPRegistry();
+  const minutesRegistry = useMinutesRegistry();
+  const participantRegistry = useParticipantRegistry();
+
+  const { items: meetings } = meetingRegistry;
+  const { items: actions } = actionRegistry;
+  const { items: boardPacks } = boardPackRegistry;
+  const { items: rsvps } = rsvpRegistry;
+  const { items: minutes } = minutesRegistry;
+  const { items: participants } = participantRegistry;
   const { resolve: resolveMtgActions } = useResolvedActions("meeting");
+
+  // A partial/failed SQL read must never masquerade as an empty personal calendar.
+  const calendarSources = [
+    meetingRegistry, actionRegistry, boardPackRegistry,
+    rsvpRegistry, minutesRegistry, participantRegistry,
+  ];
+  const calendarDataState = resolveDashboardDataState(calendarSources);
 
   // ── Build personal events — explicit ownership only ───────────────────────
 
@@ -284,20 +301,28 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
 
   // ── Calendar state ────────────────────────────────────────────────────────
 
-  const weekStart0 = startOfWeek(now, { weekStartsOn: 1 }).toISOString().slice(0, 10);
-  const weekEnd0   = endOfWeek(now, { weekStartsOn: 1 }).toISOString().slice(0, 10);
+  const weekStart0 = calendarWindow.weekStart;
+  const weekEnd0 = calendarWindow.weekEnd;
   const thisWeekHasEvents = events.some(e => e.date >= weekStart0 && e.date <= weekEnd0);
 
-  const [activeTab, setActiveTab]         = useState(thisWeekHasEvents ? "week" : "agenda");
+  const [activeTab, setActiveTab] = useState(thisWeekHasEvents ? "week" : "agenda");
+  const [hasUserSelectedTab, setHasUserSelectedTab] = useState(false);
+  // SQL records generally arrive asynchronously. Set the initial tab from the
+  // loaded records, but never override a tab the person selected themselves.
+  useEffect(() => {
+    if (calendarDataState === "ready" && !hasUserSelectedTab) {
+      setActiveTab(thisWeekHasEvents ? "week" : "agenda");
+    }
+  }, [calendarDataState, thisWeekHasEvents, hasUserSelectedTab]);
   const [viewDate, setViewDate]           = useState(now);
   const [selectedDay, setSelectedDay]     = useState<Date | null>(null);
   const [selectedWeekDay, setSelectedWeekDay] = useState<Date>(now);
 
   // ── KPIs ─────────────────────────────────────────────────────────────────
 
-  const monthStart = startOfMonth(now).toISOString().slice(0, 10);
-  const monthEnd   = endOfMonth(now).toISOString().slice(0, 10);
-  const cutoff7    = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const monthStart = calendarWindow.monthStart;
+  const monthEnd = calendarWindow.monthEnd;
+  const cutoff7 = calendarWindow.cutoff7;
 
   const liveMtg   = events.find(e => e.type === "meeting" && e.status === "In Progress");
   const nextMtg   = events.find(e => e.type === "meeting" && e.date >= today);
@@ -343,9 +368,9 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
 
   // ── Agenda groups ─────────────────────────────────────────────────────────
 
-  const tomorrow  = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
-  const thisWeekE = endOfWeek(now, { weekStartsOn: 1 }).toISOString().slice(0, 10);
-  const later60   = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+  const tomorrow = calendarWindow.tomorrow;
+  const thisWeekE = calendarWindow.weekEnd;
+  const later60 = calendarWindow.later60;
 
   const agendaGroups = useMemo(() => {
     const upcoming = events.filter(e => e.date >= today && e.date <= later60);
@@ -433,6 +458,31 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  if (calendarDataState !== "ready") {
+    return (
+      <div className="dashboard-page home-workspace-page">
+        <section
+          className="dash-compact-card"
+          role={calendarDataState === "error" ? "alert" : "status"}
+          aria-live={calendarDataState === "error" ? "assertive" : "polite"}
+          style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12 }}
+        >
+          <h1 className="dashboard-page__title">{title ?? "My Calendar"}</h1>
+          {calendarDataState === "error" ? (
+            <>
+              <p>Your meetings and deadlines could not be loaded. No empty calendar is shown until the data is available.</p>
+              <Button type="button" size="sm" variant="primary" onClick={() => void retryDashboardSources(calendarSources)}>
+                Retry loading
+              </Button>
+            </>
+          ) : (
+            <p>Loading your meetings, review dates and assigned deadlines.</p>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="dashboard-page home-workspace-page">
 
@@ -461,7 +511,7 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
           value={String(mtgsMonth)}
           label="Meetings This Month"
           tone="neutral"
-          onClick={() => setActiveTab("month")}
+          onClick={() => { setActiveTab("month"); setHasUserSelectedTab(true); }}
         />
         <StatCard
           density="compact"
@@ -469,7 +519,7 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
           value={String(deadlines7)}
           label="Upcoming Deadlines"
           tone={deadlines7 > 0 ? "warning" : "neutral"}
-          onClick={() => setActiveTab("agenda")}
+          onClick={() => { setActiveTab("agenda"); setHasUserSelectedTab(true); }}
         />
       </div>
 
@@ -482,7 +532,7 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
             <TabBar
               tabs={CAL_TABS}
               active={activeTab}
-              onChange={tab => { setActiveTab(tab); setSelectedDay(null); }}
+              onChange={tab => { setActiveTab(tab); setSelectedDay(null); setHasUserSelectedTab(true); }}
             />
           </div>
           <div className="cal-toolbar__right">
