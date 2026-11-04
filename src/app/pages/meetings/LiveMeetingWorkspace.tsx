@@ -998,15 +998,17 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   }, [activeVote, myRole]);
 
   // ── Record creators ────────────────────────────────────────────────────────
-  const handleMotionSubmit = (values: Record<string, EntryFormValue>) => {
+  const handleMotionSubmit = async (values: Record<string, EntryFormValue>) => {
     const motion: LiveMotion = {
-      id: mkId("MOT"), title: String(values.motion_title ?? "Motion"),
+      id: `MOT-${crypto.randomUUID()}`, title: String(values.motion_title ?? "Motion"),
       proposedBy: String(values.proposed_by ?? ""), secondedBy: String(values.seconded_by ?? ""),
       status: "Proposed",
     };
+    if (!meetingId) { toast.error("Meeting unavailable. Refresh before recording the motion."); return; }
+    const mId = motion.id;
+    const saved = await addMotionRec({ id: mId, motion_id: mId, meeting_id: meetingId ?? "", agenda_item: agendaItems[activeIdx]?.title ?? "", motion_title: motion.title, motion_text: String(values.motion_text ?? ""), proposed_by: motion.proposedBy, seconded_by: motion.secondedBy, status: "Proposed", votes_for: "0", votes_against: "0", abstentions: "0", notes: "", created_at: nowISO() } as never);
+    if (saved !== true) return;
     setMotions(prev => [...prev, motion]);
-    const mId = mkId("MOT");
-    addMotionRec({ id: mId, motion_id: mId, meeting_id: meetingId ?? "", agenda_item: agendaItems[activeIdx]?.title ?? "", motion_title: motion.title, motion_text: String(values.motion_text ?? ""), proposed_by: motion.proposedBy, seconded_by: motion.secondedBy, status: "Proposed", votes_for: "0", votes_against: "0", abstentions: "0", notes: "", created_at: nowISO() } as never);
     setMotionOpen(false);
     toast.success("Motion recorded");
   };
@@ -1020,19 +1022,22 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     setVoteOpen(false);
   };
 
-  const handleDecisionSubmit = (values: Record<string, EntryFormValue>) => {
-    const dId = mkId("DEC");
-    addDecision({ id: dId, decision_id: dId, decision_title: String(values.decision_title ?? "Decision"), source_meeting: meetingId ?? "", agenda_item: agendaItems[activeIdx]?.title ?? "", decision_type: String(values.decision_type ?? "Resolution"), decision_owner: String(values.decision_owner ?? "Board"), effective_date: String(values.effective_date ?? ""), implementation_deadline: "", financial_impact: "", implementation_status: "Not Started", approval_status: "Approved", created_at: nowISO(), activity_history: [{ action: "Decision recorded during live meeting", by: myRole, at: nowISO() }] } as never);
+  const handleDecisionSubmit = async (values: Record<string, EntryFormValue>) => {
+    if (!meetingId) { toast.error("Meeting unavailable. Refresh before recording the decision."); return; }
+    const dId = `DEC-${crypto.randomUUID()}`;
+    const saved = await addDecision({ id: dId, decision_id: dId, decision_title: String(values.decision_title ?? "Decision"), source_meeting: meetingId ?? "", agenda_item: agendaItems[activeIdx]?.title ?? "", decision_type: String(values.decision_type ?? "Resolution"), decision_owner: String(values.decision_owner ?? "Board"), effective_date: String(values.effective_date ?? ""), implementation_deadline: "", financial_impact: "", implementation_status: "Not Started", approval_status: "Approved", created_at: nowISO(), activity_history: [{ action: "Decision recorded during live meeting", by: myRole, at: nowISO() }] } as never);
+    if (saved !== true) return;
     setDecisionOpen(false);
     toast.success("Decision saved to Decision Register");
   };
 
-  const handleResolutionSubmit = (values: Record<string, EntryFormValue>) => {
-    const rId = mkId("RES");
+  const handleResolutionSubmit = async (values: Record<string, EntryFormValue>) => {
+    if (!meetingId) { toast.error("Meeting unavailable. Refresh before recording the resolution."); return; }
+    const rId = `RES-${crypto.randomUUID()}`;
     // Link to active vote's motion if available
     const linkedMotion  = activeVote ? motions.find(m => m.id === activeVote.motionId) : undefined;
     const linkedVoteId  = activeVote?.id ?? "";
-    addResolution({
+    const saved = await addResolution({
       id: rId, resolution_id: rId, resolution_no: rId,
       meeting_id: meetingId ?? "", meeting_title: meeting?.meeting_title ?? "",
       resolution_title: String(values.resolution_title ?? "Resolution"),
@@ -1051,13 +1056,16 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       decision_owner: String(values.decision_owner ?? "Board"),
       created_at: nowISO(),
     } as never);
+    if (saved !== true) return;
     setResolutionOpen(false);
     toast.success("Resolution recorded in Resolution Register");
   };
 
-  const handleActionSubmit = (values: Record<string, EntryFormValue>) => {
-    const aId = mkId("ACT");
-    addAction({ id: aId, action_id: aId, action_title: String(values.action_title ?? "Action Item"), source_meeting: meetingId ?? "", source_decision: "", assigned_to: String(values.assigned_to ?? ""), priority: String(values.priority ?? "Normal"), due_date: String(values.due_date ?? ""), completion_date: "", progress: "0", implementation_status: "Not Started", approval_status: "Open", created_at: nowISO(), activity_history: [{ action: "Action item created during live meeting", by: myRole, at: nowISO() }] } as never);
+  const handleActionSubmit = async (values: Record<string, EntryFormValue>) => {
+    if (!meetingId) { toast.error("Meeting unavailable. Refresh before recording the action."); return; }
+    const aId = `ACT-${crypto.randomUUID()}`;
+    const saved = await addAction({ id: aId, action_id: aId, action_title: String(values.action_title ?? "Action Item"), source_meeting: meetingId ?? "", source_decision: "", assigned_to: String(values.assigned_to ?? ""), priority: String(values.priority ?? "Normal"), due_date: String(values.due_date ?? ""), completion_date: "", progress: "0", implementation_status: "Not Started", approval_status: "Open", created_at: nowISO(), activity_history: [{ action: "Action item created during live meeting", by: myRole, at: nowISO() }] } as never);
+    if (saved !== true) return;
     setActionOpen(false);
     toast.success("Action item saved to Action Register");
   };
