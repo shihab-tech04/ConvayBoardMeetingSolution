@@ -47,15 +47,16 @@ export async function listPersonalNotifications(): Promise<Notification[]> {
 /** Column-level SQL grant allows users to change only their own is_read flag. */
 export async function persistNotificationRead(id: string): Promise<void> {
   const url = "/rest/v1/convay_user_notifications?id=eq." + encodeURIComponent(id)
-    + "&is_read=eq.false&select=id";
+    + "&select=id";
   const response = await convayAuth.authenticatedRequest(url, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Prefer: "return=representation" },
     body: JSON.stringify({ is_read: true }),
   });
   const rows: unknown = await response.json();
-  if (!Array.isArray(rows) || rows.length > 1) throw new Error("Notification update could not be verified");
-  // An already-read notification legitimately matches no unread rows.
+  if (!Array.isArray(rows) || rows.length !== 1 || rows[0]?.id !== id) {
+    throw new Error("Notification is no longer accessible. Refresh your inbox.");
+  }
 }
 
 export async function persistAllNotificationsRead(): Promise<void> {
