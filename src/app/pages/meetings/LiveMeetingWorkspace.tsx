@@ -418,15 +418,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   // Build participant list from registry — no synthetic defaults
   const baseParticipants: VirtualParticipant[] = (() => {
-    const fromReg = allParticipants.filter(p => p.meeting_id === meetingId);
-    if (fromReg.length > 0) {
-      return fromReg.map(p => ({
-        id: p.participant_id, name: p.name, role: p.role, initials: INITIALS(p.name),
-        isMuted: false, isCameraOff: false, isSpeaking: false, handRaised: false,
-        connectionQuality: "good" as ConnectionQuality, isHost: p.role === "Chairperson",
-      }));
-    }
-    // Also try canonical participant links (preferred path after Meeting Creation)
+    // Resolve signed-in voter IDs from the SQL-backed meeting participant links first.
     const linksForMeeting = allParticipantLinks.filter(l => l.meeting_id === meetingId);
     if (linksForMeeting.length > 0) {
       return linksForMeeting.map(l => {
@@ -439,6 +431,16 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           connectionQuality: "good" as ConnectionQuality, isHost: l.participant_type === "Chairperson",
         };
       });
+    }
+    // Legacy participant entries are display-only if canonical links are absent.
+    // They must never grant ballot eligibility without a real linked user.
+    const fromReg = allParticipants.filter(p => p.meeting_id === meetingId);
+    if (fromReg.length > 0) {
+      return fromReg.map(p => ({
+        id: p.participant_id, name: p.name, role: p.role, initials: INITIALS(p.name),
+        isMuted: false, isCameraOff: false, isSpeaking: false, handRaised: false,
+        connectionQuality: "good" as ConnectionQuality, isHost: p.role === "Chairperson",
+      }));
     }
     return []; // no canonical data — empty state shown in UI
   })();
@@ -548,11 +550,20 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // optional meeting-participant role is not Chairperson or Secretary.
   // Restricted users still depend on their actual meeting roles; the API/SQL
   // performs the authoritative per-action permission check.
-  const canRecordMeeting = access.loaded && (access.is_super_admin || canRecord(myRole));
-  const canControlMeeting = access.loaded &&
-    (access.is_super_admin || (canControl(myRole) && access.effective_permissions.includes("mtg_start")));
-  // Do not override canVote(myRole): ballot eligibility is a separate,
-  // meeting-specific governance rule, even for system administrators.
+  const hasGrant = (code: string) => access.loaded &&
+    (access.is_super_admin || access.effective_permissions.includes(code));
+  const hasLeadership = access.is_super_admin || canRecord(myRole);
+  // Match user-facing controls to the actual SQL permission catalogue.
+  const canRecordMeeting = hasLeadership && hasGrant("mtg_start");
+  const canManageVotes = canRecordMeeting && hasGrant("mtg_join");
+  const canControlMeeting = (access.is_super_admin || canControl(myRole)) &&
+    hasGrant("mtg_start") && hasGrant("mtg_update");
+  const canManageAgenda = hasLeadership && hasGrant("mtg_update");
+  const canCreateTemporaryAgenda = canManageAgenda && hasGrant("agd_submit");
+  const canEditAttendance = hasLeadership && hasGrant("mtg_attendance");
+  const canDraftMinutes = hasLeadership && hasGrant("min_create");
+  // Full system administration does not grant ballot eligibility; real
+  // membership, attendance and recusal checks still apply.
 
   // ── Load persisted session ─────────────────────────────────────────────────
   const initSession = loadSession(meetingId);
@@ -566,6 +577,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
+  const isVotingEligible = useCallback((participantId: string) => {
+    if (!participantId || !meetingLinks.some(link => link.user_id === participantId && link.voting_eligible)) return false;
+    const status = attendanceMap[participantId] ?? "Not Joined";
+    if (!ACTIVE_STATES.includes(status) || status === "Recused") return false;
+    const agendaKey = agendaItems[activeIdx]?.key ?? "";
+    return !(agendaRecusals[agendaKey] ?? []).includes(participantId);
+  }, [meetingLinks, attendanceMap, agendaItems, activeIdx, agendaRecusals]);
+  const canCastOwnBallot = hasGrant("mtg_join") && canVote(myRole) &&
+    isVotingEligible(currentUser.id);
   // Transient UI — not persisted
   const [viewerDoc,      setViewerDoc]        = useState<BoardDocument | null>(null);
 
@@ -936,6 +956,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
   const openVoteForMotion = (motion: LiveMotion, voteType: string, threshold: string) => {
+    if (!canManageVotes) { toast.error("Voting management permission required."); return; }
     if (activeVote?.status === "Open") { toast.error("A vote is already open. Close it first."); return; }
     const thresholdPct = calcThresholdPct(threshold);
     const vId = mkId("VT");
@@ -957,30 +978,25 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   const castVote = useCallback((participantId: string, choice: "For" | "Against" | "Abstain") => {
     if (!activeVote || activeVote.status !== "Open") return;
-    // Authoritative voter identity comes from meeting membership, not "self".
-    const link = meetingLinks.find(l => l.user_id === participantId);
-    const status = attendanceMap[participantId] ?? "Not Joined";
-    const recused = agendaRecusals[agendaItems[activeIdx]?.key ?? ""] ?? [];
-    const eligible = link?.voting_eligible === true &&
-      ACTIVE_STATES.includes(status) && status !== "Recused" &&
-      !recused.includes(participantId);
-    if (!eligible || !participantId || participantId === "self") {
-      toast.error("This participant is not eligible to vote on the current agenda.");
+    // A ballot must identify a real eligible meeting participant and be
+    // recorded only by that member or an authorized Chair/Secretary.
+    if (!participantId || participantId === "self" || !isVotingEligible(participantId)) {
+      toast.error("Only present, eligible, non-recused participants may vote.");
       return;
     }
-    if (participantId !== currentUser.id && !canRecordMeeting) {
-      toast.error("You cannot record a ballot for another participant.");
+    if (participantId === currentUser.id ? !canCastOwnBallot : !canManageVotes) {
+      toast.error("You do not have permission to record this vote.");
       return;
     }
     setActiveVote(prev => {
       if (!prev || prev.status !== "Open") return prev;
       const updated = { ...prev, castVotes: { ...prev.castVotes, [participantId]: choice } };
-      updated.votesFor = Object.values(updated.castVotes).filter(v => v === "For").length;
-      updated.votesAgainst = Object.values(updated.castVotes).filter(v => v === "Against").length;
-      updated.abstentions = Object.values(updated.castVotes).filter(v => v === "Abstain").length;
+      updated.votesFor      = Object.values(updated.castVotes).filter(v => v === "For").length;
+      updated.votesAgainst  = Object.values(updated.castVotes).filter(v => v === "Against").length;
+      updated.abstentions   = Object.values(updated.castVotes).filter(v => v === "Abstain").length;
       return updated;
     });
-  }, [activeVote, meetingLinks, attendanceMap, agendaRecusals, agendaItems, activeIdx, currentUser.id, canRecordMeeting]);
+  }, [activeVote, isVotingEligible, currentUser.id, canCastOwnBallot, canManageVotes]);
 
   // A vote becomes official only when every ballot and summary record commit together.
   const closingVoteRequest = useRef(false);
@@ -989,7 +1005,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (!activeVote || activeVote.status !== "Open" || closingVoteRequest.current) return;
     if (!meetingId) { toast.error("Meeting unavailable. Refresh before closing this vote."); return; }
     if (!quorumMet) { toast.error("Quorum is not met. Voting cannot be finalized."); return; }
-    if (!canRecordMeeting) { toast.error("Only the Chair or Secretary can close a vote."); return; }
+    if (!canManageVotes) { toast.error("Voting management permission required to close a vote."); return; }
 
     // A motion result must never diverge from the official SQL motions register.
     const storedMotion = activeVote.motionId
@@ -999,7 +1015,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       toast.error("The linked motion is not available in SQL. Refresh before closing the vote.");
       return;
     }
-    // Reject stale or revoked ballots, including legacy "self" entries.
+    // Re-check attendance and recusal immediately before the atomic SQL batch.
     const recusedVoters = agendaRecusals[agendaItems[activeIdx]?.key ?? ""] ?? [];
     const allBallotsEligible = Object.keys(activeVote.castVotes).every(participantId => {
       const link = meetingLinks.find(l => l.user_id === participantId);
@@ -1048,6 +1064,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           entity_key: "bms.votes", action: "create", record_id: recordId,
           payload: {
             id: recordId, vote_id: activeVote.id + "-" + participantId, meeting_id: meetingId,
+            voter_id: participantId, ballot_session_id: activeVote.id,
             motion_id: activeVote.motionId ?? "", motion_title: activeVote.motionTitle,
             voter_name: participantId === currentUser.id ? currentUser.name : voter?.name ?? participantId,
             vote: choice, vote_weight: "1", timestamp: now,
@@ -1102,7 +1119,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       closingVoteRequest.current = false;
       setClosingVoteBusy(false);
     }
-  }, [activeVote, meetingId, quorumMet, canRecordMeeting, voteItems, motionItems, participants, currentUser.id, currentUser.name, meetingLinks, attendanceMap, agendaRecusals, agendaItems, activeIdx, refreshVoteRecords, refreshMotionRecords]);
+  }, [activeVote, meetingId, quorumMet, canManageVotes, voteItems, motionItems, participants, currentUser.id, currentUser.name, meetingLinks, attendanceMap, agendaRecusals, agendaItems, activeIdx, refreshVoteRecords, refreshMotionRecords]);
 
   const cancelVote = useCallback(() => {
     if (!activeVote) return;
@@ -1111,7 +1128,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   }, [activeVote]);
 
   const reopenVote = useCallback((reason: string) => {
-    if (!activeVote || !canRecordMeeting) { toast.error("Only the Chair or Secretary can reopen a vote."); return; }
+    if (!activeVote || !canManageVotes) { toast.error("Voting management permission required to reopen a vote."); return; }
     setActiveVote(prev => {
       if (!prev) return prev;
       return {
@@ -1122,7 +1139,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       };
     });
     toast.success("Vote reopened with reason recorded.");
-  }, [activeVote, myRole]);
+  }, [activeVote, canManageVotes]);
 
   // ── Record creators ────────────────────────────────────────────────────────
   const handleMotionSubmit = async (values: Record<string, EntryFormValue>) => {
@@ -1141,6 +1158,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   };
 
   const handleVoteSubmit = (values: Record<string, EntryFormValue>) => {
+    if (!canManageVotes) { toast.error("Voting management permission required."); return; }
     const motionId = String(values.related_motion ?? "");
     const motion   = motions.find(m => m.id === motionId) ?? { id: "", title: String(values.vote_title ?? "Vote"), proposedBy: "", secondedBy: "", status: "Proposed" as const };
     const voteType = String(values.vote_type ?? "Open");
@@ -1568,18 +1586,12 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     ...motions.map(m => ({ value: m.id, label: m.title.length > 60 ? `${m.title.slice(0, 60)}…` : m.title })),
   ];
 
-  // Voting eligibility: canonical voting_eligible flag + present + not globally or agenda-recused (Section 16)
+  // Only canonical SQL-linked meeting participants count toward voting.
   const votingEligibleIds = new Set(
-    meetingLinks
-      .filter(l =>
-        l.voting_eligible &&
-        ACTIVE_STATES.includes(attendanceMap[l.user_id] ?? "Not Joined" as AttendanceStatus) &&
-        (attendanceMap[l.user_id] ?? "Not Joined") !== "Recused" &&
-        !agendaRecusedIds.has(l.user_id)
-      )
-      .map(l => l.user_id)
+    meetingLinks.filter(link => isVotingEligible(link.user_id)).map(link => link.user_id)
   );
-  // No role-based fallback: each voting member must be linked to this meeting.
+
+  // Never fall back to display-only participant roles: SQL links are authoritative.
   const pendingVotes = activeVote
     ? [...votingEligibleIds].filter(id => !activeVote.castVotes[id]).length
     : 0;
@@ -1789,7 +1801,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                           const docQvAbstain = Object.values(docQvVotes).filter(v => v === "Abstain").length;
                           const docQvTotal   = docQvFor + docQvAgainst + docQvAbstain;
                           const docQvMyVote  = docQvVotes[currentUser.name] as "For" | "Against" | "Abstain" | undefined;
-                          const docQvCanVote = canVote(myRole) || canRecordMeeting;
+                          const docQvCanVote = canCastOwnBallot;
                           const docQvCast    = (v: "For" | "Against" | "Abstain") => {
                             if (!docQvCanVote) return;
                             setAgendaMotionVotes(p => ({ ...p, [docQvKey]: { ...(p[docQvKey] ?? {}), [currentUser.name]: v } }));
@@ -2411,7 +2423,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       const qvAbstain = Object.values(qvVotes).filter(v => v === "Abstain").length;
                       const qvTotal   = qvFor + qvAgainst + qvAbstain;
                       const qvMyVote  = qvVotes[currentUser.name] as "For" | "Against" | "Abstain" | undefined;
-                      const qvCanVote = canVote(myRole) || canRecordMeeting;
+                      const qvCanVote = canCastOwnBallot;
                       const qvCast    = (v: "For" | "Against" | "Abstain") => {
                         if (!qvCanVote) return;
                         setAgendaMotionVotes(p => ({ ...p, [qvKey]: { ...(p[qvKey] ?? {}), [currentUser.name]: v } }));
@@ -3214,7 +3226,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                   })}
 
                   {/* Temporary agenda button */}
-                  {ctrlStatus === "in-progress" && canRecordMeeting && (
+                  {ctrlStatus === "in-progress" && canCreateTemporaryAgenda && (
                     <button onClick={() => setTempAgendaOpen(true)} style={{ padding: "0.4rem 0.75rem", borderRadius: "6px", background: "#1e293b", color: "#f59e0b", border: "1px dashed #f59e0b", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600, textAlign: "center" }}>
                       + Create Temporary Agenda
                     </button>
@@ -3285,7 +3297,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                     quorumLabel={quorumStatusLabel(quorumCalcResult)}
                     eligibleCount={quorumCalcResult.eligibleCount}
                     requiredCount={quorumCalcResult.requiredCount}
-                    canUpdate={canRecordMeeting}
+                    canUpdate={canEditAttendance}
                     isEnded={ctrlStatus === "ended"}
                     onSetAttendance={(id, st) => setAttendance(id, st as AttendanceStatus)}
                     agendaKey={activeAgendaKey}
@@ -3334,8 +3346,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                         <button onClick={() => setMotionOpen(true)} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "#334155", color: "#f1f5f9", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>+ Motion</button>
                         <button
                           onClick={() => setVoteOpen(true)}
-                          disabled={!quorumMet || activeVote?.status === "Open"}
-                          title={!quorumMet ? "No quorum" : activeVote?.status === "Open" ? "A vote is already open" : "Open vote"}
+                          disabled={!canManageVotes || !quorumMet || activeVote?.status === "Open"}
+                          title={!canManageVotes ? "Voting permission required" : !quorumMet ? "No quorum" : activeVote?.status === "Open" ? "A vote is already open" : "Open vote"}
                           style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: quorumMet && activeVote?.status !== "Open" ? "var(--color-primary)" : "#334155", color: quorumMet && activeVote?.status !== "Open" ? "#fff" : "#64748b", border: "none", cursor: quorumMet && activeVote?.status !== "Open" ? "pointer" : "not-allowed", fontSize: "0.68rem", fontWeight: 600 }}>
                           + Vote
                         </button>
@@ -3368,7 +3380,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       </div>
 
                       {/* Cast vote — only for eligible voters */}
-                      {votingEligibleIds.has(currentUser.id) && activeVote.voteType !== "Secret Ballot" && (
+                      {canCastOwnBallot && activeVote.voteType !== "Secret Ballot" && (
                         <div>
                           <p style={{ fontSize: "0.68rem", color: "#64748b", margin: "0 0 0.3rem" }}>Cast your vote:</p>
                           <div style={{ display: "flex", gap: "0.3rem" }}>
@@ -3460,7 +3472,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                         {canRecordMeeting && m.status === "Proposed" && !activeVote?.id && (
                           <>
                             <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Seconded" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#1e3a5f", color: "#60a5fa", border: "none", cursor: "pointer", fontSize: "0.65rem" }}>Second</button>
-                            <button onClick={() => setVoteOpen(true)} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.65rem" }}>Put to Vote</button>
+                            <button onClick={() => setVoteOpen(true)} disabled={!canManageVotes} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: canManageVotes ? "pointer" : "not-allowed", fontSize: "0.65rem" }}>Put to Vote</button>
                           </>
                         )}
                         
@@ -3618,7 +3630,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", flexShrink: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
                     <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>Live Minutes</p>
-                    {ctrlStatus !== "not-started" && canRecordMeeting && (
+                    {ctrlStatus !== "not-started" && canDraftMinutes && (
                       <button onClick={() => setMinutesOpen(true)} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600 }}>Save Draft</button>
                     )}
                   </div>
