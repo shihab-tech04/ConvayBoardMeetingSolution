@@ -282,6 +282,10 @@ export interface Resolution {
   meeting_id?: string;
   resolution_reference?: string;
   title?: string;
+  /** Links to the originating motion and vote, when recorded. */
+  source_motion?: string;
+  source_vote?: string;
+  agenda_item?: string;
 }
 
 export interface ActionItem {

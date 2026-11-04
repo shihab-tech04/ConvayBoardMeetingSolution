@@ -122,19 +122,49 @@ export const supabaseDocumentContentStore = {
     getText("pdfann-snap:" + id + ":" + version),
 
   async putOriginalFile(documentId: string, file: File, versionId?: string): Promise<string> {
-    const path = filePath(documentId, versionId);
     const id = "file:" + documentId + ":" + (versionId ?? "latest");
+    const previous = await byId(id).catch(() => null);
+    // Immutable object paths avoid overwriting a working original before
+    // the SQL metadata points at the new upload.
+    const path = filePath(documentId, versionId) + "/" + crypto.randomUUID();
     await convayAuth.authenticatedRequest(storage("convay-documents/" + path), {
       method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream", "x-upsert": "true" },
+      headers: { "Content-Type": file.type || "application/octet-stream" },
       body: file,
     });
-    await save({
-      id, document_id: documentId, version_id: versionId ?? null,
-      content_type: "original_file", content: null, storage_path: path,
-      mime_type: file.type || "application/octet-stream", file_name: file.name,
-      size: file.size,
-    });
+    try {
+      await save({
+        id, document_id: documentId, version_id: versionId ?? null,
+        content_type: "original_file", content: null, storage_path: path,
+        mime_type: file.type || "application/octet-stream", file_name: file.name,
+        size: file.size,
+      });
+    } catch (error) {
+      try {
+        await convayAuth.authenticatedRequest(
+          storage("convay-documents/" + path), { method: "DELETE" },
+        );
+      } catch (cleanupError) {
+        console.error("Uploaded object cleanup failed", cleanupError);
+      }
+      throw error;
+    }
+    if (previous?.storage_path && previous.storage_path !== path) {
+      try {
+        await convayAuth.authenticatedRequest(
+          storage("convay-documents/" + previous.storage_path),
+          { method: "DELETE" },
+        );
+        await convayAuth.authenticatedRequest("/rest/v1/rpc/convay_confirm_storage_cleanup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ p_storage_paths: [previous.storage_path] }),
+        });
+      } catch (cleanupError) {
+        // SQL has durably queued this displaced original for later retry.
+        console.warn("Earlier document file remains queued for cleanup", cleanupError);
+      }
+    }
     return id;
   },
   async getOriginalFile(documentId: string, versionId?: string): Promise<File | null> {

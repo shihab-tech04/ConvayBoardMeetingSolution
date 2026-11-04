@@ -11,7 +11,8 @@ interface NotificationsState {
 }
 
 const initialState: NotificationsState = {
-  items: MOCK_NOTIFICATIONS as Notification[],
+  // Historical placeholder notifications exist only in deterministic tests.
+  items: import.meta.env.MODE === "test" ? (MOCK_NOTIFICATIONS as Notification[]) : [],
 };
 
 // ── Slice ─────────────────────────────────────────────────────────────────────

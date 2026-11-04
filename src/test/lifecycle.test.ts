@@ -17,6 +17,7 @@ import {
   type Resolution,
   type Decision,
   type ActionItem,
+  MOCK_MEETINGS, MOCK_RESOLUTIONS, MOCK_DECISIONS, MOCK_ACTION_ITEMS,
 } from '../app/data/boardMeetingData';
 
 // ── Quorum / threshold helpers (duplicated from LiveMeetingPage for isolation) ─
@@ -149,13 +150,14 @@ describe('Meeting registry', () => {
   function makeMeeting(overrides: Partial<Meeting> = {}): Meeting {
     const id = generateId('MTG', getItems().map(m => m.meeting_id));
     return {
+      ...MOCK_MEETINGS[0],
       id, meeting_id: id,
       meeting_title: 'Test Board Meeting',
       committee: 'Board of Directors',
       meeting_type: 'Regular',
       meeting_date: '2026-08-01',
-      meeting_time: '10:00',
-      duration: '120',
+      start_time: '10:00',
+      end_time: '12:00',
       venue: 'Head Office',
       mode: 'Physical',
       status: 'Scheduled',
@@ -200,35 +202,37 @@ describe('Resolution registry', () => {
     const before = result.current.items.length;
     act(() => {
       result.current.add({
+        ...MOCK_RESOLUTIONS[0],
         id: 'res-test-001',
         resolution_id: 'RES-T001',
         resolution_title: 'Approve Dividend Payment',
         resolution_type: 'Ordinary',
-        related_meeting: 'MTG-0001',
+        source_meeting: 'MTG-0001',
         agenda_item: 'Agenda Item 3',
         source_motion: 'Proposed by Mr. Mintoo',
-        status: 'Draft',
+        approval_status: 'Draft',
         created_at: new Date().toISOString(),
       });
     });
     expect(result.current.items.length).toBe(before + 1);
     const found = result.current.items.find(r => r.id === 'res-test-001');
     expect(found?.resolution_title).toBe('Approve Dividend Payment');
-    expect(found?.related_meeting).toBe('MTG-0001');
+    expect(found?.source_meeting).toBe('MTG-0001');
   });
 
   it('resolution links to source motion and agenda item', () => {
     const { result } = renderHook(() => useResolutionRegistry());
     act(() => {
       result.current.add({
+        ...MOCK_RESOLUTIONS[0],
         id: 'res-test-002',
         resolution_id: 'RES-T002',
         resolution_title: 'Approve Budget',
-        related_meeting: 'MTG-0002',
+        source_meeting: 'MTG-0002',
         agenda_item: 'Item 2',
         source_motion: 'MOTION-001',
         source_vote: 'VOTE-001',
-        status: 'Draft',
+        approval_status: 'Draft',
         created_at: new Date().toISOString(),
       });
     });
@@ -248,13 +252,14 @@ describe('Decision registry KPI recalculation', () => {
 
     act(() => {
       result.current.add({
+        ...MOCK_DECISIONS[0],
         id: 'dec-kpi-01',
         decision_title: 'KPI Test Decision',
-        related_meeting: 'MTG-0001',
+        source_meeting: 'MTG-0001',
         decision_type: 'Resolution',
         implementation_status: 'Open',
         created_at: new Date().toISOString(),
-      } as Decision);
+      });
     });
 
     const afterAdd = result.current.items.filter(d => d.implementation_status === 'Open').length;
@@ -280,15 +285,16 @@ describe('Action item registry cross-page synchronization', () => {
 
     act(() => {
       result.current.add({
+        ...MOCK_ACTION_ITEMS[0],
         id: 'ai-sync-01',
         action_title: 'Follow-up on compliance report',
-        related_meeting: 'MTG-0003',
+        source_meeting: 'MTG-0003',
         assigned_to: 'Ms. Nasrin Sultana',
         due_date: '2026-09-01',
         priority: 'High',
-        status: 'Open',
+        implementation_status: 'Open',
         created_at: new Date().toISOString(),
-      } as ActionItem);
+      });
     });
 
     const found = result.current.getById('ai-sync-01');
@@ -300,19 +306,20 @@ describe('Action item registry cross-page synchronization', () => {
 
     act(() => {
       result.current.add({
+        ...MOCK_ACTION_ITEMS[0],
         id: 'ai-sync-02',
         action_title: 'Initial title',
-        status: 'Open',
+        implementation_status: 'Open',
         created_at: new Date().toISOString(),
-      } as ActionItem);
+      });
     });
 
     act(() => {
-      result.current.update('ai-sync-02', { status: 'Completed' });
+      result.current.update('ai-sync-02', { implementation_status: 'Completed' });
     });
 
     const found = result.current.getById('ai-sync-02');
-    expect(found?.status).toBe('Completed');
+    expect(found?.implementation_status).toBe('Completed');
   });
 });
 

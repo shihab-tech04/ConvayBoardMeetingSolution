@@ -82,8 +82,9 @@ export default defineConfig(async (env) =>
   }),
 )
 
-async function resolveUserConfig(env: ConfigEnv): Promise<UserConfig> {
-  return typeof userConfig === 'function' ? await userConfig(env) : await userConfig
+async function resolveUserConfig(_env: ConfigEnv): Promise<UserConfig> {
+  // The imported, typed project configuration is a static object.
+  return userConfig
 }
 
 function isProjectPath(value: unknown): value is string {
