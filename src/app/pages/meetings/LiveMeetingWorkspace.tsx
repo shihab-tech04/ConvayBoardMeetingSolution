@@ -391,7 +391,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: motionItems,      add: addMotionRec }                   = useMotionRegistry();
   const {                          add: addMinutes }                      = useMinutesRegistry();
   const { items: resolutionItems,  add: addResolution }                  = useResolutionRegistry();
-  const { items: voteItems,        add: addVoteRecord }                  = useVoteRegistry();
+  const { items: voteItems, refresh: refreshVoteRecords } = useVoteRegistry();
   const { items: allParticipants }                                       = useParticipantRegistry();
   const { items: allAgendaItems, add: addAgendaItem }                    = useAgendaRegistry();
   const { items: meetingAgendaLinks }                                    = useMeetingAgendaLinkRegistry();
@@ -920,62 +920,91 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     });
   }, [activeVote]);
 
-  const closeVote = useCallback(() => {
-    if (!activeVote || activeVote.status !== "Open") return;
-    const eligible    = presentCount - (activeVote.chairmanCastingVote ? 0 : 0);
-    const votesCast   = activeVote.votesFor + activeVote.votesAgainst;
-    const passed      = activeVote.votesFor > votesCast * activeVote.thresholdPct;
-    const result: "Passed" | "Failed" = passed ? "Passed" : "Failed";
+  // A vote becomes official only when every ballot and summary record commit together.
+  const closingVoteRequest = useRef(false);
+  const [closingVoteBusy, setClosingVoteBusy] = useState(false);
+  const closeVote = useCallback(async () => {
+    if (!activeVote || activeVote.status !== "Open" || closingVoteRequest.current) return;
+    if (!meetingId) { toast.error("Meeting unavailable. Refresh before closing this vote."); return; }
+    if (!quorumMet) { toast.error("Quorum is not met. Voting cannot be finalized."); return; }
+    if (!canRecord(myRole)) { toast.error("Only the Chair or Secretary can close a vote."); return; }
 
-    const closed: ActiveVote = { ...activeVote, status: "Closed", result };
-    setActiveVote(closed);
-
-    // Update motion status
-    setMotions(prev => prev.map(m => m.id === activeVote.motionId ? { ...m, status: result === "Passed" ? "Passed" : "Rejected" } : m));
-
-    // Save individual VoteRecords per voter + one summary record
-    if (meetingId) {
-      const now = nowISO();
-      const auditNote = `${activeVote.voteType} · ${activeVote.threshold} · For: ${activeVote.votesFor} · Against: ${activeVote.votesAgainst} · Abstain: ${activeVote.abstentions}${activeVote.reopenHistory.length > 0 ? ` · Reopened ${activeVote.reopenHistory.length}×` : ""}`;
-
-      // Per-voter records (non-secret ballot only; secret ballot saves anonymised aggregate)
-      if (activeVote.voteType !== "Secret Ballot") {
-        Object.entries(activeVote.castVotes).forEach(([participantId, choice]) => {
-          const voter = participants.find(p => p.id === participantId);
-          const vrcId = mkId("VRC");
-          addVoteRecord({
-            id: vrcId, vote_id: `${activeVote.id}-${participantId}`,
-            meeting_id: meetingId,
-            motion_id: activeVote.motionId ?? "",
-            motion_title: activeVote.motionTitle,
-            voter_name: voter?.name ?? participantId,
-            vote: choice,
-            vote_weight: "1",
-            timestamp: now,
-            notes: auditNote,
-            created_at: now,
-          } as never);
-        });
-      }
-
-      // Summary / audit record
-      const sumId = mkId("VRC");
-      addVoteRecord({
-        id: sumId, vote_id: activeVote.id,
-        meeting_id: meetingId,
-        motion_id: activeVote.motionId ?? "",
-        motion_title: activeVote.motionTitle,
-        voter_name: activeVote.voteType === "Secret Ballot" ? "Secret Ballot (anonymised)" : "Summary",
-        vote: result,
-        vote_weight: String(activeVote.votesFor + activeVote.votesAgainst + activeVote.abstentions),
-        timestamp: now,
-        notes: auditNote,
-        created_at: now,
-      } as never);
+    const count = activeVote.votesFor + activeVote.votesAgainst + activeVote.abstentions;
+    if (count === 0) { toast.error("No votes have been cast. Record ballots before closing."); return; }
+    const aggregateName = activeVote.voteType === "Secret Ballot" ? "Secret Ballot (anonymised)" : "Summary";
+    if (voteItems.some(v => v.meeting_id === meetingId && v.vote_id === activeVote.id && v.voter_name === aggregateName)) {
+      toast.error("This vote is already recorded in SQL. Refresh the meeting before continuing.");
+      return;
     }
 
-    toast[result === "Passed" ? "success" : "error"](`Vote ${result}: ${activeVote.votesFor}–${activeVote.votesAgainst} (${activeVote.abstentions} abstain)`);
-  }, [activeVote, meetingId, presentCount, addVoteRecord]);
+    const votesCast = activeVote.votesFor + activeVote.votesAgainst;
+    const passed = activeVote.votesFor > votesCast * activeVote.thresholdPct;
+    const result: "Passed" | "Failed" = passed ? "Passed" : "Failed";
+    const now = nowISO();
+    const auditNote = [
+      activeVote.voteType,
+      activeVote.threshold,
+      "For: " + activeVote.votesFor,
+      "Against: " + activeVote.votesAgainst,
+      "Abstain: " + activeVote.abstentions,
+      ...(activeVote.reopenHistory.length ? ["Reopened " + activeVote.reopenHistory.length + "×"] : []),
+    ].join(" · ");
+    type VoteBatchOperation = {
+      entity_key: string;
+      action: "create";
+      record_id: string;
+      payload: { id: string; [key: string]: unknown };
+    };
+    const operations: VoteBatchOperation[] = [];
+    // Secret ballots never save named individual choices in the records registry.
+    if (activeVote.voteType !== "Secret Ballot") {
+      for (const [participantId, choice] of Object.entries(activeVote.castVotes)) {
+        const voter = participants.find(p => p.id === participantId);
+        const recordId = "VRC-" + activeVote.id + "-" + participantId;
+        operations.push({
+          entity_key: "bms.votes", action: "create", record_id: recordId,
+          payload: {
+            id: recordId, vote_id: activeVote.id + "-" + participantId, meeting_id: meetingId,
+            motion_id: activeVote.motionId ?? "", motion_title: activeVote.motionTitle,
+            voter_name: participantId === "self" ? currentUser.name : voter?.name ?? participantId,
+            vote: choice, vote_weight: "1", timestamp: now,
+            notes: auditNote, created_at: now,
+          },
+        });
+      }
+    }
+    const summaryId = "VRC-" + activeVote.id + "-summary";
+    operations.push({
+      entity_key: "bms.votes", action: "create", record_id: summaryId,
+      payload: {
+        id: summaryId, vote_id: activeVote.id, meeting_id: meetingId,
+        motion_id: activeVote.motionId ?? "", motion_title: activeVote.motionTitle,
+        voter_name: aggregateName, vote: result, vote_weight: String(count),
+        timestamp: now, notes: auditNote, created_at: now,
+      },
+    });
+
+    closingVoteRequest.current = true;
+    setClosingVoteBusy(true);
+    try {
+      await convayAuth.applyBatch(operations);
+      setActiveVote(previous => previous?.id === activeVote.id
+        ? { ...previous, status: "Closed", result } : previous);
+      setMotions(previous => previous.map(m => m.id === activeVote.motionId
+        ? { ...m, status: result === "Passed" ? "Passed" : "Rejected" } : m));
+      toast[result === "Passed" ? "success" : "info"](
+        "Vote " + result + ": " + activeVote.votesFor + "–" + activeVote.votesAgainst +
+        " (" + activeVote.abstentions + " abstain)"
+      );
+      try { await refreshVoteRecords?.(); }
+      catch { toast.info("Vote saved to SQL. Refresh the page to load the latest record."); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Vote could not be saved. It remains open.");
+    } finally {
+      closingVoteRequest.current = false;
+      setClosingVoteBusy(false);
+    }
+  }, [activeVote, meetingId, quorumMet, myRole, voteItems, participants, currentUser.name, refreshVoteRecords]);
 
   const cancelVote = useCallback(() => {
     if (!activeVote) return;
@@ -3243,8 +3272,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                         </div>
                         {canRecord(myRole) && (
                           <div style={{ display: "flex", gap: "0.3rem" }}>
-                            <button onClick={closeVote} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "#14532d", color: "#22c55e", border: "none", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600 }}>Close Vote</button>
-                            <button onClick={cancelVote} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#7f1d1d", color: "#ef4444", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>Cancel</button>
+                            <button onClick={() => { void closeVote(); }} disabled={closingVoteBusy} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "#14532d", color: "#22c55e", border: "none", cursor: closingVoteBusy ? "wait" : "pointer", fontSize: "0.68rem", fontWeight: 600 }}>{closingVoteBusy ? "Saving vote…" : "Close Vote"}</button>
+                            <button onClick={cancelVote} disabled={closingVoteBusy} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#7f1d1d", color: "#ef4444", border: "none", cursor: closingVoteBusy ? "wait" : "pointer", fontSize: "0.68rem" }}>Cancel</button>
                           </div>
                         )}
                       </div>
