@@ -2321,12 +2321,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                                         </button>
                                       );
                                     })}
-                                    {mOk && canRecordMeeting && (
-                                      <div style={{ marginLeft: "auto", display: "flex", gap: "0.2rem" }}>
-                                        <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)", cursor: "pointer", fontSize: "0.62rem", fontWeight: 700 }}>✓</button>
-                                        <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)", cursor: "pointer", fontSize: "0.62rem", fontWeight: 700 }}>✗</button>
-                                      </div>
-                                    )}
+                                    
                                   </div>
                                 </div>
                               );
@@ -2789,12 +2784,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                                             </button>
                                           );
                                         })}
-                                        {mOk && canRecordMeeting && (
-                                          <div style={{ marginLeft: "auto", display: "flex", gap: "0.2rem" }}>
-                                            <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.18rem 0.4rem", borderRadius: "4px", background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)", cursor: "pointer", fontSize: "0.6rem", fontWeight: 700 }}>✓</button>
-                                            <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.18rem 0.4rem", borderRadius: "4px", background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)", cursor: "pointer", fontSize: "0.6rem", fontWeight: 700 }}>✗</button>
-                                          </div>
-                                        )}
+                                        
                                       </div>
                                     </div>
                                   );
@@ -3450,12 +3440,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                             <button onClick={() => setVoteOpen(true)} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.65rem" }}>Put to Vote</button>
                           </>
                         )}
-                        {canRecordMeeting && (
-                          <>
-                            <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#14532d", color: "#22c55e", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>Pass</button>
-                            <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#7f1d1d", color: "#ef4444", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>Reject</button>
-                          </>
-                        )}
+                        
                         <span style={{ marginLeft: "auto", fontSize: "0.68rem", padding: "0.15rem 0.4rem", borderRadius: "4px", background: m.status === "Passed" ? "#14532d" : m.status === "Rejected" ? "#7f1d1d" : m.status === "Seconded" ? "#1e3a5f" : "#1e293b", color: m.status === "Passed" ? "#22c55e" : m.status === "Rejected" ? "#ef4444" : m.status === "Seconded" ? "#60a5fa" : "#94a3b8" }}>{m.status}</span>
                       </div>
                     </div>
