@@ -11,10 +11,6 @@ declare
   v_mid text;
   v_agenda text;
 begin
-  if auth.uid() is null then
-    raise exception 'Authenticated actor required for meeting relationships'
-      using errcode = '42501';
-  end if;
   if tg_op = 'DELETE' then
     if old.entity_key = 'bms.meetings' and exists(
       select 1 from public.convay_entity_records l
