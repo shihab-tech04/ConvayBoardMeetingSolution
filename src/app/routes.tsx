@@ -11,6 +11,7 @@ import { LiveMeetingPage }          from "./pages/meetings/LiveMeetingPage";
 import { DashboardPage }            from "./pages/dashboard/DashboardPage";
 import { PSRDashboardPage }         from "./pages/dashboard/PSRDashboardPage";
 import { CombinedDashboardPage }    from "./pages/dashboard/CombinedDashboardPage";
+import { NotificationsPage } from "./pages/dashboard/NotificationsPage";
 import { ReportViewPage }           from "./pages/report/ReportViewPage";
 import { ReturnViewApprovalPage }   from "./pages/return-register/ReturnViewApprovalPage";
 import { OnlineReturnRegisterPage } from "./pages/return-register/OnlineReturnRegisterPage";
@@ -110,6 +111,7 @@ export const router = createBrowserRouter([
       { path: "home/overview",    Component: DashboardPage },
       { path: "home/my-tasks",    Component: PSRDashboardPage },
       { path: "home/my-calendar", Component: CombinedDashboardPage },
+      { path: "home/notifications", Component: NotificationsPage },
 
       // ── Meetings ──────────────────────────────────────────────────────────
       { path: "meetings/meeting-overview",  Component: ReturnViewApprovalPage },

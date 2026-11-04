@@ -1,41 +1,35 @@
 import { useCallback, startTransition } from "react";
-import { useDispatch } from "react-redux";
 import { useNavigate } from "react-router";
-import type { AppDispatch } from "../store/store";
-import {
-  markNotificationRead,
-  markAllNotificationsRead,
-} from "../store/notificationsSlice";
 import { useNotificationsState } from "./useNotificationsState";
+import { notificationDestinationPath } from "../services/supabase/convayNotifications";
 import type { Notification } from "../store/notificationsSlice";
 
-// Re-export for backwards compat
+// Re-export for backwards compatibility.
 export type { Notification };
 
 export function useNotifications(
   _onNavigate?: (destination: { main: string; sub?: string; third?: string }) => void
 ) {
-  const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
-  const { notifications, unreadCount } = useNotificationsState();
+  const { notifications, unreadCount, markRead, markAllRead, loading, error, reload } =
+    useNotificationsState();
 
   const handleNotificationClick = useCallback(
     (notification: Notification) => {
-      dispatch(markNotificationRead(notification.id));
-      const { main, sub, third } = notification.destination;
-      const path = third ? `/${main}/${sub}/${third}` : sub ? `/${main}/${sub}` : `/${main}`;
-      startTransition(() => navigate(path));
+      void markRead(notification.id);
+      startTransition(() => navigate(notificationDestinationPath(notification.destination)));
     },
-    [dispatch, navigate]
+    [markRead, navigate]
   );
 
   const handleMarkAllRead = useCallback(() => {
-    dispatch(markAllNotificationsRead());
-  }, [dispatch]);
+    void markAllRead();
+  }, [markAllRead]);
 
   return {
     notifications,
     unreadCount,
+    loading, error, reload,
     handleNotificationClick,
     handleMarkAllRead,
   };

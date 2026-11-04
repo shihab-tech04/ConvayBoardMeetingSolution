@@ -19,7 +19,11 @@ interface NotificationDropdownProps {
   notifications: Notification[];
   onClose: () => void;
   onNotificationClick: (notification: Notification) => void;
-  onMarkAllRead: () => void;
+  onMarkAllRead: () => void | Promise<unknown>;
+  onSeeAll?: () => void;
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
   forceBottomSheet?: boolean;
 }
 
@@ -37,7 +41,8 @@ function getNotificationIcon(type: NotificationType): LucideIcon {
 }
 
 export function NotificationDropdown({
-  notifications, onClose, onNotificationClick, onMarkAllRead, forceBottomSheet = false,
+  notifications, onClose, onNotificationClick, onMarkAllRead,
+  onSeeAll, loading = false, error = null, onRetry, forceBottomSheet = false,
 }: NotificationDropdownProps) {
   const { isDesktop } = useUIState();
   const isMobile = forceBottomSheet || !isDesktop;
@@ -110,13 +115,25 @@ export function NotificationDropdown({
 
       {/* List */}
       <div className="notification-dropdown__list">
-        {filteredNotifications.length === 0 ? (
+        {loading ? (
+          <div role="status" className="notification-dropdown__empty">
+            <p className="notification-dropdown__empty-text">Loading notifications...</p>
+          </div>
+        ) : error ? (
+          <div role="alert" className="notification-dropdown__empty">
+            <h4 className="notification-dropdown__empty-title">Notifications unavailable</h4>
+            <p className="notification-dropdown__empty-text">{error}</p>
+            {onRetry && <button type="button" className="notification-dropdown__mark-read" onClick={onRetry}>Retry</button>}
+          </div>
+        ) : filteredNotifications.length === 0 ? (
           <div className="notification-dropdown__empty">
             <div className="notification-dropdown__empty-icon">
               <BellDot size={20} strokeWidth={1.75} />
             </div>
             <h4 className="notification-dropdown__empty-title">No notifications</h4>
-            <p className="notification-dropdown__empty-text">You are all caught up.</p>
+            <p className="notification-dropdown__empty-text">
+              {activeFilter === "all" ? "You are all caught up." : "No notifications match this filter."}
+            </p>
           </div>
         ) : (
           filteredNotifications.map((notification) => {
@@ -153,9 +170,9 @@ export function NotificationDropdown({
       </div>
 
       {/* Footer */}
-      {notifications.length > 0 && (
+      {onSeeAll && (
         <div className="notification-dropdown__footer">
-          <button onClick={onClose} className="notification-dropdown__see-all">
+          <button onClick={onSeeAll} className="notification-dropdown__see-all">
             See all notifications
           </button>
         </div>

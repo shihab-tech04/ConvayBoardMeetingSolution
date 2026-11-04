@@ -6,6 +6,7 @@ import type { AppDispatch } from "../../store/store";
 import { useSettings } from "../../hooks/useSettings";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useNotificationsState } from "../../hooks/useNotificationsState";
+import { notificationDestinationPath } from "../../services/supabase/convayNotifications";
 import { setAssessmentYear } from "../../store/settingsSlice";
 import { ASSESSMENT_YEARS } from "../../data/navigation";
 import { NotificationDropdown } from "../dropdowns/NotificationDropdown";
@@ -25,7 +26,7 @@ export function MobileTopbar({ onMenuToggle, onSignOut }: MobileTopbarProps) {
 
   const { assessmentYear } = useSettings();
   const currentUser = useCurrentUser();
-  const { notifications, unreadCount, markRead, markAllRead } = useNotificationsState();
+  const { notifications, unreadCount, markRead, markAllRead, loading, error, reload } = useNotificationsState();
 
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
@@ -104,15 +105,20 @@ export function MobileTopbar({ onMenuToggle, onSignOut }: MobileTopbarProps) {
           {notificationPanelOpen && (
             <NotificationDropdown
               notifications={notifications}
+              loading={loading}
+              error={error}
+              onRetry={() => void reload()}
               onClose={() => setNotificationPanelOpen(false)}
-              onNotificationClick={(n) => {
-                markRead(n.id);
-                const { main, sub, third } = n.destination;
-                const path = third ? `/${main}/${sub}/${third}` : sub ? `/${main}/${sub}` : `/${main}`;
-                startTransition(() => navigate(path));
+              onSeeAll={() => {
+                startTransition(() => navigate("/home/notifications"));
                 setNotificationPanelOpen(false);
               }}
-              onMarkAllRead={markAllRead}
+              onNotificationClick={(n) => {
+                void markRead(n.id);
+                startTransition(() => navigate(notificationDestinationPath(n.destination)));
+                setNotificationPanelOpen(false);
+              }}
+              onMarkAllRead={() => void markAllRead()}
               forceBottomSheet
             />
           )}
