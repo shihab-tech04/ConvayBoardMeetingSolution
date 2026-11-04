@@ -547,11 +547,19 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // optional meeting-participant role is not Chairperson or Secretary.
   // Restricted users still depend on their actual meeting roles; the API/SQL
   // performs the authoritative per-action permission check.
-  const canRecordMeeting = access.loaded && (access.is_super_admin || canRecord(myRole));
-  const canControlMeeting = access.loaded &&
-    (access.is_super_admin || (canControl(myRole) && access.effective_permissions.includes("mtg_start")));
-  // Do not override canVote(myRole): ballot eligibility is a separate,
-  // meeting-specific governance rule, even for system administrators.
+  const hasGrant = (code: string) => access.loaded &&
+    (access.is_super_admin || access.effective_permissions.includes(code));
+  const hasLeadership = access.is_super_admin || canRecord(myRole);
+  // Match user-facing controls to the actual SQL permission catalogue.
+  const canRecordMeeting = hasLeadership && hasGrant("mtg_start");
+  const canControlMeeting = (access.is_super_admin || canControl(myRole)) &&
+    hasGrant("mtg_start") && hasGrant("mtg_update");
+  const canManageAgenda = hasLeadership && hasGrant("mtg_update");
+  const canCreateTemporaryAgenda = canManageAgenda && hasGrant("agd_submit");
+  const canEditAttendance = hasLeadership && hasGrant("mtg_attendance");
+  const canDraftMinutes = hasLeadership && hasGrant("min_create");
+  // Full system administration does not grant ballot eligibility; real
+  // membership, attendance and recusal checks still apply.
 
   // ── Load persisted session ─────────────────────────────────────────────────
   const initSession = loadSession(meetingId);
@@ -565,6 +573,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
+  const isVotingEligible = useCallback((participantId: string) => {
+    if (!participantId || !meetingLinks.some(link => link.user_id === participantId && link.voting_eligible)) return false;
+    const status = attendanceMap[participantId] ?? "Not Joined";
+    if (!ACTIVE_STATES.includes(status) || status === "Recused") return false;
+    const agendaKey = agendaItems[activeIdx]?.key ?? "";
+    return !(agendaRecusals[agendaKey] ?? []).includes(participantId);
+  }, [meetingLinks, attendanceMap, agendaItems, activeIdx, agendaRecusals]);
+  const canCastOwnBallot = hasGrant("mtg_join") && canVote(myRole) &&
+    isVotingEligible(currentUser.id);
   // Transient UI — not persisted
   const [viewerDoc,      setViewerDoc]        = useState<BoardDocument | null>(null);
 
@@ -956,6 +973,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   const castVote = useCallback((participantId: string, choice: "For" | "Against" | "Abstain") => {
     if (!activeVote || activeVote.status !== "Open") return;
+    if (!isVotingEligible(participantId)) {
+      toast.error("Only present, eligible, non-recused participants may vote.");
+      return;
+    }
+    if (participantId === currentUser.id ? !canCastOwnBallot : !canRecordMeeting) {
+      toast.error("You do not have permission to record this vote.");
+      return;
+    }
     setActiveVote(prev => {
       if (!prev) return prev;
       const updated = { ...prev, castVotes: { ...prev.castVotes, [participantId]: choice } };
@@ -964,7 +989,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       updated.abstentions   = Object.values(updated.castVotes).filter(v => v === "Abstain").length;
       return updated;
     });
-  }, [activeVote]);
+  }, [activeVote, isVotingEligible, currentUser.id, canCastOwnBallot, canRecordMeeting]);
 
   // A vote becomes official only when every ballot and summary record commit together.
   const closingVoteRequest = useRef(false);
@@ -1539,24 +1564,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     ...motions.map(m => ({ value: m.id, label: m.title.length > 60 ? `${m.title.slice(0, 60)}…` : m.title })),
   ];
 
-  // Voting eligibility: canonical voting_eligible flag + present + not globally or agenda-recused (Section 16)
+  // Only canonical SQL-linked meeting participants count toward voting.
   const votingEligibleIds = new Set(
-    meetingLinks
-      .filter(l =>
-        l.voting_eligible &&
-        ACTIVE_STATES.includes(attendanceMap[l.user_id] ?? "Not Joined" as AttendanceStatus) &&
-        (attendanceMap[l.user_id] ?? "Not Joined") !== "Recused" &&
-        !agendaRecusedIds.has(l.user_id)
-      )
-      .map(l => l.user_id)
+    meetingLinks.filter(link => isVotingEligible(link.user_id)).map(link => link.user_id)
   );
-  // Fallback: if no canonical links, use role-based check from participants list
-  const useFallbackVoting = meetingLinks.length === 0;
 
   const pendingVotes = activeVote
     ? participants.filter(p => {
-        const isPresent = ACTIVE_STATES.includes(attendanceMap[p.id] ?? "Not Joined" as AttendanceStatus);
-        const canVoteP  = useFallbackVoting ? canVote(myRole) && isPresent : votingEligibleIds.has(p.id);
+        
+        const canVoteP = votingEligibleIds.has(p.id);
         return canVoteP && !activeVote.castVotes[p.id];
       }).length
     : 0;
@@ -1766,7 +1782,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                           const docQvAbstain = Object.values(docQvVotes).filter(v => v === "Abstain").length;
                           const docQvTotal   = docQvFor + docQvAgainst + docQvAbstain;
                           const docQvMyVote  = docQvVotes[currentUser.name] as "For" | "Against" | "Abstain" | undefined;
-                          const docQvCanVote = canVote(myRole) || canRecordMeeting;
+                          const docQvCanVote = canCastOwnBallot;
                           const docQvCast    = (v: "For" | "Against" | "Abstain") => {
                             if (!docQvCanVote) return;
                             setAgendaMotionVotes(p => ({ ...p, [docQvKey]: { ...(p[docQvKey] ?? {}), [currentUser.name]: v } }));
@@ -2388,7 +2404,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       const qvAbstain = Object.values(qvVotes).filter(v => v === "Abstain").length;
                       const qvTotal   = qvFor + qvAgainst + qvAbstain;
                       const qvMyVote  = qvVotes[currentUser.name] as "For" | "Against" | "Abstain" | undefined;
-                      const qvCanVote = canVote(myRole) || canRecordMeeting;
+                      const qvCanVote = canCastOwnBallot;
                       const qvCast    = (v: "For" | "Against" | "Abstain") => {
                         if (!qvCanVote) return;
                         setAgendaMotionVotes(p => ({ ...p, [qvKey]: { ...(p[qvKey] ?? {}), [currentUser.name]: v } }));
@@ -3191,7 +3207,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                   })}
 
                   {/* Temporary agenda button */}
-                  {ctrlStatus === "in-progress" && canRecordMeeting && (
+                  {ctrlStatus === "in-progress" && canCreateTemporaryAgenda && (
                     <button onClick={() => setTempAgendaOpen(true)} style={{ padding: "0.4rem 0.75rem", borderRadius: "6px", background: "#1e293b", color: "#f59e0b", border: "1px dashed #f59e0b", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600, textAlign: "center" }}>
                       + Create Temporary Agenda
                     </button>
@@ -3262,7 +3278,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                     quorumLabel={quorumStatusLabel(quorumCalcResult)}
                     eligibleCount={quorumCalcResult.eligibleCount}
                     requiredCount={quorumCalcResult.requiredCount}
-                    canUpdate={canRecordMeeting}
+                    canUpdate={canEditAttendance}
                     isEnded={ctrlStatus === "ended"}
                     onSetAttendance={(id, st) => setAttendance(id, st as AttendanceStatus)}
                     agendaKey={activeAgendaKey}
@@ -3345,15 +3361,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       </div>
 
                       {/* Cast vote — only for eligible voters */}
-                      {canVote(myRole) && activeVote.voteType !== "Secret Ballot" && (
+                      {canCastOwnBallot && activeVote.voteType !== "Secret Ballot" && (
                         <div>
                           <p style={{ fontSize: "0.68rem", color: "#64748b", margin: "0 0 0.3rem" }}>Cast your vote:</p>
                           <div style={{ display: "flex", gap: "0.3rem" }}>
                             {(["For","Against","Abstain"] as const).map(choice => (
                               <button
                                 key={choice}
-                                onClick={() => castVote("self", choice)}
-                                style={{ flex: 1, padding: "0.35rem 0.3rem", borderRadius: "6px", border: `1px solid ${activeVote.castVotes["self"] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#64748b") : "#334155"}`, background: activeVote.castVotes["self"] === choice ? (choice === "For" ? "#14532d" : choice === "Against" ? "#7f1d1d" : "#1e293b") : "#1e293b", color: activeVote.castVotes["self"] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#94a3b8") : "#64748b", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.25rem" }}
+                                onClick={() => castVote(currentUser.id, choice)}
+                                style={{ flex: 1, padding: "0.35rem 0.3rem", borderRadius: "6px", border: `1px solid ${activeVote.castVotes[currentUser.id] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#64748b") : "#334155"}`, background: activeVote.castVotes[currentUser.id] === choice ? (choice === "For" ? "#14532d" : choice === "Against" ? "#7f1d1d" : "#1e293b") : "#1e293b", color: activeVote.castVotes[currentUser.id] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#94a3b8") : "#64748b", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.25rem" }}
                               >
                                 {choice === "For" ? <ThumbsUp size={11} /> : choice === "Against" ? <ThumbsDown size={11} /> : <Minus size={11} />} {choice}
                               </button>
@@ -3595,7 +3611,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", flexShrink: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
                     <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>Live Minutes</p>
-                    {ctrlStatus !== "not-started" && canRecordMeeting && (
+                    {ctrlStatus !== "not-started" && canDraftMinutes && (
                       <button onClick={() => setMinutesOpen(true)} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600 }}>Save Draft</button>
                     )}
                   </div>
