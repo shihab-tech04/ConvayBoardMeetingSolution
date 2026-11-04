@@ -30,6 +30,7 @@ import { friendlyDate, friendlyDue, friendlyTime, timeAgo } from "./dateUtils";
 import { dashboardCalendarWindow, isMeetingApprovalPending } from "./dashboardOverviewRules";
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
+import { resolveLifecycleStage, type LifecycleStage } from "./meetingLifecycleStatus";
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
@@ -41,6 +42,13 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string }> = {
   "In Progress":      { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
   "Paused":           { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
   "On Break":         { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
+  "Ready to Start":   { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
+  "Awaiting Approval":{ bg: "var(--color-primary-alpha-8)",  fg: "var(--color-primary)"   },
+  "Scheduled":        { bg: "var(--color-primary-alpha-8)",  fg: "var(--color-primary)"   },
+  "Awaiting Minutes": { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
+  "Awaiting Review":  { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
+  "Minutes Approved": { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
+  "Archived":         { bg: "var(--color-surface-secondary)", fg: "var(--color-text-secondary)" },
   "Pending Approval": { bg: "var(--color-primary-alpha-8)",  fg: "var(--color-primary)"   },
   "Approved":         { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
   "Published":        { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
@@ -297,20 +305,6 @@ function countdown(dateStr: string, timeStr?: string): string {
 
 // ── Lifecycle stage resolver ───────────────────────────────────────────────────
 
-type LifecycleStage = "Preparation Required" | "Awaiting Approval" | "Ready to Publish" | "Upcoming Meeting" | "Ready to Start" | "Meeting Live" | "Post-Meeting Follow-up";
-
-function resolveLifecycleStage(status: string, dateStr: string): { stage: LifecycleStage } {
-  const daysUntil = (new Date(dateStr + "T12:00:00").getTime() - Date.now()) / 86400000;
-  if (status === "Draft")                                                               return { stage: "Preparation Required"    };
-  if (status === "Pending Approval")                                                    return { stage: "Awaiting Approval"       };
-  if (status === "Approved")                                                            return { stage: "Ready to Publish"        };
-  if ((status === "Scheduled" || status === "Published") && daysUntil > 1)             return { stage: "Upcoming Meeting"        };
-  if ((status === "Scheduled" || status === "Published") && daysUntil <= 1)            return { stage: "Ready to Start"          };
-  if (status === "In Progress")                                                         return { stage: "Meeting Live"            };
-  if (status === "Awaiting Minutes" || status === "Completed")                         return { stage: "Post-Meeting Follow-up"  };
-  return { stage: "Upcoming Meeting" };
-}
-
 const STAGE_STYLES: Record<LifecycleStage, { color: string; bg: string }> = {
   "Preparation Required":   { color: "rgba(255,190,100,0.95)", bg: "rgba(255,180,80,0.22)"  },
   "Awaiting Approval":      { color: "rgba(255,200,100,0.95)", bg: "rgba(255,200,80,0.22)"  },
@@ -318,6 +312,7 @@ const STAGE_STYLES: Record<LifecycleStage, { color: string; bg: string }> = {
   "Upcoming Meeting":       { color: "rgba(200,215,255,0.95)", bg: "rgba(255,255,255,0.13)" },
   "Ready to Start":         { color: "rgba(134,239,172,0.95)", bg: "rgba(74,222,128,0.20)"  },
   "Meeting Live":           { color: "#86efac",                bg: "rgba(74,222,128,0.25)"  },
+  "Meeting Paused":         { color: "rgba(255,200,100,0.95)", bg: "rgba(255,200,80,0.22)" },
   "Post-Meeting Follow-up": { color: "rgba(200,215,255,0.80)", bg: "rgba(255,255,255,0.10)" },
 };
 
