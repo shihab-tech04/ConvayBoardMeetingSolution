@@ -27,6 +27,7 @@ import { useUserRegistry } from "../../hooks/useUserRegistry";
 import { useResolvedActions } from "../../actions/useResolvedActions";
 import type { ResolvedAction } from "../../actions/types";
 import { friendlyDate, friendlyDue, friendlyTime, timeAgo } from "./dateUtils";
+import { dashboardCalendarWindow, isMeetingApprovalPending } from "./dashboardOverviewRules";
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -994,8 +995,7 @@ export function DashboardPage() {
   ];
   const dashboardDataState = resolveDashboardDataState(dashboardSources);
 
-  const today   = new Date().toISOString().slice(0, 10);
-  const weekEnd = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const { today, weekEnd } = dashboardCalendarWindow(new Date());
 
 
   // ── Ongoing meetings (regardless of date) ───────────────────────────────────
@@ -1121,7 +1121,7 @@ export function DashboardPage() {
 
   const openTaskCount = useMemo(() => {
     let n = 0;
-    n += meetings.filter(m => ["Pending Approval", "Awaiting Minutes", "Awaiting Approval"].includes(String(m.approval_status ?? ""))).length;
+    n += meetings.filter(m => isMeetingApprovalPending(m.approval_status ?? m.status)).length;
     n += agendas.filter(a => ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))).length;
     n += boardPacks.filter(p => !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? ""))).length;
     n += rsvps.filter(r => !r.response || String(r.response) === "Pending").length;
@@ -1139,7 +1139,7 @@ export function DashboardPage() {
     [actions, today, weekEnd]
   );
 
-  const pendingApprovals      = meetings.filter(m => ["Pending Approval", "Awaiting Minutes", "Awaiting Approval"].includes(String(m.approval_status ?? "")));
+  const pendingApprovals      = meetings.filter(m => isMeetingApprovalPending(m.approval_status ?? m.status));
   const pendingAgendas        = agendas.filter(a => ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? "")));
   const pendingApprovalCount  = pendingApprovals.length + pendingAgendas.length;
   const pendingToday          = pendingApprovals.filter(m => String(m.meeting_date ?? "") === today).length;
