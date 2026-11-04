@@ -69,6 +69,7 @@ begin
       and link.payload->>'meeting_id'=v_meeting
       and link.payload->>'user_id'=v_voter
       and link.payload->>'voting_eligible'='true'
+      and exists (select 1 from auth.users u where u.id::text=v_voter)
   ) then
     raise exception 'Voter is not an eligible linked meeting participant'
       using errcode='42501';
