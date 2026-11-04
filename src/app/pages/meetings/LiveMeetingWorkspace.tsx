@@ -38,127 +38,12 @@ import { Button } from "../../components/buttons/Button";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import { MOTION_FORM_FIELDS, MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import type { EntryFormValue } from "../../components/forms/EntryForm";
+import { getAgendaDescription } from "../../utils/agendaDescription";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type MeetingCtrlStatus = "not-started" | "in-progress" | "paused" | "on-break" | "adjourned" | "ended";
 
-const AGENDA_DESC_FALLBACK: Record<string, string> = {
-  "Opening and Quorum Declaration":
-    "The Chairperson calls the meeting to order and welcomes all members. The Company Secretary confirms the attendance of members and determines whether the requisite quorum has been met in accordance with the Constitution and applicable regulatory requirements. Apologies received from absent members are noted for the record. If quorum is not achieved within the prescribed waiting period, the meeting will be adjourned and rescheduled in accordance with the rules of the governance body. Upon confirmation of quorum, the Chairperson formally opens the meeting and confirms that all necessary notices and supporting materials were circulated within the required timeframes.",
-
-  "Approval of Previous Meeting Minutes":
-    "The Company Secretary presents the draft minutes of the previous meeting for review and approval by the Board. Members are invited to raise any corrections, amendments, or clarifications. Once the minutes accurately reflect the proceedings, decisions, and action items arising from the prior meeting, the Board is requested to formally adopt them as a true and correct record. Approved minutes are signed by the Chairperson and filed in accordance with the governance framework. Outstanding action items from the previous meeting are reviewed and their completion status is noted for the record.",
-
-  "Confirmation of Previous Meeting Minutes":
-    "The Company Secretary tables the draft minutes of the immediately preceding meeting for the Committee's review. Members are given the opportunity to propose any factual corrections or amendments. Upon satisfactory review, the Committee is requested to confirm the minutes as an accurate and complete record of proceedings, decisions taken, and action items agreed. The confirmed minutes will be signed by the Chairperson and retained in the official minute book. Progress on action items committed to at the previous meeting is also reviewed at this stage.",
-
-  "Review of Q2 Financial Performance":
-    "The Chief Financial Officer presents a comprehensive review of the organisation's financial performance for the second quarter ending 30 June 2026. The presentation covers key profit and loss metrics, balance sheet position, capital adequacy ratios, liquidity indicators, and significant variances against the approved annual budget and comparative prior-year figures. The Board is invited to scrutinise performance drivers, assess the outlook for the second half of the year, and provide strategic direction to management on any corrective measures required. Detailed financial statements, ratio analyses, and management commentary are included in the supporting board pack.",
-
-  "Capital Expenditure Approval — Q3":
-    "Management presents the capital expenditure proposals for Q3 2026, totalling ৳50,000,000 across core investment categories including digital infrastructure, branch network expansion, and operational equipment. Each proposal is supported by a business case outlining strategic alignment, expected return on investment, payback period, and risk assessment. The Board is requested to review the individual expenditure items, satisfy itself that the proposals represent prudent allocation of capital in line with the approved strategic plan, and to formally approve the Q3 capital expenditure programme within the organisation's delegated authority framework.",
-
-  "Compliance and Regulatory Update":
-    "The Head of Compliance presents a summary of the regulatory landscape and the organisation's compliance status for the period under review. The update covers correspondence received from regulatory bodies, the status of any outstanding regulatory submissions or undertakings, recent legislative or policy changes of significance, and the outcome of compliance monitoring activities conducted during the quarter. Key compliance risks and any breach remediation activities are highlighted for the Board's awareness. The Board is invited to note the update and provide guidance on matters requiring Board-level oversight or escalation.",
-
-  "Internal Audit Findings — Q2 2026":
-    "The Head of Internal Audit presents the consolidated findings from internal audit engagements conducted during the second quarter of 2026. The report categorises findings by risk rating — Critical, High, Medium, and Low — and identifies control weaknesses, process deficiencies, and areas of non-compliance with policies and procedures. Management responses and agreed remediation timelines are included for each finding. The Audit Committee reviews the adequacy and timeliness of management responses, follows up on overdue action items from prior audit cycles, and assesses the overall effectiveness of the internal control environment.",
-
-  "External Auditor Status Update":
-    "The Committee receives a status update from the external auditors on the progress of the annual statutory audit engagement and any interim review work completed to date. The external auditors report on areas of audit focus, significant accounting judgements identified, and any matters that may require the Committee's attention or guidance. Independence confirmations and any non-audit services provided during the period are disclosed. The Committee reviews the quality of management cooperation with the audit process and confirms the ongoing adequacy of the audit scope relative to organisational risk.",
-
-  "Risk Appetite Statement Review":
-    "The Chief Risk Officer presents the annual review of the organisation's Risk Appetite Statement for the Committee's consideration and recommendation to the Board. The review assesses whether the current risk appetite remains appropriate in light of changes in the strategic direction, operating environment, and regulatory expectations. Proposed amendments to risk tolerance thresholds across key risk categories — credit, market, operational, liquidity, and reputational — are presented with supporting rationale. The Committee is requested to endorse the revised Risk Appetite Statement and recommend it to the Board for formal adoption.",
-
-  "Key Risk Indicator Dashboard Q2":
-    "The Chief Risk Officer presents the Q2 Key Risk Indicator dashboard providing the Committee with a quantitative overview of the organisation's risk profile against approved appetite thresholds. Indicators that have breached or are trending toward warning or limit levels are highlighted, together with management's explanations and proposed mitigating actions. The dashboard covers credit concentration risk, market risk exposures, liquidity coverage, operational loss events, and cyber security metrics. The Committee reviews the effectiveness of risk controls in place and considers whether any indicators warrant escalation to the full Board.",
-
-  "Board Remuneration Policy Review":
-    "The Company Secretary presents the annual review of the Board Remuneration Policy for the Committee's consideration. The review benchmarks current remuneration levels for Non-Executive Directors against comparable governance bodies in the sector, taking into account meeting frequency, committee responsibilities, and market practice. Proposed revisions to fee structures, allowances, and other benefits, if any, are presented for discussion. The Committee is requested to review the policy for continued fitness for purpose and to make a formal recommendation to the Board regarding any amendments, ensuring alignment with governance best practice and regulatory expectations.",
-
-  "Shariah Compliance Report Q2":
-    "The Shariah Adviser presents the Q2 Shariah Compliance Report covering the Committee's oversight activities, product compliance reviews, fatwa issuances, and training initiatives undertaken during the period. The report highlights any Shariah non-compliance events identified, their root causes, rectification measures taken, and the outcome of charity payment calculations where applicable. The Committee reviews the effectiveness of the Shariah governance framework and considers emerging Shariah standards that may impact the organisation's product offerings and operational practices. Members are invited to raise queries and provide guidance on matters requiring Shariah Committee direction.",
-
-  "New Product Shariah Certification":
-    "Management presents the product structuring papers and Shariah compliance documentation for a new financial product proposed for launch. The submission includes a detailed description of the underlying contract, transaction flows, supporting documentation, draft customer disclosures, and legal opinions confirming structural validity. The Shariah advisers present their technical analysis of the product's compliance with applicable Shariah principles and relevant accounting standards. The Committee deliberates on the proposed structure and, if satisfied with its Shariah compliance, resolves to issue a formal Shariah certification permitting the product's commercialisation.",
-
-  "Monthly Business Performance Review":
-    "The Managing Director and senior management present the monthly business performance dashboard for the Executive Committee's review. The presentation covers revenue performance against targets, customer growth metrics, digital channel adoption rates, human capital indicators, and operational efficiency ratios. Significant business developments, competitive intelligence, and market dynamics during the period are highlighted. The Executive Committee provides oversight of management performance, identifies areas requiring corrective action, and ensures alignment of operational activities with the strategic priorities approved by the Board.",
-
-  "Executive Performance Review — Q2 2026":
-    "The Chief Financial Officer presents a detailed review of Q2 2026 financial and operational performance against approved Key Performance Indicators and strategic objectives. Significant variances from budget are analysed with root cause explanations and proposed corrective actions. The Committee reviews the performance of individual business divisions and functional units against their agreed targets. The Managing Director provides commentary on key business developments, market conditions, and management initiatives during the quarter. The Committee assesses overall executive performance and determines whether any matters warrant escalation to the Board.",
-
-  "Strategic Initiative Progress Report":
-    "The Managing Director provides a progress update on the five strategic initiatives included in the 2026–2030 Strategic Plan as approved by the Board. For each initiative, the report covers milestones achieved during the period, activities planned for the next quarter, risks and impediments to delivery, resource requirements, and an updated forecast against the original implementation timeline and budget. The Committee reviews the overall health of the strategic programme and provides guidance on prioritisation, resource allocation, and escalation of any issues that may require Board-level decision. Initiatives presenting material delivery risk are discussed in detail.",
-
-  "Review of Internal Audit Emergency Report":
-    "The Head of Internal Audit presents findings from the emergency internal audit conducted in response to operational risk events identified during Q3. The audit identified critical and high-rated findings across key risk areas including segregation of duties in payment processing, gaps in AML transaction monitoring controls, and weaknesses in IT system access management. Each finding is presented with supporting evidence, risk rating rationale, potential financial and reputational impact, and recommended control enhancements. Management is invited to respond to the findings and commit to remediation timelines. The Board considers the seriousness of the findings and determines the appropriate governance response.",
-
-  "Management Letter Response & Remediation Plan":
-    "The Chief Financial Officer and Chief Risk Officer present management's formal response to the audit findings and a comprehensive remediation plan addressing each critical and high-rated issue identified. For each finding, the plan specifies the root cause, the agreed corrective action, the responsible owner, target completion date, and interim controls in place pending full remediation. The Board reviews the adequacy and credibility of the proposed responses, satisfies itself that management has appropriately prioritised remediation efforts, and formally approves the remediation plan. The Audit Committee is directed to monitor progress and report to the Board at its next scheduled meeting.",
-
-  "Resolution on Immediate Corrective Actions":
-    "The Board considers and passes a formal resolution directing management to implement immediate corrective actions in respect of critical and high-rated audit findings identified in the emergency internal audit report. The resolution sets out specific timeframes within which each corrective action must be completed, assigns accountability to named senior officers, and establishes reporting obligations back to the Board and Audit Committee. By passing this resolution, the Board formally exercises its oversight authority and creates a binding governance record of its direction to management. The Company Secretary is directed to circulate the resolution to all relevant parties and to track completion against agreed deadlines.",
-
-  "Any Other Business & Meeting Closure":
-    "Members are invited to raise any matters of relevance that have not been captured in the formal agenda, subject to the Chairperson's discretion regarding the appropriateness and urgency of matters so raised. Any significant matters raised under this item that require further consideration or formal decision may be deferred to the next scheduled meeting or addressed through an out-of-session process as appropriate. Following the conclusion of all agenda items, the Chairperson confirms the date, time, and venue of the next scheduled meeting. The Chairperson formally closes the meeting and thanks members for their attendance and contributions.",
-
-  // ── Child agenda item descriptions ──────────────────────────────────────────
-  "Review of Action Items from Previous Meeting":
-    "Each action item committed to at the previous meeting is reviewed in sequence. For each item, the responsible officer reports on completion status, with supporting evidence where applicable. Where items remain outstanding, an explanation is provided and a revised completion date is agreed. The Board Secretary notes all updates for inclusion in the minutes.",
-  "Matters Arising from Previous Minutes":
-    "Members are invited to raise any matters arising from the recorded minutes of the previous meeting that require further clarification, correction, or follow-up direction from the Board. This item is distinct from the formal adoption of the minutes and is intended to surface any procedural or substantive matters that may have been omitted or that warrant re-examination before the minutes are finalised.",
-  "Action Items Progress":
-    "Systematic review of all action items arising from the immediately preceding Board meeting. Each item is presented with its completion status — Completed, In Progress, or Overdue — along with the responsible officer's commentary. Overdue items are subject to Board scrutiny and management is expected to provide a credible revised completion date and explanation for any delay.",
-  "Revenue & Profitability Analysis":
-    "The CFO presents a detailed breakdown of Q2 revenue across all business segments — corporate banking, retail banking, treasury, and fee-based services. Net interest margin movement, fee income growth, and trading gains are analysed against both budget and the prior year comparative. The Board discusses key revenue drivers, pricing dynamics, and the strategic implications of segment-level variances.",
-  "Cost Management & Operating Efficiency":
-    "Analysis of operating expenditure against the approved budget for the period, with a focus on the cost-to-income ratio trend. Efficiency initiatives implemented during the quarter are reviewed for impact. Management presents a forecast for full-year costs and highlights any unbudgeted expenditure requiring Board awareness. Headcount movement and its cost implications are also addressed.",
-  "Capital Adequacy & Liquidity Position":
-    "The organisation's capital adequacy ratios — Common Equity Tier 1 (CET1), Tier 1 Capital, and Total Capital Adequacy Ratio — are presented against regulatory minimums and internal targets. Liquidity metrics including the Liquidity Coverage Ratio (LCR) and Net Stable Funding Ratio (NSFR) are reviewed. The Board considers the capital planning assumptions for the remainder of the financial year and any buffer adequacy concerns.",
-  "Benchmarking Analysis & Market Comparison":
-    "The independent benchmarking study prepared by Willis Towers Watson is presented to the Committee, comparing the organisation's current NED remuneration levels to market data from peer institutions in the banking and financial services sector. The study covers base board fees, committee chair supplements, meeting attendance allowances, and equity participation arrangements where applicable in the peer group.",
-  "Proposed Revised Remuneration Framework":
-    "The NRC presents its formal recommendation for a revised NED remuneration framework incorporating the benchmarking findings. Key proposals include a 12% adjustment to the base Board fee, introduction of a Lead Independent Director allowance, revised committee chair supplements calibrated by committee workload, and an updated travel and accommodation reimbursement policy. A draft resolution for Board approval is tabled.",
-  "Digital Banking Transformation Initiative":
-    "Progress update on the Digital Banking Transformation Initiative covering: completion of core banking module migration for Retail segment (Phase 1), mobile app enhancement release and adoption statistics, digital transaction volume growth, and Phase 2 roadmap covering corporate digital banking, API banking, and open finance readiness. Programme risks, budget burn rate, and vendor performance are discussed.",
-  "Talent & Leadership Development Programme":
-    "The Managing Director presents the mid-year update on the Talent & Leadership Development Programme. Key metrics include internal promotion rate, succession pipeline readiness for critical roles, external hire ratio, leadership training completion rates by band, and 12-month rolling attrition rates by division. High-potential talent identified through the talent review process are summarised at a cohort level.",
-  "Enterprise Risk Framework Enhancement":
-    "Status update on the multi-year programme to strengthen the enterprise risk management framework. Deliverables reviewed include updated Risk Policy architecture, Three Lines of Defence model implementation, Board risk dashboard enhancements, integration of the revised risk appetite statement into business planning processes, and progress on the risk technology platform replacement project.",
-  "Income Statement & Profitability Drivers":
-    "The CFO presents the consolidated income statement for the period with detailed variance commentary against budget and prior year. Revenue breakdown by segment, net interest margin analysis, impairment charge movements, and operating expenditure by category are presented. The Board discusses the quality of earnings and the sustainability of current profit margins given the prevailing interest rate and credit environment.",
-  "Balance Sheet & Asset Quality Review":
-    "Comprehensive review of the balance sheet as at period end, with particular focus on loan portfolio composition, NPL ratio movement, provision coverage adequacy, deposit funding base, and wholesale borrowing profile. Asset quality trends are discussed in the context of the macroeconomic environment and sector concentration exposures. Management provides forward guidance on expected credit loss provisions for the remainder of the year.",
-  "Regulatory Capital & Liquidity Ratios":
-    "The CFO and Treasurer present regulatory capital ratios, ICAAP outputs, and liquidity metrics filed with the regulator. Compliance with minimum capital requirements and internal buffer targets is confirmed. Stress test outcomes under the base, adverse, and severe scenarios are summarised for Board review. The Board discusses capital distribution plans and the implications of any forthcoming regulatory changes.",
-  "IT Infrastructure & Digital Platform Investment":
-    "Business case for Q3 IT capital expenditure covering core banking system upgrade (৳18M), cybersecurity infrastructure enhancement (৳8M), cloud migration Phase 2 (৳4M), and disaster recovery site upgrade (৳2M). Each component is supported by an architecture decision record, vendor selection rationale, independent technical review, and a projected three-year ROI calculation. Board approval is sought in accordance with the delegated authority framework.",
-  "Branch Network Expansion Programme":
-    "Approval sought for capital expenditure to establish three new branch locations in Sylhet, Khulna, and Rajshahi Divisions in accordance with the Board-approved Network Expansion Strategy 2025-2027. Each location is supported by a market feasibility study, regulatory licensing status confirmation, five-year financial projection, and projected break-even timeline. The Real Estate team presents site-selection rationale and lease terms for each proposed location.",
-  "Bangladesh Bank Regulatory Correspondence":
-    "The Head of Compliance presents a structured summary of all formal correspondence received from Bangladesh Bank during the period under review. Items include inspection findings and management responses, regulatory reporting submissions and acknowledgements, new circulars and guidelines requiring policy updates, and supervisory letters requiring Board-level acknowledgement. Management's response status and timelines for each item are noted.",
-  "AML/CFT & KYC Compliance Status":
-    "Quarterly AML/CFT compliance dashboard covering: transaction monitoring alert volumes and disposition rates, STR and SAR filing statistics, high-risk customer review completion rate, KYC remediation programme progress, de-risking decisions taken during the period, and regulatory examination readiness assessment. Staff training completion rates for AML/CFT modules are also reported. The Board notes any escalated matters and provides direction on material compliance risks.",
-};
-
-function getAgendaDescription(item: { title: string; description?: string; purpose?: string }): string {
-  if (item.description && item.description.trim()) return item.description.trim();
-  for (const [key, desc] of Object.entries(AGENDA_DESC_FALLBACK)) {
-    if (item.title.toLowerCase().includes(key.toLowerCase()) || key.toLowerCase().includes(item.title.toLowerCase())) {
-      return desc;
-    }
-  }
-  const purposeDesc: Record<string, string> = {
-    "For noting": "This item is presented to the Board for information and formal noting. No decision is required; however, members are invited to raise queries or seek clarification from the presenter on any aspect of the material provided.",
-    "For approval": "The Board is requested to review the matter presented and, if satisfied, to formally approve the recommendation as set out in the supporting paper. Members should consider the strategic, financial, and governance implications before exercising their vote.",
-    "For discussion": "This item is brought to the Board for deliberation and strategic guidance. Management will present the relevant context and considerations, and the Board is invited to provide direction that will inform subsequent management action or a future decision paper.",
-    "For information": "This item is provided to keep the Board informed of developments in the relevant area. No formal decision is required at this stage, though members may raise questions or provide commentary for management's consideration.",
-    "For review": "The Board is invited to conduct a thorough review of the materials presented and to assess whether the matter meets the required standards, thresholds, or policy requirements. Feedback and observations from the Board will guide the next steps.",
-  };
-  return purposeDesc[item.purpose ?? ""] ?? "This agenda item has been submitted for the Board's consideration. Supporting materials are included in the board pack circulated in advance of the meeting. Members are encouraged to review the relevant documents prior to the meeting to facilitate informed discussion.";
-}
 // Spec-aligned attendance states (Section 6)
 type AttendanceStatus  = "Not Joined" | "Present" | "Temporarily Away" | "Left" | "Excused" | "Recused";
 type AgendaStatus      = "Not Started" | "In Discussion" | "Completed" | "Deferred" | "Skipped";
@@ -2464,7 +2349,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 {isMinutesPaused ? <Play size={18} /> : <Pause size={18} />}
               </DockButton>
             )}
-            <DockButton active={false} label="More" onClick={() => {}}>
+            <DockButton active={panelOpen} label="More" onClick={() => setPanelOpen(open => !open)}>
               <MoreHorizontal size={18} />
             </DockButton>
 
