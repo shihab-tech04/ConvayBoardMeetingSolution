@@ -29,7 +29,7 @@ describe("Convay meeting evidence integrity", () => {
     expect(workspace).not.toContain('id: "aim-001"');
     expect(workspace).not.toContain('Ms. Nasrin Sultana');
     expect(workspace).toContain("setAgendaItemMotions] = useState<LiveMotion[]>([])");
-    expect(workspace).toContain("setAgendaMotionVotes] = useState<Record<string, Record<string, \\"For\\" | \\"Against\\" | \\"Abstain\\">>>({})");
+    expect(workspace).toContain('setAgendaMotionVotes] = useState<Record<string, Record<string, "For" | "Against" | "Abstain">>>({})');
     expect(workspace).not.toContain("SEED_MOTIONS");
     expect(workspace).not.toContain("AGENDA_DESC_FALLBACK");
     expect(workspace).not.toContain('label="More" onClick={() => {}}');
