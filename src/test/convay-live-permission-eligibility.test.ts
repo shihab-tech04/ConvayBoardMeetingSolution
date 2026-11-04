@@ -10,6 +10,7 @@ describe("RBAC role+permission+user controls and eligible voting", () => {
     expect(source).toContain('const canEditAttendance = hasLeadership && hasGrant("mtg_attendance")');
     expect(source).toContain('canManageAgenda && hasGrant("agd_submit")');
     expect(source).toContain('const canDraftMinutes = hasLeadership && hasGrant("min_create")');
+    expect(source).toContain('const canManageVotes = canRecordMeeting && hasGrant("mtg_join")');
   });
   it("maintains the Super Admin full-access exception without overriding voter eligibility", () => {
     expect(source).toContain('access.is_super_admin || access.effective_permissions.includes(code)');
@@ -25,7 +26,7 @@ describe("RBAC role+permission+user controls and eligible voting", () => {
   });
   it("guards votes in the handler against ineligible participants and unauthorized proxy votes", () => {
     expect(source).toContain('if (!isVotingEligible(participantId))');
-    expect(source).toContain('participantId === currentUser.id ? !canCastOwnBallot : !canRecordMeeting');
+    expect(source).toContain('participantId === currentUser.id ? !canCastOwnBallot : !canManageVotes');
     expect(source).toContain('Only present, eligible, non-recused participants may vote.');
   });
   it("uses the actual signed-in identity, rather than a shared self alias", () => {
@@ -36,6 +37,10 @@ describe("RBAC role+permission+user controls and eligible voting", () => {
   });
   it("connects role-specific controls to proper permissions", () => {
     expect(source).toContain('canUpdate={canEditAttendance}');
+    expect(source.indexOf("const linksForMeeting = allParticipantLinks.filter(")).toBeLessThan(
+      source.indexOf("const fromReg = allParticipants.filter(")
+    );
+    expect(source).toContain("voter_id: participantId, ballot_session_id: activeVote.id");
     expect(source).toContain('ctrlStatus === "in-progress" && canCreateTemporaryAgenda && (');
     expect(source).toContain('ctrlStatus !== "not-started" && canDraftMinutes && (');
   });
