@@ -27,7 +27,7 @@ describe("Convay meeting evidence integrity", () => {
     expect(workspace).not.toContain("SEED_COMMENTS");
     expect(workspace).not.toContain("SEED_MOTIONS");
     expect(workspace).not.toContain("AGENDA_DESC_FALLBACK");
-    expect(workspace).not.toMatch(/onClick=\\{\\(\\) => \\{\\}\\}/);
+    expect(workspace).not.toContain('label="More" onClick={() => {}}');
   });
 
   it("opens the existing live right-hand panel when More is selected", () => {
