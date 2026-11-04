@@ -540,7 +540,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (meeting?.chairperson === currentUser.id || meeting?.chairperson === currentUser.name) return "Chairperson";
     if (meeting?.secretary   === currentUser.id || meeting?.secretary   === currentUser.name) return "Company Secretary";
     if (meeting?.organizer   === currentUser.id || meeting?.organizer   === currentUser.name) return "Administrator";
-    return "Board Member";
+    // Missing membership or leadership does not confer a voting role.
+    return "Observer";
   })();
 
   // The single Super Admin has full Maker/Checker authority even when the
@@ -956,15 +957,30 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   const castVote = useCallback((participantId: string, choice: "For" | "Against" | "Abstain") => {
     if (!activeVote || activeVote.status !== "Open") return;
+    // Authoritative voter identity comes from meeting membership, not "self".
+    const link = meetingLinks.find(l => l.user_id === participantId);
+    const status = attendanceMap[participantId] ?? "Not Joined";
+    const recused = agendaRecusals[agendaItems[activeIdx]?.key ?? ""] ?? [];
+    const eligible = link?.voting_eligible === true &&
+      ACTIVE_STATES.includes(status) && status !== "Recused" &&
+      !recused.includes(participantId);
+    if (!eligible || !participantId || participantId === "self") {
+      toast.error("This participant is not eligible to vote on the current agenda.");
+      return;
+    }
+    if (participantId !== currentUser.id && !canRecordMeeting) {
+      toast.error("You cannot record a ballot for another participant.");
+      return;
+    }
     setActiveVote(prev => {
-      if (!prev) return prev;
+      if (!prev || prev.status !== "Open") return prev;
       const updated = { ...prev, castVotes: { ...prev.castVotes, [participantId]: choice } };
-      updated.votesFor      = Object.values(updated.castVotes).filter(v => v === "For").length;
-      updated.votesAgainst  = Object.values(updated.castVotes).filter(v => v === "Against").length;
-      updated.abstentions   = Object.values(updated.castVotes).filter(v => v === "Abstain").length;
+      updated.votesFor = Object.values(updated.castVotes).filter(v => v === "For").length;
+      updated.votesAgainst = Object.values(updated.castVotes).filter(v => v === "Against").length;
+      updated.abstentions = Object.values(updated.castVotes).filter(v => v === "Abstain").length;
       return updated;
     });
-  }, [activeVote]);
+  }, [activeVote, meetingLinks, attendanceMap, agendaRecusals, agendaItems, activeIdx, currentUser.id, canRecordMeeting]);
 
   // A vote becomes official only when every ballot and summary record commit together.
   const closingVoteRequest = useRef(false);
@@ -981,6 +997,19 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       : undefined;
     if (activeVote.motionId && !storedMotion) {
       toast.error("The linked motion is not available in SQL. Refresh before closing the vote.");
+      return;
+    }
+    // Reject stale or revoked ballots, including legacy "self" entries.
+    const recusedVoters = agendaRecusals[agendaItems[activeIdx]?.key ?? ""] ?? [];
+    const allBallotsEligible = Object.keys(activeVote.castVotes).every(participantId => {
+      const link = meetingLinks.find(l => l.user_id === participantId);
+      const status = attendanceMap[participantId] ?? "Not Joined";
+      return Boolean(link?.voting_eligible) && participantId !== "self" &&
+        ACTIVE_STATES.includes(status) && status !== "Recused" &&
+        !recusedVoters.includes(participantId);
+    });
+    if (!allBallotsEligible) {
+      toast.error("A ballot has no eligible participant. Correct attendance or recusal before closing.");
       return;
     }
     const count = activeVote.votesFor + activeVote.votesAgainst + activeVote.abstentions;
@@ -1020,7 +1049,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           payload: {
             id: recordId, vote_id: activeVote.id + "-" + participantId, meeting_id: meetingId,
             motion_id: activeVote.motionId ?? "", motion_title: activeVote.motionTitle,
-            voter_name: participantId === "self" ? currentUser.name : voter?.name ?? participantId,
+            voter_name: participantId === currentUser.id ? currentUser.name : voter?.name ?? participantId,
             vote: choice, vote_weight: "1", timestamp: now,
             notes: auditNote, created_at: now,
           },
@@ -1073,7 +1102,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       closingVoteRequest.current = false;
       setClosingVoteBusy(false);
     }
-  }, [activeVote, meetingId, quorumMet, canRecordMeeting, voteItems, motionItems, participants, currentUser.name, refreshVoteRecords, refreshMotionRecords]);
+  }, [activeVote, meetingId, quorumMet, canRecordMeeting, voteItems, motionItems, participants, currentUser.id, currentUser.name, meetingLinks, attendanceMap, agendaRecusals, agendaItems, activeIdx, refreshVoteRecords, refreshMotionRecords]);
 
   const cancelVote = useCallback(() => {
     if (!activeVote) return;
@@ -1550,15 +1579,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       )
       .map(l => l.user_id)
   );
-  // Fallback: if no canonical links, use role-based check from participants list
-  const useFallbackVoting = meetingLinks.length === 0;
-
+  // No role-based fallback: each voting member must be linked to this meeting.
   const pendingVotes = activeVote
-    ? participants.filter(p => {
-        const isPresent = ACTIVE_STATES.includes(attendanceMap[p.id] ?? "Not Joined" as AttendanceStatus);
-        const canVoteP  = useFallbackVoting ? canVote(myRole) && isPresent : votingEligibleIds.has(p.id);
-        return canVoteP && !activeVote.castVotes[p.id];
-      }).length
+    ? [...votingEligibleIds].filter(id => !activeVote.castVotes[id]).length
     : 0;
 
   return (
@@ -3345,15 +3368,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       </div>
 
                       {/* Cast vote — only for eligible voters */}
-                      {canVote(myRole) && activeVote.voteType !== "Secret Ballot" && (
+                      {votingEligibleIds.has(currentUser.id) && activeVote.voteType !== "Secret Ballot" && (
                         <div>
                           <p style={{ fontSize: "0.68rem", color: "#64748b", margin: "0 0 0.3rem" }}>Cast your vote:</p>
                           <div style={{ display: "flex", gap: "0.3rem" }}>
                             {(["For","Against","Abstain"] as const).map(choice => (
                               <button
                                 key={choice}
-                                onClick={() => castVote("self", choice)}
-                                style={{ flex: 1, padding: "0.35rem 0.3rem", borderRadius: "6px", border: `1px solid ${activeVote.castVotes["self"] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#64748b") : "#334155"}`, background: activeVote.castVotes["self"] === choice ? (choice === "For" ? "#14532d" : choice === "Against" ? "#7f1d1d" : "#1e293b") : "#1e293b", color: activeVote.castVotes["self"] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#94a3b8") : "#64748b", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.25rem" }}
+                                onClick={() => castVote(currentUser.id, choice)}
+                                style={{ flex: 1, padding: "0.35rem 0.3rem", borderRadius: "6px", border: `1px solid ${activeVote.castVotes[currentUser.id] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#64748b") : "#334155"}`, background: activeVote.castVotes[currentUser.id] === choice ? (choice === "For" ? "#14532d" : choice === "Against" ? "#7f1d1d" : "#1e293b") : "#1e293b", color: activeVote.castVotes[currentUser.id] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#94a3b8") : "#64748b", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.25rem" }}
                               >
                                 {choice === "For" ? <ThumbsUp size={11} /> : choice === "Against" ? <ThumbsDown size={11} /> : <Minus size={11} />} {choice}
                               </button>
@@ -3366,14 +3389,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       {activeVote.voteType !== "Secret Ballot" && (
                         <div style={{ marginTop: "0.5rem" }}>
                           <p style={{ fontSize: "0.68rem", color: "#64748b", margin: "0 0 0.3rem" }}>Individual votes (Chair/Secretary can record):</p>
-                          {participants.filter(p => ["Board Member","Independent Director","Chairperson"].includes(p.role)).map(p => (
+                          {participants.filter(p => ["Board Member","Independent Director","Chairperson"].includes(p.role) && votingEligibleIds.has(p.id)).map(p => (
                             <div key={p.id} style={{ display: "flex", alignItems: "center", gap: "0.4rem", padding: "0.2rem 0", borderBottom: "1px solid #1e293b" }}>
                               <span style={{ flex: 1, fontSize: "0.72rem", color: "#94a3b8" }}>{p.name.split(" ").slice(-1)[0]}</span>
                               {(["For","Against","Abstain"] as const).map(choice => (
                                 <button
                                   key={choice}
-                                  onClick={() => canRecordMeeting ? castVote(p.id, choice) : undefined}
-                                  disabled={!canRecordMeeting}
+                                  onClick={() => canRecordMeeting && votingEligibleIds.has(p.id) ? castVote(p.id, choice) : undefined}
+                                  disabled={!canRecordMeeting || !votingEligibleIds.has(p.id)}
                                   style={{ padding: "0.1rem 0.3rem", borderRadius: "3px", border: "none", background: activeVote.castVotes[p.id] === choice ? (choice === "For" ? "#14532d" : choice === "Against" ? "#7f1d1d" : "#334155") : "transparent", color: activeVote.castVotes[p.id] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#94a3b8") : "#475569", cursor: canRecordMeeting ? "pointer" : "default", fontSize: "0.65rem" }}
                                 >
                                   {choice[0]}
