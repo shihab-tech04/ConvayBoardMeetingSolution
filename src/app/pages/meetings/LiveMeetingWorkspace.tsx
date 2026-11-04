@@ -418,15 +418,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   // Build participant list from registry — no synthetic defaults
   const baseParticipants: VirtualParticipant[] = (() => {
-    const fromReg = allParticipants.filter(p => p.meeting_id === meetingId);
-    if (fromReg.length > 0) {
-      return fromReg.map(p => ({
-        id: p.participant_id, name: p.name, role: p.role, initials: INITIALS(p.name),
-        isMuted: false, isCameraOff: false, isSpeaking: false, handRaised: false,
-        connectionQuality: "good" as ConnectionQuality, isHost: p.role === "Chairperson",
-      }));
-    }
-    // Also try canonical participant links (preferred path after Meeting Creation)
+    // Resolve signed-in voter IDs from the SQL-backed meeting participant links first.
     const linksForMeeting = allParticipantLinks.filter(l => l.meeting_id === meetingId);
     if (linksForMeeting.length > 0) {
       return linksForMeeting.map(l => {
@@ -439,6 +431,16 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           connectionQuality: "good" as ConnectionQuality, isHost: l.participant_type === "Chairperson",
         };
       });
+    }
+    // Legacy participant entries are display-only if canonical links are absent.
+    // They must never grant ballot eligibility without a real linked user.
+    const fromReg = allParticipants.filter(p => p.meeting_id === meetingId);
+    if (fromReg.length > 0) {
+      return fromReg.map(p => ({
+        id: p.participant_id, name: p.name, role: p.role, initials: INITIALS(p.name),
+        isMuted: false, isCameraOff: false, isSpeaking: false, handRaised: false,
+        connectionQuality: "good" as ConnectionQuality, isHost: p.role === "Chairperson",
+      }));
     }
     return []; // no canonical data — empty state shown in UI
   })();
@@ -1044,6 +1046,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           entity_key: "bms.votes", action: "create", record_id: recordId,
           payload: {
             id: recordId, vote_id: activeVote.id + "-" + participantId, meeting_id: meetingId,
+            voter_id: participantId, ballot_session_id: activeVote.id,
             motion_id: activeVote.motionId ?? "", motion_title: activeVote.motionTitle,
             voter_name: participantId === "self" ? currentUser.name : voter?.name ?? participantId,
             vote: choice, vote_weight: "1", timestamp: now,
