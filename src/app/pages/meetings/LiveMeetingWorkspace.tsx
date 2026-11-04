@@ -1102,7 +1102,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       closingVoteRequest.current = false;
       setClosingVoteBusy(false);
     }
-  }, [activeVote, meetingId, quorumMet, canRecordMeeting, voteItems, motionItems, participants, currentUser.name, refreshVoteRecords, refreshMotionRecords]);
+  }, [activeVote, meetingId, quorumMet, canRecordMeeting, voteItems, motionItems, participants, currentUser.id, currentUser.name, meetingLinks, attendanceMap, agendaRecusals, agendaItems, activeIdx, refreshVoteRecords, refreshMotionRecords]);
 
   const cancelVote = useCallback(() => {
     if (!activeVote) return;
