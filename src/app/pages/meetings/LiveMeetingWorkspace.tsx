@@ -1292,7 +1292,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             return merged;
           });
           setPhase("meeting");
-        }}}
+        }}
       />
     );
   }
