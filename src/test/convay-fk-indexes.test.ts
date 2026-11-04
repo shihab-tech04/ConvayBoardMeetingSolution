@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-const migration = readFileSync("supabase/migrations/20261104170000_convay_foreign_key_lookup_indexes.sql", "utf8");
+const migration = readFileSync("supabase/migrations/20261104081645_convay_foreign_key_lookup_indexes.sql", "utf8");
 const keys = [
   {
     "schema": "convay_private",

@@ -2,7 +2,7 @@
 
 Source baseline: `8fade305c04655171c46f9b28a553c4988f3a738`.
 Target: exactly 10 missing foreign-key lookup indexes reported by Supabase performance advisors.
-SQL change: `supabase/migrations/20261104170000_convay_foreign_key_lookup_indexes.sql`.
+SQL change: `supabase/migrations/20261104081645_convay_foreign_key_lookup_indexes.sql`.
 
 The migration is intentionally additive, idempotent and touches only indexes. It does not alter data, Auth, RLS, permissions, storage or UI.
 
