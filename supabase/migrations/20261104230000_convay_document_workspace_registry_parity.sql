@@ -191,6 +191,20 @@ begin
      raise exception 'Document association cannot be reassigned' using errcode='23514';
    end if;
  end if;
+ if new.entity_key in ('bms.doc.acknowledgements','bms.doc.approvals_v2') then
+   if v_actor is null then raise exception 'Sign-in required' using errcode='42501'; end if;
+   select display_name into v_name from public.user_profiles
+     where user_id=v_actor and account_status='active';
+   if v_name is null then raise exception 'Active user required' using errcode='42501'; end if;
+ end if;
+ if new.entity_key='bms.doc.approvals_v2' then
+   -- The UI previously sent the placeholder "current_user"; bind the decision
+   -- to the verified Supabase identity, not to an untrusted client label.
+   new.payload:=jsonb_set(new.payload,'{approver}',to_jsonb(v_name),true);
+   new.payload:=jsonb_set(new.payload,'{approver_user_id}',to_jsonb(v_actor::text),true);
+   new.payload:=jsonb_set(new.payload,'{decided_at}',to_jsonb(now()),true);
+   new.payload:=jsonb_set(new.payload,'{requested_by}',to_jsonb(v_name),true);
+ end if;
  if new.entity_key='bms.doc.acknowledgements' then
    if v_actor is null then raise exception 'Sign-in required' using errcode='42501'; end if;
    select display_name into v_name from public.user_profiles
