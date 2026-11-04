@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: convay-recovery-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   verified-history-backup:
     runs-on: ubuntu-24.04
