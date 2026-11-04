@@ -53,6 +53,16 @@ describe("Convay meeting evidence integrity", () => {
     expect(workspace).toContain("if (await postAgendaComment(detailItem.key, dCommentInput))");
   });
 
+  it("ends the meeting only after one SQL transaction completes", () => {
+    expect(workspace).toContain("const handleEnd = useCallback((): Promise<boolean> => {");
+    expect(workspace).toContain('payload: { approval_status: "Awaiting Minutes" }');
+    expect(workspace).toContain('payload: { session_status: "ended", ended_at: endedAt, ended_by: currentUser.id }');
+    expect(workspace).toContain('toast.success("Meeting ended. Complete the draft minutes for review.")');
+    expect(workspace).toContain('const saved = await addMinutes({');
+    expect(workspace).toContain('if (saved !== true) return;');
+    expect(workspace).not.toContain('structured draft minutes saved automatically');
+  });
+
   it("opens the existing live right-hand panel when More is selected", () => {
     expect(workspace).toContain('label="More" onClick={() => setPanelOpen(open => !open)}');
   });
