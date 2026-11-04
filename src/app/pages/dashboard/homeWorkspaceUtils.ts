@@ -107,6 +107,34 @@ export function isWorkflowRole(designation: string): boolean {
   );
 }
 
+/**
+ * Match only the user's assigned role/designation. Otherwise all workflow
+ * users (including Secretaries and Admins) receive one another's tasks.
+ */
+function normalizeRoleName(value: string | null | undefined): string {
+  return String(value ?? "").trim().toLocaleLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+function roleFamily(value: string): "admin" | "secretary" | "" {
+  if (["admin", "administrator", "super admin", "super administrator"].includes(value)) return "admin";
+  if (["secretary", "company secretary", "secretariat"].includes(value)) return "secretary";
+  return "";
+}
+
+export function roleAssignmentMatchesUser(
+  assignedTo: unknown,
+  accountRole?: string | null,
+  designation?: string | null,
+): boolean {
+  if (typeof assignedTo !== "string") return false;
+  const assigned = normalizeRoleName(assignedTo);
+  if (!assigned) return false;
+  const identities = [normalizeRoleName(accountRole), normalizeRoleName(designation)].filter(Boolean);
+  if (identities.includes(assigned)) return true;
+  const family = roleFamily(assigned);
+  return Boolean(family && identities.some(identity => roleFamily(identity) === family));
+}
+
 /** True when the user is chairperson, secretary, or organizer of the meeting record */
 export function userIsInvolvedInMeeting(m: Record<string, unknown>, userName: string): boolean {
   return (
