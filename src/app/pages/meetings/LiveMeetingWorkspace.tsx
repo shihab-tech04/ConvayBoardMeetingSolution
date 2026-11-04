@@ -386,7 +386,7 @@ interface LiveMeetingWorkspaceProps {
 export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFrom: _openedFrom }: LiveMeetingWorkspaceProps) {
 
   // ── Registries ────────────────────────────────────────────────────────────
-  const { items: meetings, update: updateMeeting, refresh: refreshMeetings } = useMeetingRegistry();
+  const { items: meetings, refresh: refreshMeetings } = useMeetingRegistry();
   const { items: decisionItems,    add: addDecision }                    = useDecisionRegistry();
   const { items: actionItems,      add: addAction }                      = useActionItemRegistry();
   const { items: motionItems,      add: addMotionRec }                   = useMotionRegistry();
@@ -578,13 +578,42 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     "ended":       "Awaiting Minutes",
   };
 
-  // Wrap setCtrlStatus to also log timeline and persist to meeting registry
-  const setCtrlStatus = useCallback((s: MeetingCtrlStatus) => {
-    setCtrlStatusRaw(s);
-    setTimeline(prev => ({ ...prev, [`${s}_at`]: nowISO() }));
-    if (meeting) updateMeeting(meeting.id, { approval_status: CTRL_TO_APPROVAL[s] } as never);
+  // The meeting and its canonical live-session status must commit together.
+  // Never move the UI to a new control state before the atomic SQL write succeeds.
+  const statusRequestPending = useRef(false);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const setCtrlStatus = useCallback(async (nextStatus: MeetingCtrlStatus): Promise<boolean> => {
+    if (statusRequestPending.current || !meeting || !meetingId || !canControlMeeting) return false;
+    if (nextStatus === "not-started" || nextStatus === "ended") return false;
+    const session = liveSessions.find(item => item.meeting_id === meetingId && item.session_status !== "ended");
+    if (!session) {
+      toast.error("The live session has not loaded. Refresh before changing meeting status.");
+      return false;
+    }
+    const sessionStatus = nextStatus === "in-progress" ? "active" : "paused";
+    statusRequestPending.current = true;
+    setStatusBusy(true);
+    try {
+      await convayAuth.applyBatch([
+        { entity_key: "bms.meetings", action: "update", record_id: meeting.id,
+          payload: { approval_status: CTRL_TO_APPROVAL[nextStatus] } },
+        { entity_key: "bms.liveSessions", action: "update", record_id: session.id,
+          payload: { session_status: sessionStatus } },
+      ]);
+      setCtrlStatusRaw(nextStatus);
+      setTimeline(previous => ({ ...previous, [nextStatus + "_at"]: nowISO() }));
+      try { await Promise.all([refreshMeetings?.(), refreshLiveSessions?.()]); }
+      catch { toast.info("Meeting state saved. Refresh to load the latest status."); }
+      return true;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Meeting status was not saved. No changes were made.");
+      return false;
+    } finally {
+      statusRequestPending.current = false;
+      setStatusBusy(false);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meeting, updateMeeting]);
+  }, [meeting, meetingId, canControlMeeting, liveSessions, refreshMeetings, refreshLiveSessions]);
 
   // ── Sync canonical session status on mount (canonical > localStorage) ─────
   // Only runs once. If the Live Session registry already has a record for this
@@ -596,19 +625,21 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   const hasSyncedCanonical = useRef(false);
   useEffect(() => {
-    if (hasSyncedCanonical.current || !meetingId) return;
-    const canonical = liveSessions.find(s => s.meeting_id === meetingId);
+    if (hasSyncedCanonical.current || !meetingId || !meeting) return;
+    const canonical = liveSessions.find(item => item.meeting_id === meetingId);
     if (!canonical) return;
-    hasSyncedCanonical.current = true;
-    const map: Record<string, MeetingCtrlStatus> = {
+    const mapping: Record<string, MeetingCtrlStatus> = {
       active: "in-progress", paused: "paused", ended: "ended", not_started: "not-started",
     };
-    const canonicalCtrl = map[canonical.session_status ?? ""] ?? null;
-    if (canonicalCtrl && canonicalCtrl !== ctrlStatus) {
-      setCtrlStatusRaw(canonicalCtrl);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const baseStatus = mapping[canonical.session_status ?? ""];
+    if (!baseStatus) return;
+    hasSyncedCanonical.current = true;
+    const persistedStatus = meeting.approval_status;
+    const restoredStatus = baseStatus === "paused" && persistedStatus === "On Break" ? "on-break"
+      : baseStatus === "paused" && persistedStatus === "Adjourned" ? "adjourned"
+      : baseStatus;
+    setCtrlStatusRaw(restoredStatus);
+  }, [meetingId, meeting, liveSessions]);
 
   // ── Persist to localStorage on every state change ─────────────────────────
   useEffect(() => {
@@ -1562,13 +1593,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           )}
           {ctrlStatus === "in-progress" && canControlMeeting && (
             <>
-              <button onClick={() => setCtrlStatus("paused")} style={{ padding: "0.35rem 0.6rem", borderRadius: "6px", background: "#1e293b", color: "#94a3b8", border: "1px solid #334155", cursor: "pointer", fontSize: "0.72rem" }} title="Pause">
+              <button onClick={() => { void setCtrlStatus("paused"); }} disabled={statusBusy} style={{ padding: "0.35rem 0.6rem", borderRadius: "6px", background: "#1e293b", color: "#94a3b8", border: "1px solid #334155", cursor: "pointer", fontSize: "0.72rem" }} title="Pause">
                 <Pause size={12} />
               </button>
-              <button onClick={() => setCtrlStatus("on-break")} style={{ padding: "0.35rem 0.6rem", borderRadius: "6px", background: "#1e293b", color: "#f59e0b", border: "1px solid #334155", cursor: "pointer", fontSize: "0.72rem" }} title="Break">
+              <button onClick={() => { void setCtrlStatus("on-break"); }} disabled={statusBusy} style={{ padding: "0.35rem 0.6rem", borderRadius: "6px", background: "#1e293b", color: "#f59e0b", border: "1px solid #334155", cursor: "pointer", fontSize: "0.72rem" }} title="Break">
                 <Coffee size={12} />
               </button>
-              <button onClick={() => !quorumMet && setCtrlStatus("adjourned")} disabled={quorumMet} title={quorumMet ? "Meeting is in quorum — use End to close" : "Adjourn (quorum lost)"} style={{ padding: "0.35rem 0.6rem", borderRadius: "6px", background: quorumMet ? "#1e293b" : "#7c3aed44", color: quorumMet ? "#475569" : "#a78bfa", border: "1px solid #334155", cursor: quorumMet ? "not-allowed" : "pointer", fontSize: "0.68rem" }}>
+              <button onClick={() => { if (!quorumMet) void setCtrlStatus("adjourned"); }} disabled={quorumMet || statusBusy} title={quorumMet ? "Meeting is in quorum — use End to close" : "Adjourn (quorum lost)"} style={{ padding: "0.35rem 0.6rem", borderRadius: "6px", background: quorumMet ? "#1e293b" : "#7c3aed44", color: quorumMet ? "#475569" : "#a78bfa", border: "1px solid #334155", cursor: quorumMet ? "not-allowed" : "pointer", fontSize: "0.68rem" }}>
                 Adjourn
               </button>
               <button onClick={() => setClosureOpen(true)} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#ef4444", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
@@ -1577,7 +1608,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             </>
           )}
           {(ctrlStatus === "paused" || ctrlStatus === "on-break" || ctrlStatus === "adjourned") && canControlMeeting && (
-            <button onClick={() => setCtrlStatus("in-progress")} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
+            <button onClick={() => { void setCtrlStatus("in-progress"); }} disabled={statusBusy} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
               <Play size={12} /> Resume
             </button>
           )}
