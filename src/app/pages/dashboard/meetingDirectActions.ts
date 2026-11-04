@@ -12,3 +12,13 @@ export function selectAvailableDirectMeetingAction(
     .filter(action => action.visible && action.enabled && action.placement === "direct")
     .sort((a, b) => a.priority - b.priority)[0] ?? null;
 }
+
+/** Motion and focus-safe carousel autoplay gate for the meeting hero. */
+export function mayAutoAdvanceMeetings(
+  total: number,
+  hovered: boolean,
+  keyboardFocused: boolean,
+  reducedMotion: boolean,
+): boolean {
+  return total > 1 && !hovered && !keyboardFocused && !reducedMotion;
+}
