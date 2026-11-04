@@ -10,6 +10,8 @@ permissions:
 jobs:
   verified-history-backup:
     runs-on: ubuntu-24.04
+    env:
+      EXPECTED_MAIN_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
       - name: Clone full Git history
         uses: actions/checkout@v4
@@ -24,7 +26,7 @@ jobs:
           git fetch --force --prune origin '+refs/heads/*:refs/remotes/origin/*'
           git fetch --force origin '+refs/tags/*:refs/tags/*'
           git show-ref --verify refs/remotes/origin/main
-          test "$(git rev-parse refs/remotes/origin/main)" = "0b7841fee5f4dea2ff8016bd30f807dd751ab011" || {
+          test "$(git rev-parse refs/remotes/origin/main)" = "$EXPECTED_MAIN_SHA" || {
             echo "Main advanced — revalidate backup source against release checkpoint"; exit 1;
           }
 
@@ -41,8 +43,8 @@ jobs:
           )
           git clone --mirror recovery/convay-pre-release-full-history.bundle "$RUNNER_TEMP/convay-git-restore.git"
           git --git-dir="$RUNNER_TEMP/convay-git-restore.git" fsck --full --no-reflogs
-          git --git-dir="$RUNNER_TEMP/convay-git-restore.git" cat-file -e '0b7841fee5f4dea2ff8016bd30f807dd751ab011^{commit}'
-          git --git-dir="$RUNNER_TEMP/convay-git-restore.git" show '0b7841fee5f4dea2ff8016bd30f807dd751ab011:package.json' > "$RUNNER_TEMP/restored-package.json"
+          git --git-dir="$RUNNER_TEMP/convay-git-restore.git" cat-file -e "${EXPECTED_MAIN_SHA}^{commit}"
+          git --git-dir="$RUNNER_TEMP/convay-git-restore.git" show "${EXPECTED_MAIN_SHA}:package.json" > "$RUNNER_TEMP/restored-package.json"
           cmp package.json "$RUNNER_TEMP/restored-package.json"
           printf 'SOURCE_MAIN_SHA=%s\n' "$(git rev-parse refs/remotes/origin/main)" > recovery/RESTORE_CHECK.txt
           printf 'RESTORE_PASS=true\n' >> recovery/RESTORE_CHECK.txt
