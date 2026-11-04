@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { UploadCloud, FileText, X, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 
 const DEFAULT_ACCEPT = [".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx"];
@@ -227,6 +227,11 @@ export function AppFileUpload({
   disabled,
 }: AppFileUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const [dragging, setDragging] = useState(false);
   const [validating, setValidating] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
@@ -251,6 +256,9 @@ export function AppFileUpload({
       }
 
       const result = await validateFile(f, accept, maxSizeMB);
+      // FileReader may complete after navigation or a modal has closed.
+      // Never update a detached React tree or fire onChange after unmount.
+      if (!mountedRef.current) return;
       if (!result.ok) {
         newErrors.push(result.error);
         continue;
@@ -259,6 +267,7 @@ export function AppFileUpload({
       toAdd.push(f);
     }
 
+    if (!mountedRef.current) return;
     setErrors(newErrors);
     if (toAdd.length > 0) onChange?.([...existing, ...toAdd]);
     setValidating(false);
