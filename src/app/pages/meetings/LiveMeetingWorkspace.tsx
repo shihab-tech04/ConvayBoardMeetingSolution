@@ -389,7 +389,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: meetings, refresh: refreshMeetings } = useMeetingRegistry();
   const { items: decisionItems,    add: addDecision }                    = useDecisionRegistry();
   const { items: actionItems,      add: addAction }                      = useActionItemRegistry();
-  const { items: motionItems,      add: addMotionRec }                   = useMotionRegistry();
+  const { items: motionItems, add: addMotionRec, refresh: refreshMotionRecords } = useMotionRegistry();
   const {                          add: addMinutes }                      = useMinutesRegistry();
   const { items: resolutionItems,  add: addResolution }                  = useResolutionRegistry();
   const { items: voteItems, refresh: refreshVoteRecords } = useVoteRegistry();
@@ -975,6 +975,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (!quorumMet) { toast.error("Quorum is not met. Voting cannot be finalized."); return; }
     if (!canRecordMeeting) { toast.error("Only the Chair or Secretary can close a vote."); return; }
 
+    // A motion result must never diverge from the official SQL motions register.
+    const storedMotion = activeVote.motionId
+      ? motionItems.find(item => item.id === activeVote.motionId && item.meeting_id === meetingId)
+      : undefined;
+    if (activeVote.motionId && !storedMotion) {
+      toast.error("The linked motion is not available in SQL. Refresh before closing the vote.");
+      return;
+    }
     const count = activeVote.votesFor + activeVote.votesAgainst + activeVote.abstentions;
     if (count === 0) { toast.error("No votes have been cast. Record ballots before closing."); return; }
     const aggregateName = activeVote.voteType === "Secret Ballot" ? "Secret Ballot (anonymised)" : "Summary";
@@ -997,7 +1005,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     ].join(" · ");
     type VoteBatchOperation = {
       entity_key: string;
-      action: "create";
+      action: "create" | "update";
       record_id: string;
       payload: { id: string; [key: string]: unknown };
     };
@@ -1030,6 +1038,21 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       },
     });
 
+    // Record the motion's outcome and count in the exact same SQL transaction
+    // as its official vote records, so a failed ballot cannot mark it Passed.
+    if (storedMotion) {
+      operations.push({
+        entity_key: "bms.motions", action: "update", record_id: storedMotion.id,
+        payload: {
+          id: storedMotion.id,
+          status: result === "Passed" ? "Passed" : "Rejected",
+          votes_for: String(activeVote.votesFor),
+          votes_against: String(activeVote.votesAgainst),
+          abstentions: String(activeVote.abstentions),
+        },
+      });
+    }
+
     closingVoteRequest.current = true;
     setClosingVoteBusy(true);
     try {
@@ -1042,15 +1065,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         "Vote " + result + ": " + activeVote.votesFor + "–" + activeVote.votesAgainst +
         " (" + activeVote.abstentions + " abstain)"
       );
-      try { await refreshVoteRecords?.(); }
-      catch { toast.info("Vote saved to SQL. Refresh the page to load the latest record."); }
+      try { await Promise.all([refreshVoteRecords?.(), refreshMotionRecords?.()]); }
+      catch { toast.info("Vote and motion saved to SQL. Refresh to load the latest records."); }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Vote could not be saved. It remains open.");
     } finally {
       closingVoteRequest.current = false;
       setClosingVoteBusy(false);
     }
-  }, [activeVote, meetingId, quorumMet, myRole, voteItems, participants, currentUser.name, refreshVoteRecords]);
+  }, [activeVote, meetingId, quorumMet, canRecordMeeting, voteItems, motionItems, participants, currentUser.name, refreshVoteRecords, refreshMotionRecords]);
 
   const cancelVote = useCallback(() => {
     if (!activeVote) return;
