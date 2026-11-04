@@ -55,12 +55,45 @@ export function deduplicateTasks(tasks: HomeTask[]): HomeTask[] {
   });
 }
 
-/** True when the field value matches the current user by name (case-insensitive substring) */
+/**
+ * Compare full user names, never substring matches. A substring match between
+ * "Ann" and "Anna" can accidentally place another user's record in My Tasks.
+ * Legacy records can store a single name, an array, or comma/semicolon-
+ * separated names; preserve those supported formats without fuzzy matching.
+ *
+ * This is a presentation filter, not an authorization boundary. Supabase RLS
+ * must independently protect every record.
+ */
+function normalizeIdentityName(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/^(mr|mrs|ms|dr)\.?\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase();
+}
+
 export function fieldMatchesUser(field: unknown, name: string): boolean {
-  if (!name || !field) return false;
-  const f = String(field).toLowerCase();
-  const n = name.toLowerCase();
-  return f.includes(n) || n.includes(f);
+  const expected = normalizeIdentityName(name);
+  if (!expected || field == null) return false;
+  if (Array.isArray(field)) return field.some(value => fieldMatchesUser(value, name));
+  if (typeof field === "object") {
+    if ("name" in field) return fieldMatchesUser(field.name, name);
+    return false;
+  }
+  if (typeof field !== "string") return false;
+  const raw = field.trim();
+  if (!raw) return false;
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    try {
+      const values: unknown = JSON.parse(raw);
+      if (Array.isArray(values)) return fieldMatchesUser(values, name);
+    } catch { /* Malformed legacy value: still allow delimiter-based matching. */ }
+  }
+  return raw.split(/[,;|\n]+/).some(part => {
+    const unlabelled = part.replace(/^[^:]+:\s*/, "").replace(/\s+\([^)]*\)\s*$/, "");
+    return normalizeIdentityName(unlabelled) === expected;
+  });
 }
 
 /** True when designation indicates secretary / secretariat / admin role */
