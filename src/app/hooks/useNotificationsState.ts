@@ -12,7 +12,13 @@ import {
 
 // A read receipt invalidates outstanding inbox hydrations. Otherwise an older
 // server response can put unread items back into Redux after a successful write.
-let notificationMutationVersion = 0;
+const notificationMutationVersions = new Map<string, number>();
+function mutationVersionFor(userId: string): number {
+  return notificationMutationVersions.get(userId) ?? 0;
+}
+function invalidateNotificationsFor(userId: string): void {
+  notificationMutationVersions.set(userId, mutationVersionFor(userId) + 1);
+}
 
 /** The topbar, mobile topbar and inbox share the authoritative server-backed store. */
 export function useNotificationsState() {
@@ -40,15 +46,15 @@ export function useNotificationsState() {
     }
     // Test-mode fixtures are never imported into the production database.
     if (import.meta.env.MODE === "test") return;
-    const mutationAtRequest = notificationMutationVersion;
+    const mutationAtRequest = mutationVersionFor(userId);
     setLoading(true);
     setError(null);
     try {
       const records = await listPersonalNotifications();
-      if (request !== requestVersion.current || mutationAtRequest !== notificationMutationVersion) return;
+      if (request !== requestVersion.current || mutationAtRequest !== mutationVersionFor(userId)) return;
       dispatch(setNotifications({ ownerId: userId, items: records }));
     } catch (reason) {
-      if (request !== requestVersion.current || mutationAtRequest !== notificationMutationVersion) return;
+      if (request !== requestVersion.current || mutationAtRequest !== mutationVersionFor(userId)) return;
       const message = reason instanceof Error ? reason.message : "Notifications could not be loaded";
       setError(message);
       dispatch(setNotifications({ ownerId: userId, items: [] }));
@@ -71,30 +77,28 @@ export function useNotificationsState() {
   }, [dispatch, isAuthenticated, userId, reload]);
 
   const markRead = useCallback(async (id: string) => {
-    ++notificationMutationVersion;
+    invalidateNotificationsFor(userId);
     try {
       await persistNotificationRead(id);
       dispatch(markNotificationRead(id));
       return true;
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Unable to mark notification as read");
-      void reload();
       return false;
     }
-  }, [dispatch, reload]);
+  }, [dispatch, userId]);
 
   const markAllRead = useCallback(async () => {
-    ++notificationMutationVersion;
+    invalidateNotificationsFor(userId);
     try {
       await persistAllNotificationsRead();
       dispatch(markAllNotificationsRead());
       return true;
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Unable to mark notifications as read");
-      void reload();
       return false;
     }
-  }, [dispatch, reload]);
+  }, [dispatch, userId]);
 
   return {
     notifications: items as Notification[],
