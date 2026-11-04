@@ -39,6 +39,8 @@ import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import { MOTION_FORM_FIELDS, MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import type { EntryFormValue } from "../../components/forms/EntryForm";
 import { getAgendaDescription } from "../../utils/agendaDescription";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -383,7 +385,7 @@ interface LiveMeetingWorkspaceProps {
 export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFrom: _openedFrom }: LiveMeetingWorkspaceProps) {
 
   // ── Registries ────────────────────────────────────────────────────────────
-  const { items: meetings, update: updateMeeting }                       = useMeetingRegistry();
+  const { items: meetings, update: updateMeeting, refresh: refreshMeetings } = useMeetingRegistry();
   const { items: decisionItems,    add: addDecision }                    = useDecisionRegistry();
   const { items: actionItems,      add: addAction }                      = useActionItemRegistry();
   const { items: motionItems,      add: addMotionRec }                   = useMotionRegistry();
@@ -397,7 +399,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: allDocuments }                                          = useDocumentRegistry();
   const { items: docCommentThreads, add: addDocThread, update: updateDocThread } = useDocumentCommentRegistry();
   const { add: addInteraction }                                          = useMeetingInteractionRegistry();
-  const { items: liveSessions, add: addSession, update: updateSession }  = useLiveMeetingSessionRegistry();
+  const { items: liveSessions, add: addSession, update: updateSession, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
   const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = useAttendanceRegistry();
   const { add: addQuorumEvent }                                          = useQuorumEventRegistry();
   const { items: govBodies }                                             = useGovernanceRegistry();
@@ -705,14 +707,45 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     : (partGroup?.quorum_rule ?? govBody?.quorum_requirement ?? "Not Configured");
 
   // ── Meeting controls ───────────────────────────────────────────────────────
-  const handleStart = useCallback(() => {
-    setCtrlStatus("in-progress");
-    setAgendaStatuses(p => ({ ...p, 0: "In Discussion" }));
-    // Ensure canonical session is active
-    const existingSid = liveSessions.find(s => s.meeting_id === meetingId)?.id;
-    if (existingSid) updateSession(existingSid, { session_status: "active" } as never);
-    toast.success("Meeting started");
-  }, [setCtrlStatus, liveSessions, meetingId, updateSession]);
+  // Persist meeting and live session in one SQL transaction before changing the UI.
+  const startRequest = useRef<Promise<boolean> | null>(null);
+  const handleStart = useCallback((): Promise<boolean> => {
+    if (startRequest.current) return startRequest.current;
+    const request = (async () => {
+      if (!meeting || !meetingId) {
+        toast.error("Meeting unavailable. Refresh and try again.");
+        return false;
+      }
+      try {
+        const startedAt = nowISO();
+        const session = liveSessions.find(s => s.meeting_id === meetingId);
+        const operations = buildMeetingStartBatch({
+          meetingRecordId: meeting.id,
+          meetingId,
+          actorId: currentUser.id,
+          startedAt,
+          existingSession: session,
+        });
+        await convayAuth.applyBatch(operations);
+        setCtrlStatusRaw("in-progress");
+        setTimeline(prev => ({ ...prev, in_progress_at: startedAt }));
+        setAgendaStatuses(prev => ({ ...prev, 0: "In Discussion" }));
+        toast.success("Meeting started");
+        try {
+          await Promise.all([refreshMeetings?.(), refreshLiveSessions?.()]);
+        } catch {
+          toast.info("Meeting started. Refresh to load the latest session details.");
+        }
+        return true;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Unable to start meeting; no changes were saved.");
+        return false;
+      }
+    })();
+    startRequest.current = request;
+    void request.finally(() => { startRequest.current = null; });
+    return request;
+  }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions]);
 
   const handleEnd = useCallback(() => {
     setCtrlStatus("ended");
@@ -1248,8 +1281,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       <PreMeetingReadinessPanel
         meetingId={meetingId}
         onClose={() => onClose()}
-        onStartMeeting={(readinessAttendance) => {
-          // Merge readiness attendance into live session attendance
+        onStartMeeting={async (readinessAttendance) => {
+          const started = await handleStart();
+          if (!started) return;
           setAttendanceMap(prev => {
             const merged = { ...prev };
             for (const [uid, st] of Object.entries(readinessAttendance)) {
@@ -1257,11 +1291,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             }
             return merged;
           });
-          // Create or validate single live session
-          getOrCreateSession();
-          handleStart();
           setPhase("meeting");
-        }}
+        }}}
       />
     );
   }
