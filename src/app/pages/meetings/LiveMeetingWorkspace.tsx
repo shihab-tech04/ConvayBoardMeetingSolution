@@ -625,30 +625,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [viewMode, setViewMode]       = useState<ViewMode>("speaker");
   const [presentingAgendaIdx, setPresentingAgendaIdx] = useState<number | null>(null);
   const [presentingDoc, setPresentingDoc] = useState<BoardDocument | null>(null);
-  // agendaComments: keyed by agenda item key, value is array of {author, body, at}
-  const [agendaComments, setAgendaComments] = useState<Record<string, Array<{id:string;author:string;body:string;at:string}>>>({
-    [`AGD-${new Date().getFullYear()}-0036`]: [
-      { id: "ac-001", author: "Mr. Md. Nurul Amin", body: "Can we get the Q2 variance report circulated before we proceed? The numbers in this draft differ from the management pack.", at: new Date(Date.now() - 2 * 3600000).toISOString() },
-    ],
-    [`AGD-${new Date().getFullYear()}-0010`]: [
-      { id: "ac-002", author: "Ms. Nasrin Sultana", body: "NRC recommends tabling the approval pending receipt of the independent benchmarking confirmation letter.", at: new Date(Date.now() - 1 * 3600000).toISOString() },
-      { id: "ac-003", author: "Mr. Abdul Awal Mintoo", body: "Agreed. We can pass a conditional approval today and ratify once the letter is received.", at: new Date(Date.now() - 30 * 60000).toISOString() },
-    ],
-  });
+  // No fabricated participant statements, motions or votes may appear as governance evidence.
+  // New activity must originate from a real participant action, not mount-time defaults.
+  const [agendaComments, setAgendaComments] = useState<Record<string, Array<{id:string;author:string;body:string;at:string}>>>({});
   const [agendaCommentInputs, setAgendaCommentInputs] = useState<Record<string, string>>({});
-  // Per-agenda inline motions (separate from the formal motion registry)
-  const YEAR = new Date().getFullYear();
-  const [agendaItemMotions, setAgendaItemMotions] = useState<LiveMotion[]>([
-    {
-      id: "aim-001", agendaKey: `AGD-${YEAR}-0010`,
-      title: `That the Board approve the revised remuneration framework effective 1 July ${YEAR}, subject to receipt of the independent benchmarking confirmation letter from Willis Towers Watson.`,
-      proposedBy: "Ms. Nasrin Sultana", secondedBy: "Mr. Md. Nurul Amin", status: "Proposed",
-    },
-  ]);
+  const [agendaItemMotions, setAgendaItemMotions] = useState<LiveMotion[]>([]);
   const [agendaMotionForms, setAgendaMotionForms] = useState<Record<string, { open: boolean; text: string; proposedBy: string; secondedBy: string }>>({});
-  const [agendaMotionVotes, setAgendaMotionVotes] = useState<Record<string, Record<string, "For" | "Against" | "Abstain">>>({
-    "aim-001": { "Ms. Nasrin Sultana": "For", "Mr. Md. Nurul Amin": "For", "Mr. Md. Abul Bashar": "Abstain" },
-  });
+  const [agendaMotionVotes, setAgendaMotionVotes] = useState<Record<string, Record<string, "For" | "Against" | "Abstain">>>({});
   const [activeSpeakerId, setActiveSpeakerId] = useState<string>("");
   const [docSidebarTab,  setDocSidebarTab]  = useState<"comments" | "motions" | "voting">("comments");
   const [agendaSidebarTab, setAgendaSidebarTab] = useState<"comments" | "motions" | "voting">("comments");
