@@ -19,4 +19,4 @@ both converge on **one** authoritative entry,
 `20261104171825_convay_document_workspace_registry_parity`.
 Its SQL payload is 16,847 bytes with MD5
 `a238cb4749cc0c074bc47d4845fa4455`, matching the source SQL exactly.
-The source tracks the single verified entry; no database history edits were made.
+The source tracks the single verified entry. A checksum-guarded SQL history reconciliation deleted only the later redundant `20261104171828` metadata row after comparing identical SQL. No application tables or data were deleted.
