@@ -4,7 +4,7 @@ Audit checkpoint: 2026-11-04; production Main prior to this PR: `6e94168f1355a51
 
 ## Verified facts
 - Supabase project: `cnrueblhgvdonplirlhv` (Board meeting solution).
-- Applied migration history: 27 entries; source repository has 27 SQL migrations.
+- Applied migration history: 26 entries; source repository has 26 SQL migrations.
 - Seven source file timestamp prefixes differed from the already-applied Supabase version IDs. Migration **names and effect are not being changed** by this PR.
 - Six of these seven migration files matched their corresponding stored Supabase migration SQL byte-for-byte after trim. The authenticated-write-grants migration has equivalent SQL statements with additional source comments.
 - These corrections rename the source SQL files to the actual applied version IDs; the repository regression tests referencing filenames are updated.
@@ -23,7 +23,7 @@ Audit checkpoint: 2026-11-04; production Main prior to this PR: `6e94168f1355a51
 ## Phase 1 gates still open (do **not** mark complete)
 - Independently confirm current Main and independently restore a current full-history off-GitHub archive before release.
 - Establish tested database schema **and data**, Supabase Auth, Storage object, policies, and Edge Function backups and restore procedure. The existing Drive SQL catalogue redacts profile data and excludes Auth secrets.
-- Reconcile live database functions, grants, RLS, triggers, indexes and Edge Function hashes with tracked source across all 27 migrations.
+- Reconcile live database functions, grants, RLS, triggers, indexes and Edge Function hashes with tracked source across all 26 migrations.
 - Validate least-privilege multi-user access with dedicated test identities (not a sole Super Admin).
 - Review Supabase security advisors (notably signed-in SECURITY DEFINER member directory and leaked-password protection) and the currently unindexed foreign keys.
 - Run full requirements / acceptance evidence against the authorized 353-requirement list and 15 end-to-end scenarios before declaring full eight-phase completion.
