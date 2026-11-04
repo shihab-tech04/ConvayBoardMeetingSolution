@@ -389,7 +389,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: meetings, refresh: refreshMeetings } = useMeetingRegistry();
   const { items: decisionItems,    add: addDecision }                    = useDecisionRegistry();
   const { items: actionItems,      add: addAction }                      = useActionItemRegistry();
-  const { items: motionItems,      add: addMotionRec }                   = useMotionRegistry();
+  const { items: motionItems, add: addMotionRec, refresh: refreshMotionRecords } = useMotionRegistry();
   const {                          add: addMinutes }                      = useMinutesRegistry();
   const { items: resolutionItems,  add: addResolution }                  = useResolutionRegistry();
   const { items: voteItems, refresh: refreshVoteRecords } = useVoteRegistry();
@@ -975,6 +975,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (!quorumMet) { toast.error("Quorum is not met. Voting cannot be finalized."); return; }
     if (!canRecordMeeting) { toast.error("Only the Chair or Secretary can close a vote."); return; }
 
+    // A motion result must never diverge from the official SQL motions register.
+    const storedMotion = activeVote.motionId
+      ? motionItems.find(item => item.id === activeVote.motionId && item.meeting_id === meetingId)
+      : undefined;
+    if (activeVote.motionId && !storedMotion) {
+      toast.error("The linked motion is not available in SQL. Refresh before closing the vote.");
+      return;
+    }
     const count = activeVote.votesFor + activeVote.votesAgainst + activeVote.abstentions;
     if (count === 0) { toast.error("No votes have been cast. Record ballots before closing."); return; }
     const aggregateName = activeVote.voteType === "Secret Ballot" ? "Secret Ballot (anonymised)" : "Summary";
@@ -997,7 +1005,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     ].join(" · ");
     type VoteBatchOperation = {
       entity_key: string;
-      action: "create";
+      action: "create" | "update";
       record_id: string;
       payload: { id: string; [key: string]: unknown };
     };
@@ -1030,6 +1038,21 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       },
     });
 
+    // Record the motion's outcome and count in the exact same SQL transaction
+    // as its official vote records, so a failed ballot cannot mark it Passed.
+    if (storedMotion) {
+      operations.push({
+        entity_key: "bms.motions", action: "update", record_id: storedMotion.id,
+        payload: {
+          id: storedMotion.id,
+          status: result === "Passed" ? "Passed" : "Rejected",
+          votes_for: String(activeVote.votesFor),
+          votes_against: String(activeVote.votesAgainst),
+          abstentions: String(activeVote.abstentions),
+        },
+      });
+    }
+
     closingVoteRequest.current = true;
     setClosingVoteBusy(true);
     try {
@@ -1042,15 +1065,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         "Vote " + result + ": " + activeVote.votesFor + "–" + activeVote.votesAgainst +
         " (" + activeVote.abstentions + " abstain)"
       );
-      try { await refreshVoteRecords?.(); }
-      catch { toast.info("Vote saved to SQL. Refresh the page to load the latest record."); }
+      try { await Promise.all([refreshVoteRecords?.(), refreshMotionRecords?.()]); }
+      catch { toast.info("Vote and motion saved to SQL. Refresh to load the latest records."); }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Vote could not be saved. It remains open.");
     } finally {
       closingVoteRequest.current = false;
       setClosingVoteBusy(false);
     }
-  }, [activeVote, meetingId, quorumMet, myRole, voteItems, participants, currentUser.name, refreshVoteRecords]);
+  }, [activeVote, meetingId, quorumMet, canRecordMeeting, voteItems, motionItems, participants, currentUser.name, refreshVoteRecords, refreshMotionRecords]);
 
   const cancelVote = useCallback(() => {
     if (!activeVote) return;
@@ -2298,12 +2321,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                                         </button>
                                       );
                                     })}
-                                    {mOk && canRecordMeeting && (
-                                      <div style={{ marginLeft: "auto", display: "flex", gap: "0.2rem" }}>
-                                        <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)", cursor: "pointer", fontSize: "0.62rem", fontWeight: 700 }}>✓</button>
-                                        <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)", cursor: "pointer", fontSize: "0.62rem", fontWeight: 700 }}>✗</button>
-                                      </div>
-                                    )}
+                                    
                                   </div>
                                 </div>
                               );
@@ -2766,12 +2784,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                                             </button>
                                           );
                                         })}
-                                        {mOk && canRecordMeeting && (
-                                          <div style={{ marginLeft: "auto", display: "flex", gap: "0.2rem" }}>
-                                            <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.18rem 0.4rem", borderRadius: "4px", background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)", cursor: "pointer", fontSize: "0.6rem", fontWeight: 700 }}>✓</button>
-                                            <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.18rem 0.4rem", borderRadius: "4px", background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)", cursor: "pointer", fontSize: "0.6rem", fontWeight: 700 }}>✗</button>
-                                          </div>
-                                        )}
+                                        
                                       </div>
                                     </div>
                                   );
@@ -3427,12 +3440,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                             <button onClick={() => setVoteOpen(true)} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.65rem" }}>Put to Vote</button>
                           </>
                         )}
-                        {canRecordMeeting && (
-                          <>
-                            <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#14532d", color: "#22c55e", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>Pass</button>
-                            <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#7f1d1d", color: "#ef4444", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>Reject</button>
-                          </>
-                        )}
+                        
                         <span style={{ marginLeft: "auto", fontSize: "0.68rem", padding: "0.15rem 0.4rem", borderRadius: "4px", background: m.status === "Passed" ? "#14532d" : m.status === "Rejected" ? "#7f1d1d" : m.status === "Seconded" ? "#1e3a5f" : "#1e293b", color: m.status === "Passed" ? "#22c55e" : m.status === "Rejected" ? "#ef4444" : m.status === "Seconded" ? "#60a5fa" : "#94a3b8" }}>{m.status}</span>
                       </div>
                     </div>
