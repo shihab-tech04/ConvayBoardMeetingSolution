@@ -29,6 +29,7 @@ import type { ResolvedAction } from "../../actions/types";
 import { friendlyDate, friendlyDue, friendlyTime, timeAgo } from "./dateUtils";
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
+import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
 
 // ── Full-page Meeting Detail Modal ────────────────────────────────────────────
 
@@ -972,15 +973,32 @@ export function DashboardPage() {
 
   const { resolve: resolveMtgActions } = useResolvedActions("meeting");
 
-  const { items: meetings }    = useMeetingRegistry();
-  const { items: decisions }   = useDecisionRegistry();
-  const { items: actions }     = useActionItemRegistry();
-  const { items: agendas }     = useAgendaRegistry();
-  const { items: boardPacks }  = useBoardPackRegistry();
-  const { items: rsvps }       = useRSVPRegistry();
-  const { items: conflicts }   = useConflictRegistry();
-  const { items: minutes }     = useMinutesRegistry();
-  const { items: resolutions } = useResolutionRegistry();
+  const meetingRegistry = useMeetingRegistry();
+  const decisionRegistry = useDecisionRegistry();
+  const actionRegistry = useActionItemRegistry();
+  const agendaRegistry = useAgendaRegistry();
+  const boardPackRegistry = useBoardPackRegistry();
+  const rsvpRegistry = useRSVPRegistry();
+  const conflictRegistry = useConflictRegistry();
+  const minutesRegistry = useMinutesRegistry();
+  const resolutionRegistry = useResolutionRegistry();
+
+  const { items: meetings } = meetingRegistry;
+  const { items: decisions } = decisionRegistry;
+  const { items: actions } = actionRegistry;
+  const { items: agendas } = agendaRegistry;
+  const { items: boardPacks } = boardPackRegistry;
+  const { items: rsvps } = rsvpRegistry;
+  const { items: conflicts } = conflictRegistry;
+  const { items: minutes } = minutesRegistry;
+  const { items: resolutions } = resolutionRegistry;
+
+  // Never present incomplete/failed Supabase reads as a genuine empty dashboard.
+  const dashboardSources = [
+    meetingRegistry, decisionRegistry, actionRegistry, agendaRegistry, boardPackRegistry,
+    rsvpRegistry, conflictRegistry, minutesRegistry, resolutionRegistry,
+  ];
+  const dashboardDataState = resolveDashboardDataState(dashboardSources);
 
   const today   = new Date().toISOString().slice(0, 10);
   const weekEnd = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
@@ -1239,6 +1257,38 @@ export function DashboardPage() {
         </p>
       </div>
 
+      {dashboardDataState !== "ready" ? (
+        <section
+          role={dashboardDataState === "error" ? "alert" : "status"}
+          aria-live={dashboardDataState === "error" ? "assertive" : "polite"}
+          className="dash-compact-card"
+          style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 10 }}
+        >
+          {dashboardDataState === "error" ? (
+            <>
+              <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--color-text-primary)" }}>
+                Overview data could not be loaded
+              </h2>
+              <p style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
+                Meeting activity and task totals are unavailable. No zero counts are shown until the data has loaded.
+              </p>
+              <Button type="button" variant="primary" size="sm" onClick={() => void retryDashboardSources(dashboardSources)}>
+                Retry loading
+              </Button>
+            </>
+          ) : (
+            <>
+              <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--color-text-primary)" }}>
+                Loading your overview
+              </h2>
+              <p style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
+                Retrieving meeting activity, upcoming meetings and priority work.
+              </p>
+            </>
+          )}
+        </section>
+      ) : (
+      <>
       {/* Row 1: Hero carousel (7 cols) + KPI grid (5 cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" style={{ alignItems: "stretch" }}>
         <div className="lg:col-span-7" style={{ display: "flex", flexDirection: "column" }}>
@@ -1323,6 +1373,9 @@ export function DashboardPage() {
           <RecentUpdatesPanel updates={recentUpdates} navigate={navigate} />
         </div>
       </div>
+
+      </>
+      )}
 
       {/* Meeting detail modal */}
       <MeetingDetailModal
