@@ -35,6 +35,24 @@ describe("Convay meeting evidence integrity", () => {
     expect(workspace).not.toContain('label="More" onClick={() => {}}');
   });
 
+  it("reads meeting chat and agenda comments from SQL registry events", () => {
+    expect(workspace).toContain("items: interactionItems, add: addInteraction");
+    expect(workspace).toContain('event.interaction_type !== "comment"');
+    expect(workspace).toContain('event.metadata?.source !== "agenda_comment"');
+    expect(workspace).toContain('event.interaction_type === "chat"');
+    expect(workspace).not.toContain("setAgendaComments(");
+    expect(workspace).not.toContain("setChatMessages(");
+  });
+
+  it("requires server acknowledgement before clearing chat or comments", () => {
+    expect(workspace).toContain("const saved = await addInteraction({");
+    expect(workspace).toContain('interaction_type: "comment"');
+    expect(workspace).toContain('interaction_type: "chat"');
+    expect(workspace).toContain("if (saved === true) setChatInput");
+    expect(workspace).toContain("if (await postAgendaComment(aKey, inputVal))");
+    expect(workspace).toContain("if (await postAgendaComment(detailItem.key, dCommentInput))");
+  });
+
   it("opens the existing live right-hand panel when More is selected", () => {
     expect(workspace).toContain('label="More" onClick={() => setPanelOpen(open => !open)}');
   });
