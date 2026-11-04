@@ -40,6 +40,7 @@ import { MOTION_FORM_FIELDS, MINUTES_FORM_FIELDS } from "../boardMeetingFormFiel
 import type { EntryFormValue } from "../../components/forms/EntryForm";
 import { getAgendaDescription } from "../../utils/agendaDescription";
 import { convayAuth } from "../../services/supabase/convayAuth";
+import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -408,6 +409,10 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: allParticipantLinks }                                   = useMeetingParticipantLinkRegistry();
   const { items: bmsUsers }                                              = useBmsUserRegistry();
   const currentUser                                                      = useCurrentUser();
+  const access = useAccessSnapshot();
+  useEffect(() => {
+    if (!access.loaded && !access.error) void reloadAccessSnapshot().catch(() => undefined);
+  }, [access.loaded, access.error]);
 
   const meeting = meetings.find(m => m.meeting_id === meetingId);
 
@@ -537,6 +542,16 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (meeting?.organizer   === currentUser.id || meeting?.organizer   === currentUser.name) return "Administrator";
     return "Board Member";
   })();
+
+  // The single Super Admin has full Maker/Checker authority even when the
+  // optional meeting-participant role is not Chairperson or Secretary.
+  // Restricted users still depend on their actual meeting roles; the API/SQL
+  // performs the authoritative per-action permission check.
+  const canRecordMeeting = access.loaded && (access.is_super_admin || canRecord(myRole));
+  const canControlMeeting = access.loaded &&
+    (access.is_super_admin || (canControl(myRole) && access.effective_permissions.includes("mtg_start")));
+  // Do not override canVote(myRole): ballot eligibility is a separate,
+  // meeting-specific governance rule, even for system administrators.
 
   // ── Load persisted session ─────────────────────────────────────────────────
   const initSession = loadSession(meetingId);
@@ -927,7 +942,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (!activeVote || activeVote.status !== "Open" || closingVoteRequest.current) return;
     if (!meetingId) { toast.error("Meeting unavailable. Refresh before closing this vote."); return; }
     if (!quorumMet) { toast.error("Quorum is not met. Voting cannot be finalized."); return; }
-    if (!canRecord(myRole)) { toast.error("Only the Chair or Secretary can close a vote."); return; }
+    if (!canRecordMeeting) { toast.error("Only the Chair or Secretary can close a vote."); return; }
 
     const count = activeVote.votesFor + activeVote.votesAgainst + activeVote.abstentions;
     if (count === 0) { toast.error("No votes have been cast. Record ballots before closing."); return; }
@@ -1013,7 +1028,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   }, [activeVote]);
 
   const reopenVote = useCallback((reason: string) => {
-    if (!activeVote || !canRecord(myRole)) { toast.error("Only the Chair or Secretary can reopen a vote."); return; }
+    if (!activeVote || !canRecordMeeting) { toast.error("Only the Chair or Secretary can reopen a vote."); return; }
     setActiveVote(prev => {
       if (!prev) return prev;
       return {
@@ -1540,12 +1555,12 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
         {/* Meeting controls — gated by role */}
         <div style={{ display: "flex", gap: "0.4rem" }}>
-          {ctrlStatus === "not-started" && canControl(myRole) && (
+          {ctrlStatus === "not-started" && canControlMeeting && (
             <button onClick={handleStart} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
               <Play size={12} /> Start
             </button>
           )}
-          {ctrlStatus === "in-progress" && canControl(myRole) && (
+          {ctrlStatus === "in-progress" && canControlMeeting && (
             <>
               <button onClick={() => setCtrlStatus("paused")} style={{ padding: "0.35rem 0.6rem", borderRadius: "6px", background: "#1e293b", color: "#94a3b8", border: "1px solid #334155", cursor: "pointer", fontSize: "0.72rem" }} title="Pause">
                 <Pause size={12} />
@@ -1561,12 +1576,12 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
               </button>
             </>
           )}
-          {(ctrlStatus === "paused" || ctrlStatus === "on-break" || ctrlStatus === "adjourned") && canControl(myRole) && (
+          {(ctrlStatus === "paused" || ctrlStatus === "on-break" || ctrlStatus === "adjourned") && canControlMeeting && (
             <button onClick={() => setCtrlStatus("in-progress")} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
               <Play size={12} /> Resume
             </button>
           )}
-          {ctrlStatus === "not-started" && !canControl(myRole) && (
+          {ctrlStatus === "not-started" && !canControlMeeting && (
             <span style={{ fontSize: "0.72rem", color: "#475569", padding: "0.35rem 0.5rem" }}>Waiting for chair to start…</span>
           )}
         </div>
@@ -1697,7 +1712,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                           const docQvAbstain = Object.values(docQvVotes).filter(v => v === "Abstain").length;
                           const docQvTotal   = docQvFor + docQvAgainst + docQvAbstain;
                           const docQvMyVote  = docQvVotes[currentUser.name] as "For" | "Against" | "Abstain" | undefined;
-                          const docQvCanVote = canVote(myRole) || canRecord(myRole);
+                          const docQvCanVote = canVote(myRole) || canRecordMeeting;
                           const docQvCast    = (v: "For" | "Against" | "Abstain") => {
                             if (!docQvCanVote) return;
                             setAgendaMotionVotes(p => ({ ...p, [docQvKey]: { ...(p[docQvKey] ?? {}), [currentUser.name]: v } }));
@@ -1898,7 +1913,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                                 </div>
 
                                 {/* Individual votes — chair/secretary can see/record */}
-                                {canRecord(myRole) && docQvTotal > 0 && (
+                                {canRecordMeeting && docQvTotal > 0 && (
                                   <div>
                                     <p style={{ margin: "0 0 0.4rem", fontSize: "0.62rem", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>Individual Votes</p>
                                     <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
@@ -2071,7 +2086,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                     <div style={{ flex: 1 }} />
 
                     {/* Secondary: Defer + Skip (chair/sec only, not when done) */}
-                    {canRecord(myRole) && pSt !== "Completed" && (
+                    {canRecordMeeting && pSt !== "Completed" && (
                       <>
                         <button onClick={() => setAgendaReasonModal({ action: "Defer", idx: pIdx })}
                           style={{ padding: "0.42rem 0.9rem", borderRadius: "7px", background: "rgba(245,158,11,0.07)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.22)", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600 }}>
@@ -2252,7 +2267,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                                         </button>
                                       );
                                     })}
-                                    {mOk && canRecord(myRole) && (
+                                    {mOk && canRecordMeeting && (
                                       <div style={{ marginLeft: "auto", display: "flex", gap: "0.2rem" }}>
                                         <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)", cursor: "pointer", fontSize: "0.62rem", fontWeight: 700 }}>✓</button>
                                         <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)", cursor: "pointer", fontSize: "0.62rem", fontWeight: 700 }}>✗</button>
@@ -2324,7 +2339,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       const qvAbstain = Object.values(qvVotes).filter(v => v === "Abstain").length;
                       const qvTotal   = qvFor + qvAgainst + qvAbstain;
                       const qvMyVote  = qvVotes[currentUser.name] as "For" | "Against" | "Abstain" | undefined;
-                      const qvCanVote = canVote(myRole) || canRecord(myRole);
+                      const qvCanVote = canVote(myRole) || canRecordMeeting;
                       const qvCast    = (v: "For" | "Against" | "Abstain") => {
                         if (!qvCanVote) return;
                         setAgendaMotionVotes(p => ({ ...p, [qvKey]: { ...(p[qvKey] ?? {}), [currentUser.name]: v } }));
@@ -2366,7 +2381,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                             </div>
                             {!qvCanVote && <p style={{ margin: "0.6rem 0 0", fontSize: "0.62rem", color: "#475569", textAlign: "center" }}>{ctrlStatus !== "in-progress" ? "Meeting not in progress" : "Your role does not permit voting"}</p>}
                           </div>
-                          {canRecord(myRole) && qvTotal > 0 && (
+                          {canRecordMeeting && qvTotal > 0 && (
                             <div>
                               <p style={{ margin: "0 0 0.4rem", fontSize: "0.62rem", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>Individual Votes</p>
                               <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
@@ -2614,13 +2629,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                                   <button onClick={() => { setPresentingAgendaIdx(detailIdx); setViewMode("document"); }} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.3rem", padding: "0.45rem 0.6rem", borderRadius: "7px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.73rem", fontWeight: 600 }}>
                                     ▶ Present
                                   </button>
-                                  {!isCurrentlyActive && canRecord(myRole) && st !== "Completed" && (
+                                  {!isCurrentlyActive && canRecordMeeting && st !== "Completed" && (
                                     <button onClick={() => { setActiveIdx(detailIdx); setAgendaStatuses(p => ({ ...p, [detailIdx]: "In Discussion" })); }} style={{ padding: "0.45rem 0.6rem", borderRadius: "7px", background: "#1e293b", color: "#60a5fa", border: "1px solid #334155", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600 }}>
                                       Make Active
                                     </button>
                                   )}
                                 </div>
-                                {canRecord(myRole) && (
+                                {canRecordMeeting && (
                                   <div style={{ display: "flex", gap: "0.4rem" }}>
                                     <button onClick={() => setAgendaReasonModal({ action: "Defer", idx: detailIdx })} style={{ flex: 1, padding: "0.38rem 0.5rem", borderRadius: "6px", background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.25)", cursor: "pointer", fontSize: "0.7rem", fontWeight: 600 }}>Defer</button>
                                     <button onClick={() => setAgendaReasonModal({ action: "Skip", idx: detailIdx })} style={{ flex: 1, padding: "0.38rem 0.5rem", borderRadius: "6px", background: "rgba(100,116,139,0.08)", color: "#94a3b8", border: "1px solid #334155", cursor: "pointer", fontSize: "0.7rem", fontWeight: 600 }}>Skip</button>
@@ -2720,7 +2735,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                                             </button>
                                           );
                                         })}
-                                        {mOk && canRecord(myRole) && (
+                                        {mOk && canRecordMeeting && (
                                           <div style={{ marginLeft: "auto", display: "flex", gap: "0.2rem" }}>
                                             <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.18rem 0.4rem", borderRadius: "4px", background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)", cursor: "pointer", fontSize: "0.6rem", fontWeight: 700 }}>✓</button>
                                             <button onClick={() => setAgendaItemMotions(p => p.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.18rem 0.4rem", borderRadius: "4px", background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)", cursor: "pointer", fontSize: "0.6rem", fontWeight: 700 }}>✗</button>
@@ -2859,7 +2874,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                             )}
 
                             {/* Individual votes */}
-                            {canRecord(myRole) && adQvTotal > 0 && (
+                            {canRecordMeeting && adQvTotal > 0 && (
                               <div>
                                 <p style={{ margin: "0 0 0.3rem", fontSize: "0.6rem", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>Individual Votes</p>
                                 <div style={{ display: "flex", flexDirection: "column", gap: "0.18rem" }}>
@@ -3055,7 +3070,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>Agenda</p>
-                    {ctrlStatus === "in-progress" && canRecord(myRole) && (
+                    {ctrlStatus === "in-progress" && canRecordMeeting && (
                       <div style={{ display: "flex", gap: "0.2rem", flexWrap: "wrap" }}>
                         <button onClick={() => { const prev = activeIdx - 1; if (prev >= 0) { setActiveIdx(prev); if (!agendaStatuses[prev] || agendaStatuses[prev] === "Not Started") setAgendaStatuses(p => ({ ...p, [prev]: "In Discussion" })); } }} disabled={activeIdx === 0} title="Previous item" style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#1e293b", color: activeIdx === 0 ? "#334155" : "#94a3b8", border: "1px solid #334155", cursor: activeIdx === 0 ? "not-allowed" : "pointer", fontSize: "0.68rem" }}>◀</button>
                         <button onClick={() => setAgendaReasonModal({ action: "Defer", idx: activeIdx })} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#1e293b", color: "#f59e0b", border: "1px solid #334155", cursor: "pointer", fontSize: "0.68rem" }}>Defer</button>
@@ -3132,7 +3147,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                   })}
 
                   {/* Temporary agenda button */}
-                  {ctrlStatus === "in-progress" && canRecord(myRole) && (
+                  {ctrlStatus === "in-progress" && canRecordMeeting && (
                     <button onClick={() => setTempAgendaOpen(true)} style={{ padding: "0.4rem 0.75rem", borderRadius: "6px", background: "#1e293b", color: "#f59e0b", border: "1px dashed #f59e0b", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600, textAlign: "center" }}>
                       + Create Temporary Agenda
                     </button>
@@ -3203,7 +3218,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                     quorumLabel={quorumStatusLabel(quorumCalcResult)}
                     eligibleCount={quorumCalcResult.eligibleCount}
                     requiredCount={quorumCalcResult.requiredCount}
-                    canUpdate={canRecord(myRole)}
+                    canUpdate={canRecordMeeting}
                     isEnded={ctrlStatus === "ended"}
                     onSetAttendance={(id, st) => setAttendance(id, st as AttendanceStatus)}
                     agendaKey={activeAgendaKey}
@@ -3247,7 +3262,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                     );
                   })()}
                   <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
-                    {ctrlStatus === "in-progress" && canRecord(myRole) && (
+                    {ctrlStatus === "in-progress" && canRecordMeeting && (
                       <div style={{ display: "flex", gap: "0.3rem" }}>
                         <button onClick={() => setMotionOpen(true)} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "#334155", color: "#f1f5f9", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>+ Motion</button>
                         <button
@@ -3270,7 +3285,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                           <p style={{ margin: "0.2rem 0 0", fontSize: "0.72rem", color: "#64748b" }}>{activeVote.motionTitle}</p>
                           <p style={{ margin: "0.1rem 0 0", fontSize: "0.66rem", color: "#475569" }}>{activeVote.voteType} · {activeVote.threshold} · {pendingVotes} pending</p>
                         </div>
-                        {canRecord(myRole) && (
+                        {canRecordMeeting && (
                           <div style={{ display: "flex", gap: "0.3rem" }}>
                             <button onClick={() => { void closeVote(); }} disabled={closingVoteBusy} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "#14532d", color: "#22c55e", border: "none", cursor: closingVoteBusy ? "wait" : "pointer", fontSize: "0.68rem", fontWeight: 600 }}>{closingVoteBusy ? "Saving vote…" : "Close Vote"}</button>
                             <button onClick={cancelVote} disabled={closingVoteBusy} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#7f1d1d", color: "#ef4444", border: "none", cursor: closingVoteBusy ? "wait" : "pointer", fontSize: "0.68rem" }}>Cancel</button>
@@ -3313,9 +3328,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                               {(["For","Against","Abstain"] as const).map(choice => (
                                 <button
                                   key={choice}
-                                  onClick={() => canRecord(myRole) ? castVote(p.id, choice) : undefined}
-                                  disabled={!canRecord(myRole)}
-                                  style={{ padding: "0.1rem 0.3rem", borderRadius: "3px", border: "none", background: activeVote.castVotes[p.id] === choice ? (choice === "For" ? "#14532d" : choice === "Against" ? "#7f1d1d" : "#334155") : "transparent", color: activeVote.castVotes[p.id] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#94a3b8") : "#475569", cursor: canRecord(myRole) ? "pointer" : "default", fontSize: "0.65rem" }}
+                                  onClick={() => canRecordMeeting ? castVote(p.id, choice) : undefined}
+                                  disabled={!canRecordMeeting}
+                                  style={{ padding: "0.1rem 0.3rem", borderRadius: "3px", border: "none", background: activeVote.castVotes[p.id] === choice ? (choice === "For" ? "#14532d" : choice === "Against" ? "#7f1d1d" : "#334155") : "transparent", color: activeVote.castVotes[p.id] === choice ? (choice === "For" ? "#22c55e" : choice === "Against" ? "#ef4444" : "#94a3b8") : "#475569", cursor: canRecordMeeting ? "pointer" : "default", fontSize: "0.65rem" }}
                                 >
                                   {choice[0]}
                                 </button>
@@ -3327,7 +3342,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       )}
 
                       {/* Chairman casting vote (tie-breaking) */}
-                      {canControl(myRole) && activeVote.votesFor === activeVote.votesAgainst && activeVote.votesFor > 0 && (
+                      {canControlMeeting && activeVote.votesFor === activeVote.votesAgainst && activeVote.votesFor > 0 && (
                         <div style={{ marginTop: "0.5rem", padding: "0.4rem 0.5rem", borderRadius: "6px", background: "#1e293b", border: "1px solid #f59e0b44" }}>
                           <p style={{ fontSize: "0.68rem", color: "#f59e0b", margin: "0 0 0.3rem" }}>⚖ Tied — Chairperson casting vote</p>
                           <div style={{ display: "flex", gap: "0.3rem" }}>
@@ -3357,7 +3372,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                             <p style={{ margin: "0.1rem 0 0", fontSize: "0.63rem", color: "#64748b" }}>Reopened {activeVote.reopenHistory.length}×</p>
                           )}
                         </div>
-                        {canRecord(myRole) && (
+                        {canRecordMeeting && (
                           <button onClick={() => setReopenOpen(true)} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#334155", color: "#94a3b8", border: "none", cursor: "pointer", fontSize: "0.65rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
                             <RotateCcw size={10} /> Reopen
                           </button>
@@ -3375,13 +3390,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       <p style={{ margin: 0, fontSize: "0.78rem", fontWeight: 700, color: "#f1f5f9" }}>{m.title}</p>
                       <p style={{ margin: "0.2rem 0 0", fontSize: "0.68rem", color: "#64748b" }}>By {m.proposedBy}{m.secondedBy ? ` · Seconded by ${m.secondedBy}` : ""}</p>
                       <div style={{ display: "flex", gap: "0.35rem", marginTop: "0.5rem", alignItems: "center" }}>
-                        {canRecord(myRole) && m.status === "Proposed" && !activeVote?.id && (
+                        {canRecordMeeting && m.status === "Proposed" && !activeVote?.id && (
                           <>
                             <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Seconded" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#1e3a5f", color: "#60a5fa", border: "none", cursor: "pointer", fontSize: "0.65rem" }}>Second</button>
                             <button onClick={() => setVoteOpen(true)} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.65rem" }}>Put to Vote</button>
                           </>
                         )}
-                        {canRecord(myRole) && (
+                        {canRecordMeeting && (
                           <>
                             <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Passed" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#14532d", color: "#22c55e", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>Pass</button>
                             <button onClick={() => setMotions(prev => prev.map(x => x.id === m.id ? { ...x, status: "Rejected" } : x))} style={{ padding: "0.2rem 0.4rem", borderRadius: "4px", background: "#7f1d1d", color: "#ef4444", border: "none", cursor: "pointer", fontSize: "0.68rem" }}>Reject</button>
@@ -3541,7 +3556,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", flexShrink: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
                     <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>Live Minutes</p>
-                    {ctrlStatus !== "not-started" && canRecord(myRole) && (
+                    {ctrlStatus !== "not-started" && canRecordMeeting && (
                       <button onClick={() => setMinutesOpen(true)} style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600 }}>Save Draft</button>
                     )}
                   </div>
