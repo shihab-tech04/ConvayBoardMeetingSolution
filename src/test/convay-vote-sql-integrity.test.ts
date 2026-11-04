@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-const sql = readFileSync("supabase/migrations/20261104162000_convay_vote_reference_integrity.sql","utf8");
+const sql = readFileSync("supabase/migrations/20261104060508_convay_vote_reference_integrity.sql","utf8");
 
 describe("Vote records SQL referential integrity", () => {
   it("uniquely identifies each voter ballot within one meeting", () => {
