@@ -30,7 +30,7 @@ import { friendlyDate, friendlyDue, friendlyTime, timeAgo } from "./dateUtils";
 import { dashboardCalendarWindow, isMeetingApprovalPending } from "./dashboardOverviewRules";
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
-import { selectAvailableDirectMeetingAction } from "./meetingDirectActions";
+import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
@@ -504,7 +504,7 @@ function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetai
 
   // Auto-advance every 4 seconds unless paused or single slide
   useEffect(() => {
-    if (total <= 1 || paused || keyboardFocused || prefersReducedMotion) return;
+    if (!mayAutoAdvanceMeetings(total, paused, keyboardFocused, prefersReducedMotion)) return;
     const id = setInterval(next, 4000);
     return () => clearInterval(id);
   }, [total, paused, keyboardFocused, prefersReducedMotion, next]);
