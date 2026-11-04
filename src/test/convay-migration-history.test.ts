@@ -37,7 +37,7 @@ const appliedMigrations = [
 
 describe("Convay source migration history matches applied Supabase version IDs", () => {
   it("has unique migration names and version IDs", () => {
-    const names = files.map((file) => file.replace(/^\\d+_/, "").replace(/\\.sql$/, ""));
+    const names = files.map((file) => file.replace(/^\d+_/, "").replace(/\.sql$/, ""));
     const versions = files.map((file) => file.slice(0, 14));
     expect(new Set(names).size).toBe(files.length);
     expect(new Set(versions).size).toBe(files.length);
