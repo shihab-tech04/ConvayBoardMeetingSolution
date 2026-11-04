@@ -1,6 +1,6 @@
 import { describe,expect,it } from "vitest";
 import { readFileSync } from "node:fs";
-const sql=readFileSync("supabase/migrations/20261104230000_convay_document_workspace_registry_parity.sql","utf8");
+const sql=readFileSync("supabase/migrations/20261104171825_convay_document_workspace_registry_parity.sql","utf8");
 const frontend=readFileSync("src/app/data/documentWorkspaceData.ts","utf8");
 const keys=["bms.doc.threads","bms.doc.access_grants","bms.doc.approvals_v2","bms.doc.pack_links","bms.doc.acknowledgements"];
 describe("Document workspace SQL contract and access control",()=>{
