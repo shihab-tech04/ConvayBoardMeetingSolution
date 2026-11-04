@@ -32,6 +32,7 @@ import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
 import { resolveLifecycleStage, type LifecycleStage } from "./meetingLifecycleStatus";
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
+import { resolveDashboardMeetingDestination } from "./dashboardContextActions";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
@@ -940,18 +941,6 @@ function RecentUpdatesPanel({ updates, navigate }: RecentUpdatesPanelProps) {
   );
 }
 
-// ── Live meeting routing helpers (module-level — stable references) ────────────
-
-const LIVE_ACTION_IDS = new Set(["start", "join", "start_meeting", "join_meeting", "rejoin_meeting", "resume_meeting", "resume_after_break", "resume_adjourned_meeting", "rejoin"]);
-
-const ACTION_TO_ENTRY: Record<string, LiveMeetingEntryAction> = {
-  start: "start_meeting", start_meeting: "start_meeting",
-  join: "join_meeting", join_meeting: "join_meeting",
-  rejoin: "rejoin_meeting", rejoin_meeting: "rejoin_meeting",
-  resume_meeting: "resume_meeting", resume_after_break: "resume_after_break",
-  resume_adjourned_meeting: "continue_meeting",
-};
-
 // ── Main DashboardPage component ───────────────────────────────────────────────
 
 export function DashboardPage() {
@@ -1051,61 +1040,50 @@ export function DashboardPage() {
     return [...inProgress, ...paused, ...readyToStart, ...pendingAppr, ...approved, ...other].slice(0, 5);
   }, [ongoingMeetings, upcomingMeetings]);
 
-  // ── Hero carousel helpers ────────────────────────────────────────────────────
-
-  const handleHeroActionClick = useCallback((actionId: string, meeting: Meeting) => {
-    const mid = String(meeting.meeting_id ?? meeting.id ?? "");
-    if (LIVE_ACTION_IDS.has(actionId)) {
-      setLiveMeeting({ meetingId: mid, entryAction: ACTION_TO_ENTRY[actionId] ?? "join_meeting" });
-      return;
+  // ── Contextual meeting actions: navigate to the real workflow entry.
+  // The dashboard does not directly approve/publish/edit any server record.
+  const handleDashboardAction = useCallback((action: ResolvedAction, meeting: Meeting) => {
+    const destination = resolveDashboardMeetingDestination(
+      action.id, String(meeting.meeting_id ?? meeting.id ?? ""),
+    );
+    if (destination.kind === "live") {
+      setLiveMeeting({ meetingId: String(meeting.meeting_id ?? meeting.id ?? ""), entryAction: destination.entryAction });
+    } else if (destination.kind === "route") {
+      navigate(destination.path);
+    } else {
+      setSelectedMeeting(meeting);
     }
-    switch (actionId) {
-      case "prepare_minutes":
-      case "review_minutes":
-        navigate("/archive-reports/minutes");
-        break;
-      default:
-        setSelectedMeeting(meeting);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
 
-  const getMeetingRowAction = useCallback((m: Meeting) => {
-    const resolved: ResolvedAction[] = resolveMtgActions(m as Parameters<typeof resolveMtgActions>[0]);
-    const best = selectAvailableDirectMeetingAction(resolved);
-    if (!best) return null;
-    const highlight = LIVE_ACTION_IDS.has(best.id);
-    const mid = String(m.meeting_id ?? m.id ?? "");
-    const CONCISE_LABELS: Record<string, string> = {
-      start_meeting: "Start", join_meeting: "Join", rejoin_meeting: "Rejoin",
-      resume_meeting: "Resume", resume_after_break: "Resume", resume_adjourned_meeting: "Continue",
-      start: "Start", join: "Join", rejoin: "Rejoin",
-      view: "View Details", review_meeting: "Review", publish_meeting: "Publish",
-      continue_setup: "Continue Setup", prepare_minutes: "Prepare Minutes",
-    };
+  const getMeetingRowAction = useCallback((meeting: Meeting) => {
+    const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);
+    const action = selectAvailableDirectMeetingAction(resolved);
+    if (!action) return null;
+    const destination = resolveDashboardMeetingDestination(
+      action.id, String(meeting.meeting_id ?? meeting.id ?? ""),
+    );
     return {
-      label: CONCISE_LABELS[best.id] ?? best.label,
-      highlight,
-      onClick: () => {
-        if (LIVE_ACTION_IDS.has(best.id)) {
-          setLiveMeeting({ meetingId: mid, entryAction: ACTION_TO_ENTRY[best.id] ?? "join_meeting" });
-        } else if (best.id === "prepare_minutes" || best.id === "review_minutes") {
-          navigate("/archive-reports/minutes");
-        } else {
-          setSelectedMeeting(m);
-        }
-      },
+      label: destination.label,
+      highlight: destination.kind === "live",
+      onClick: () => handleDashboardAction(action, meeting),
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolveMtgActions, navigate]);
+  }, [resolveMtgActions, handleDashboardAction]);
 
-  const getPrimaryAction = useCallback((m: Meeting) => {
-    const resolved: ResolvedAction[] = resolveMtgActions(m as Parameters<typeof resolveMtgActions>[0]);
-    const best = selectAvailableDirectMeetingAction(resolved);
-    if (!best) return null;
-    const tone = (best.tone === "danger" ? "warning" : best.tone ?? "neutral") as "primary" | "success" | "warning" | "neutral";
-    return { label: best.label, tone, onClick: () => handleHeroActionClick(best.id, m) };
-  }, [resolveMtgActions, handleHeroActionClick]);
+  const getPrimaryAction = useCallback((meeting: Meeting) => {
+    const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);
+    const action = selectAvailableDirectMeetingAction(resolved);
+    if (!action) return null;
+    const destination = resolveDashboardMeetingDestination(
+      action.id, String(meeting.meeting_id ?? meeting.id ?? ""),
+    );
+    const tone = (action.tone === "danger" ? "warning" : action.tone ?? "neutral") as
+      "primary" | "success" | "warning" | "neutral";
+    return {
+      label: destination.label,
+      tone,
+      onClick: () => handleDashboardAction(action, meeting),
+    };
+  }, [resolveMtgActions, handleDashboardAction]);
 
   // ── Task action router ───────────────────────────────────────────────────────
 
