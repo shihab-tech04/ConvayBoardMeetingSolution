@@ -8,11 +8,14 @@ export type { Notification, NotificationType, NotificationPriority };
 // ── State ─────────────────────────────────────────────────────────────────────
 interface NotificationsState {
   items: Notification[];
+  /** Account that owns the hydrated SQL records; never show one account's inbox to another. */
+  ownerId: string | null;
 }
 
 const initialState: NotificationsState = {
   // Historical placeholder notifications exist only in deterministic tests.
   items: import.meta.env.MODE === "test" ? (MOCK_NOTIFICATIONS as Notification[]) : [],
+  ownerId: null,
 };
 
 // ── Slice ─────────────────────────────────────────────────────────────────────
@@ -27,8 +30,9 @@ const notificationsSlice = createSlice({
     markAllNotificationsRead(state) {
       state.items.forEach((n) => { n.isRead = true; });
     },
-    setNotifications(state, action: PayloadAction<Notification[]>) {
-      state.items = action.payload;
+    setNotifications(state, action: PayloadAction<{ ownerId: string | null; items: Notification[] }>) {
+      state.ownerId = action.payload.ownerId;
+      state.items = action.payload.items;
     },
   },
 });
