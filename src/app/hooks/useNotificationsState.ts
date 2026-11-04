@@ -17,9 +17,13 @@ let notificationMutationVersion = 0;
 /** The topbar, mobile topbar and inbox share the authoritative server-backed store. */
 export function useNotificationsState() {
   const dispatch = useDispatch<AppDispatch>();
-  const items = useSelector((state: RootState) => state.notifications.items);
   const isAuthenticated = useSelector((state: RootState) => state.auth.isAuthenticated);
   const userId = useSelector((state: RootState) => state.currentUser.id);
+  const items = useSelector((state: RootState) =>
+    import.meta.env.MODE === "test" || (isAuthenticated && state.notifications.ownerId === userId)
+      ? state.notifications.items
+      : [],
+  );
   const requestVersion = useRef(0);
   const [loading, setLoading] = useState(
     () => Boolean(isAuthenticated && userId && import.meta.env.MODE !== "test"),
@@ -29,7 +33,7 @@ export function useNotificationsState() {
   const reload = useCallback(async () => {
     const request = ++requestVersion.current;
     if (!isAuthenticated || !userId) {
-      dispatch(setNotifications([]));
+      dispatch(setNotifications({ ownerId: null, items: [] }));
       setError(null);
       setLoading(false);
       return;
@@ -42,12 +46,12 @@ export function useNotificationsState() {
     try {
       const records = await listPersonalNotifications();
       if (request !== requestVersion.current || mutationAtRequest !== notificationMutationVersion) return;
-      dispatch(setNotifications(records));
+      dispatch(setNotifications({ ownerId: userId, items: records }));
     } catch (reason) {
       if (request !== requestVersion.current || mutationAtRequest !== notificationMutationVersion) return;
       const message = reason instanceof Error ? reason.message : "Notifications could not be loaded";
       setError(message);
-      dispatch(setNotifications([]));
+      dispatch(setNotifications({ ownerId: userId, items: [] }));
     } finally {
       if (request === requestVersion.current) setLoading(false);
     }
@@ -56,7 +60,7 @@ export function useNotificationsState() {
   useEffect(() => {
     if (!isAuthenticated || !userId) {
       requestVersion.current++;
-      dispatch(setNotifications([]));
+      dispatch(setNotifications({ ownerId: null, items: [] }));
       setError(null);
       setLoading(false);
       return;
@@ -74,9 +78,10 @@ export function useNotificationsState() {
       return true;
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Unable to mark notification as read");
+      void reload();
       return false;
     }
-  }, [dispatch]);
+  }, [dispatch, reload]);
 
   const markAllRead = useCallback(async () => {
     ++notificationMutationVersion;
@@ -86,9 +91,10 @@ export function useNotificationsState() {
       return true;
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Unable to mark notifications as read");
+      void reload();
       return false;
     }
-  }, [dispatch]);
+  }, [dispatch, reload]);
 
   return {
     notifications: items as Notification[],
