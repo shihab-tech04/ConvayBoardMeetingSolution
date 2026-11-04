@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 
 import { toast } from "sonner";
 import {
@@ -398,7 +398,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: agendaDocLinks }                                        = useAgendaDocumentLinkRegistry();
   const { items: allDocuments }                                          = useDocumentRegistry();
   const { items: docCommentThreads, add: addDocThread, update: updateDocThread } = useDocumentCommentRegistry();
-  const { add: addInteraction }                                          = useMeetingInteractionRegistry();
+  const { items: interactionItems, add: addInteraction }                = useMeetingInteractionRegistry();
   const { items: liveSessions, add: addSession, update: updateSession, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
   const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = useAttendanceRegistry();
   const { add: addQuorumEvent }                                          = useQuorumEventRegistry();
@@ -629,7 +629,24 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [presentingDoc, setPresentingDoc] = useState<BoardDocument | null>(null);
   // No fabricated participant statements, motions or votes may appear as governance evidence.
   // New activity must originate from a real participant action, not mount-time defaults.
-  const [agendaComments, setAgendaComments] = useState<Record<string, Array<{id:string;author:string;body:string;at:string}>>>({});
+
+  // All agenda comments are reconstructed from persisted, permission-scoped SQL records.
+  const agendaComments = useMemo(() => {
+    const byAgenda: Record<string, Array<{id:string;author:string;body:string;at:string}>> = {};
+    for (const event of interactionItems) {
+      if (event.meeting_id !== meetingId || event.interaction_type !== "comment" ||
+          event.metadata?.source !== "agenda_comment" || !event.agenda_id) continue;
+      const key = event.agenda_id;
+      (byAgenda[key] ??= []).push({
+        id: event.id,
+        author: typeof event.metadata?.author === "string" ? event.metadata.author : event.user_id,
+        body: event.content ?? "",
+        at: typeof event.created_at === "string" ? event.created_at : "",
+      });
+    }
+    Object.values(byAgenda).forEach(comments => comments.sort((a, b) => a.at.localeCompare(b.at)));
+    return byAgenda;
+  }, [interactionItems, meetingId]);
   const [agendaCommentInputs, setAgendaCommentInputs] = useState<Record<string, string>>({});
   const [agendaItemMotions, setAgendaItemMotions] = useState<LiveMotion[]>([]);
   const [agendaMotionForms, setAgendaMotionForms] = useState<Record<string, { open: boolean; text: string; proposedBy: string; secondedBy: string }>>({});
@@ -643,7 +660,22 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [chatOpen, setChatOpen]       = useState(false);
   const [reactionsOpen, setReactionsOpen] = useState(false);
   const [speakingQueue, setSpeakingQueue] = useState<string[]>([]);
-  const [chatMessages, setChatMessages]   = useState<ChatMessage[]>([]);
+
+  // Chat is also displayed from confirmed SQL interactions, never optimistic local messages.
+  const chatMessages = useMemo<ChatMessage[]>(() => interactionItems
+    .filter(event => event.meeting_id === meetingId && event.interaction_type === "chat")
+    .map(event => ({
+      id: event.id,
+      from: typeof event.metadata?.sender === "string" ? event.metadata.sender : event.user_id,
+      text: event.content ?? "",
+      time: typeof event.created_at === "string"
+        ? new Date(event.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "",
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id)), [interactionItems, meetingId]);
+  const sendingChat = useRef(false);
+  const postingComment = useRef(false);
+  const [chatBusy, setChatBusy] = useState(false);
   const [chatInput, setChatInput]         = useState("");
   const [closureOpen, setClosureOpen]     = useState(false);
   const [closureChecked, setClosureChecked] = useState<Record<string, boolean>>({});
@@ -1091,23 +1123,51 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     return "transparent";
   };
 
-  const sendChat = () => {
-    if (!chatInput.trim()) return;
-    const msgId = mkId("MSG");
-    setChatMessages(prev => [...prev, { id: msgId, from: currentUser.name, text: chatInput, time: fmtClock() }]);
-    // Persist to interaction registry
-    if (meetingId) {
-      addInteraction({
-        id: msgId, meeting_id: meetingId,
+  // Commit to SQL before clearing the text or displaying the chat entry.
+  const sendChat = async () => {
+    const body = chatInput.trim();
+    if (!body || !meetingId || sendingChat.current) return;
+    sendingChat.current = true;
+    setChatBusy(true);
+    try {
+      const createdAt = nowISO();
+      const saved = await addInteraction({
+        id: `MSG-${crypto.randomUUID()}`,
+        meeting_id: meetingId,
         agenda_id: agendaItems[activeIdx]?.key,
         user_id: currentUser.id,
         interaction_type: "chat",
-        content: chatInput,
-        metadata: { sender: currentUser.name, time: nowISO() },
-        created_at: nowISO(),
+        content: body,
+        metadata: { sender: currentUser.name, time: createdAt },
+        created_at: createdAt,
       } as never);
+      if (saved === true) setChatInput("");
+    } finally {
+      sendingChat.current = false;
+      setChatBusy(false);
     }
-    setChatInput("");
+  };
+
+  const postAgendaComment = async (agendaKey: string, body: string): Promise<boolean> => {
+    const content = body.trim();
+    if (!content || !meetingId || !agendaKey || postingComment.current) return false;
+    postingComment.current = true;
+    try {
+      const createdAt = nowISO();
+      const saved = await addInteraction({
+        id: `ACM-${crypto.randomUUID()}`,
+        meeting_id: meetingId,
+        agenda_id: agendaKey,
+        user_id: currentUser.id,
+        interaction_type: "comment",
+        content,
+        metadata: { source: "agenda_comment", author: currentUser.name },
+        created_at: createdAt,
+      } as never);
+      return saved === true;
+    } finally {
+      postingComment.current = false;
+    }
   };
 
   // ── Session / recording / transcription persistence ───────────────────────
@@ -2074,10 +2134,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       const aComments = agendaComments[aKey] ?? [];
                       const inputVal = agendaCommentInputs[aKey] ?? "";
                       const setInput = (v: string) => setAgendaCommentInputs(p => ({ ...p, [aKey]: v }));
-                      const submitComment = () => {
-                        if (!inputVal.trim()) return;
-                        setAgendaComments(p => ({ ...p, [aKey]: [...(p[aKey] ?? []), { id: `ac-${Date.now()}`, author: currentUser.name, body: inputVal.trim(), at: new Date().toISOString() }] }));
-                        setInput("");
+                      const submitComment = async () => {
+                        if (await postAgendaComment(aKey, inputVal)) setInput("");
                       };
                       return (
                         <>
@@ -2420,10 +2478,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                   const dComments = agendaComments[detailItem.key] ?? [];
                   const dCommentInput = agendaCommentInputs[detailItem.key] ?? "";
                   const dSetCommentInput = (v: string) => setAgendaCommentInputs(p => ({ ...p, [detailItem.key]: v }));
-                  const dPostComment = () => {
-                    if (!dCommentInput.trim()) return;
-                    setAgendaComments(p => ({ ...p, [detailItem.key]: [...(p[detailItem.key] ?? []), { id: `ac-${Date.now()}`, author: currentUser.name, body: dCommentInput.trim(), at: new Date().toISOString() }] }));
-                    dSetCommentInput("");
+                  const dPostComment = async () => {
+                    if (await postAgendaComment(detailItem.key, dCommentInput)) dSetCommentInput("");
                   };
 
                   const purposeColors: Record<string, string> = {
@@ -3545,8 +3601,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             ))}
           </div>
           <div style={{ padding: "0.4rem 0.5rem", borderTop: "1px solid #334155", display: "flex", gap: "0.4rem" }}>
-            <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") sendChat(); }} placeholder="Type a message…" style={{ flex: 1, padding: "0.35rem 0.5rem", borderRadius: "6px", border: "1px solid #334155", background: "#0f172a", color: "#f1f5f9", fontSize: "0.78rem" }} />
-            <Button type="button" variant="primary" size="lg" onClick={sendChat}>Send</Button>
+            <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void sendChat(); }} placeholder="Type a message…" style={{ flex: 1, padding: "0.35rem 0.5rem", borderRadius: "6px", border: "1px solid #334155", background: "#0f172a", color: "#f1f5f9", fontSize: "0.78rem" }} />
+            <Button type="button" variant="primary" size="lg" onClick={() => { void sendChat(); }} disabled={chatBusy || !chatInput.trim()}>Send</Button>
           </div>
         </div>
       )}
