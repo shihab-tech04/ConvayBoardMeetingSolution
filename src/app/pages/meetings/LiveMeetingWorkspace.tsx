@@ -779,72 +779,53 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     return request;
   }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions]);
 
-  const handleEnd = useCallback(() => {
-    setCtrlStatus("ended");
-    // Update canonical session record so refresh/resume know it's ended
-    const sid = liveSessions.find(s => s.meeting_id === meetingId)?.id;
-    if (sid) updateSession(sid, { session_status: "ended", ended_at: nowISO(), ended_by: currentUser.id } as never);
-    // Auto-generate structured draft minutes and save to registry
-    if (meetingId) {
-      const mId = mkId("MIN");
-      const attendanceSummary = participants.map(p => {
-        const st = attendanceMap[p.id] ?? "Not Yet";
-        return `${p.name} (${p.role}) — ${st}`;
-      }).join("\n");
-
-      const agendaSummary = agendaItems.map((item, idx) => {
-        const st = agendaStatuses[idx] ?? "Not Started";
-        const note = notes[idx] ? `\n   Notes: ${notes[idx]}` : "";
-        return `${idx + 1}. ${item.title} [${st}]${note}`;
-      }).join("\n");
-
-      const motionSummary = motions.length > 0
-        ? motions.map(m => `• ${m.title} — ${m.status} (By: ${m.proposedBy}${m.secondedBy ? `, Seconded: ${m.secondedBy}` : ""})`).join("\n")
-        : "No motions recorded.";
-
-      const voteSummary = activeVote
-        ? `${activeVote.motionTitle}: ${activeVote.result ?? activeVote.status} (For: ${activeVote.votesFor}, Against: ${activeVote.votesAgainst}, Abstain: ${activeVote.abstentions})`
-        : "No votes held.";
-
-      const quorumSummary = `${presentCount} of ${eligibleCount} eligible members present.\nRule applied: ${quorumRuleDisplay}\nQuorum was ${quorumMet ? "met" : "NOT met"} at close of meeting.`;
-
-      const fullSummary = [
-        "=== ATTENDANCE ===",
-        attendanceSummary,
-        "",
-        "=== QUORUM ===",
-        quorumSummary,
-        "",
-        "=== AGENDA ITEMS ===",
-        agendaSummary,
-        "",
-        "=== MOTIONS ===",
-        motionSummary,
-        "",
-        "=== VOTING ===",
-        voteSummary,
-      ].join("\n");
-
-      addMinutes({
-        id: mId, minutes_id: mId,
-        meeting_id: meetingId,
-        meeting_title: meeting?.meeting_title ?? "",
-        minutes_template: "Standard",
-        minute_taker: "",
-        co_authors: "",
-        quorum_statement: `Quorum: ${presentCount}/${quorumRequired} present. Rule: ${quorumRuleDisplay}. ${quorumMet ? "Quorum met." : "Quorum NOT met."}`,
-        discussion_summary: fullSummary,
-        next_meeting_date: "",
-        closing_time: nowISO(),
-        version: "1.0",
-        approval_status: "Draft",
-        created_at: nowISO(),
-      } as never);
-
-      toast.success("Meeting ended — structured draft minutes saved automatically.");
-    }
-    setMinutesOpen(true);
-  }, [meeting, meetingId, setCtrlStatus, addMinutes, agendaItems, agendaStatuses, notes, motions, activeVote, participants, attendanceMap, presentCount, eligibleCount, quorumRequired, quorumMet, quorumRuleDisplay]);
+  // End the meeting and its canonical live session together before changing UI.
+  // Draft minutes are entered and saved by the secretary in the following modal;
+  // unreviewed browser notes/votes must not be promoted to official evidence.
+  const endRequest = useRef<Promise<boolean> | null>(null);
+  const handleEnd = useCallback((): Promise<boolean> => {
+    if (endRequest.current) return endRequest.current;
+    const request = (async () => {
+      const session = liveSessions.find(item => item.meeting_id === meetingId);
+      if (!meeting || !session) {
+        toast.error("Meeting session has not loaded. Refresh before ending the meeting.");
+        return false;
+      }
+      try {
+        const endedAt = nowISO();
+        await convayAuth.applyBatch([
+          {
+            entity_key: "bms.meetings",
+            action: "update",
+            record_id: meeting.id,
+            payload: { approval_status: "Awaiting Minutes" },
+          },
+          {
+            entity_key: "bms.liveSessions",
+            action: "update",
+            record_id: session.id,
+            payload: { session_status: "ended", ended_at: endedAt, ended_by: currentUser.id },
+          },
+        ]);
+        setCtrlStatusRaw("ended");
+        setTimeline(previous => ({ ...previous, ended_at: endedAt }));
+        toast.success("Meeting ended. Complete the draft minutes for review.");
+        setMinutesOpen(true);
+        try {
+          await Promise.all([refreshMeetings?.(), refreshLiveSessions?.()]);
+        } catch {
+          toast.info("Meeting closure saved. Refresh to see the latest record.");
+        }
+        return true;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Meeting could not be closed. Nothing was changed.");
+        return false;
+      }
+    })();
+    endRequest.current = request;
+    void request.finally(() => { endRequest.current = null; });
+    return request;
+  }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions]);
 
   const closureAllChecked = CLOSURE_CHECKLIST.every(i => closureChecked[i.key]);
 
@@ -1081,28 +1062,35 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     toast.success("Action item saved to Action Register");
   };
 
-  const handleMinutesSubmit = (values: Record<string, EntryFormValue>) => {
-    // Only save additional manual minutes if minute_taker is filled (avoids duplicate auto-generated minutes)
-    if (String(values.minute_taker ?? "").trim()) {
-      const mId = mkId("MIN");
-      addMinutes({
-        id: mId, minutes_id: mId,
-        meeting_id: meetingId ?? "",
-        meeting_title: meeting?.meeting_title ?? "",
-        minutes_template: String(values.minutes_template ?? "Standard"),
-        minute_taker: String(values.minute_taker ?? ""),
-        co_authors: String(values.co_authors ?? ""),
-        quorum_statement: String(values.quorum_statement ?? `Quorum: ${presentCount}/${quorumRequired} present (Rule: ${quorumRuleDisplay})`),
-        discussion_summary: String(values.discussion_summary ?? ""),
-        next_meeting_date: String(values.next_meeting_date ?? ""),
-        closing_time: String(values.closing_time ?? nowISO()),
-        version: "1.0",
-        approval_status: "Draft",
-        created_at: nowISO(),
-      } as never);
+  const handleMinutesSubmit = async (values: Record<string, EntryFormValue>) => {
+    const minuteTaker = String(values.minute_taker ?? "").trim();
+    if (!minuteTaker) {
+      toast.error("A minute taker is required to save draft minutes.");
+      return;
     }
-    // Mark meeting as awaiting secretary review
-    if (meeting) updateMeeting(meeting.id, { approval_status: "Awaiting Minutes" } as never);
+    if (!meetingId) {
+      toast.error("Meeting unavailable. Refresh before saving draft minutes.");
+      return;
+    }
+    const createdAt = nowISO();
+    const mId = `MIN-${crypto.randomUUID()}`;
+    const saved = await addMinutes({
+      id: mId, minutes_id: mId,
+      meeting_id: meetingId,
+      meeting_title: meeting?.meeting_title ?? "",
+      minutes_template: String(values.minutes_template ?? "Standard"),
+      minute_taker: minuteTaker,
+      co_authors: String(values.co_authors ?? ""),
+      quorum_statement: String(values.quorum_statement ?? ""),
+      discussion_summary: String(values.discussion_summary ?? ""),
+      next_meeting_date: String(values.next_meeting_date ?? ""),
+      closing_time: String(values.closing_time ?? createdAt),
+      version: "1.0",
+      approval_status: "Draft",
+      source_verification: "review_required",
+      created_at: createdAt,
+    } as never);
+    if (saved !== true) return;
     setMinutesOpen(false);
     onClose();
     toast.success("Draft minutes saved. Review in Minutes Management.");
@@ -3803,7 +3791,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       )}
 
       {endConfirmOpen && (
-        <SConfirmModal title="End Meeting for All" message="This will end the meeting for all participants. You will be prompted to save draft minutes." confirmLabel="End Meeting" onConfirm={() => { setEndConfirmOpen(false); handleEnd(); }} onClose={() => setEndConfirmOpen(false)} danger />
+        <SConfirmModal title="End Meeting for All" message="This will end the meeting for all participants. You will be prompted to save draft minutes." confirmLabel="End Meeting" onConfirm={() => { setEndConfirmOpen(false); void handleEnd(); }} onClose={() => setEndConfirmOpen(false)} danger />
       )}
 
       {leaveConfirmOpen && (() => {
