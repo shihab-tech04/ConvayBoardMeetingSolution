@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router";
 import { toast } from "sonner";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { useAccessSnapshot } from "../../services/supabase/convayAccess";
 import {
   ArrowLeft, Users, Calendar, FileText, Mic, Video,
   MessageSquare, Vote, CheckSquare, BookOpen, Clock,
@@ -126,6 +128,9 @@ export function MeetingRecordPage() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [editMinutesId, setEditMinutesId] = useState<string | null>(null);
+  const [busyMinutesId, setBusyMinutesId] = useState<string | null>(null);
+  const access = useAccessSnapshot();
+  const canApproveMinutes = access.loaded && (access.is_super_admin || access.effective_permissions.includes("min_approve"));
   const [tempAgendaParent, setTempAgendaParent] = useState<Record<string, string>>({});
 
   const meetingReg     = useMeetingRegistry();
@@ -162,6 +167,28 @@ export function MeetingRecordPage() {
       </div>
     );
   }
+
+  // Use one SQL transaction for the minutes + meeting status transition.
+  const archiveMinutes = async (minutesId: string) => {
+    if (busyMinutesId !== null || !canApproveMinutes) return;
+    setBusyMinutesId(minutesId);
+    try {
+      await convayAuth.applyBatch([
+        { entity_key: "bms.minutes", action: "update", record_id: minutesId, payload: { approval_status: "Archived" } },
+        { entity_key: "bms.meetings", action: "update", record_id: meeting.id, payload: { approval_status: "Minutes Approved" } },
+      ]);
+      toast.success("Minutes archived. Meeting marked as Minutes Approved.");
+      try {
+        await Promise.all([minutesReg.refresh?.(), meetingReg.refresh?.()]);
+      } catch {
+        toast.info("Saved successfully. Refresh the page to load the latest records.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to archive minutes. No changes were saved.");
+    } finally {
+      setBusyMinutesId(null);
+    }
+  };
 
   const mid = meeting.meeting_id ?? meeting.id;
 
@@ -587,29 +614,26 @@ export function MeetingRecordPage() {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "0.5rem" }}>
               <StatusPill value={m.approval_status} />
               <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                {m.approval_status !== "Signed" && m.approval_status !== "Archived" && (
+                {canApproveMinutes && m.approval_status !== "Signed" && m.approval_status !== "Archived" && (
                   <>
                     <button
-                      onClick={() => { minutesReg.update(m.id, { approval_status: "Signed" }); toast.success("Minutes signed and approved."); }}
+                      onClick={async () => { if (busyMinutesId || !canApproveMinutes) return; setBusyMinutesId(m.id); try { const saved = await minutesReg.update(m.id, { approval_status: "Signed" }); if (saved !== false) toast.success("Minutes signed and approved."); } finally { setBusyMinutesId(null); } }}
                       style={{ padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "#22c55e22", color: "#22c55e", border: "1px solid #22c55e44", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
                     >
                       <CheckCircle size={12} /> Sign & Approve
                     </button>
                     <button
-                      onClick={() => { minutesReg.update(m.id, { approval_status: "Revision Requested" }); toast.info("Revision requested."); }}
+                      onClick={async () => { if (busyMinutesId || !canApproveMinutes) return; setBusyMinutesId(m.id); try { const saved = await minutesReg.update(m.id, { approval_status: "Revision Requested" }); if (saved !== false) toast.info("Revision requested."); } finally { setBusyMinutesId(null); } }}
                       style={{ padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b44", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
                     >
                       <RefreshCw size={12} /> Request Revision
                     </button>
                   </>
                 )}
-                {m.approval_status === "Signed" && (
+                {canApproveMinutes && m.approval_status === "Signed" && (
                   <button
-                    onClick={() => {
-                      minutesReg.update(m.id, { approval_status: "Archived" });
-                      meetingReg.update(mid, { approval_status: "Minutes Approved" });
-                      toast.success("Minutes archived. Meeting marked as Minutes Approved.");
-                    }}
+                    onClick={() => { void archiveMinutes(m.id); }}
+                    disabled={busyMinutesId !== null}
                     style={{ padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "#6b728022", color: "#6b7280", border: "1px solid #6b728044", cursor: "pointer" }}
                   >
                     Archive
@@ -628,10 +652,14 @@ export function MeetingRecordPage() {
               />
               <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     const el = document.getElementById(`min-edit-${m.id}`) as HTMLTextAreaElement | null;
-                    if (el) { minutesReg.update(m.id, { discussion_summary: el.value }); toast.success("Minutes content updated."); }
-                    setEditMinutesId(null);
+                    if (!el || busyMinutesId) return;
+                    setBusyMinutesId(m.id);
+                    try {
+                      const saved = await minutesReg.update(m.id, { discussion_summary: el.value });
+                      if (saved !== false) { toast.success("Minutes content updated."); setEditMinutesId(null); }
+                    } finally { setBusyMinutesId(null); }
                   }}
                   style={{ padding: "4px 14px", borderRadius: 6, fontSize: "0.8rem", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}
                 >
@@ -723,14 +751,14 @@ export function MeetingRecordPage() {
                         </select>
                         <button
                           style={{ marginLeft: "0.5rem", padding: "0.3rem 0.75rem", borderRadius: 6, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.78rem", fontWeight: 600 }}
-                          onClick={() => {
+                          onClick={async () => {
                             const parentId = tempAgendaParent[a.id];
-                            agendaReg.update(a.id, {
+                            const saved = await agendaReg.update(a.id, {
                               is_temporary: false,
                               parent_agenda_id: parentId || undefined,
                               approval_status: "Approved",
                             } as never);
-                            toast.success("Temporary agenda promoted to permanent.");
+                            if (saved !== false) toast.success("Temporary agenda promoted to permanent.");
                           }}
                         >
                           Make Permanent
@@ -741,19 +769,19 @@ export function MeetingRecordPage() {
                   {canAct && (
                     <div style={{ display: "flex", gap: "0.4rem", flexShrink: 0 }}>
                       <button
-                        onClick={() => { agendaReg.update(a.id, { approval_status: "Approved" } as never); toast.success("Temporary agenda approved."); }}
+                        onClick={async () => { const saved = await agendaReg.update(a.id, { approval_status: "Approved" } as never); if (saved !== false) toast.success("Temporary agenda approved."); }}
                         style={{ padding: "0.3rem 0.65rem", borderRadius: 6, background: "#22c55e22", color: "#22c55e", border: "1px solid #22c55e44", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}
                       >
                         <CheckCircle size={12} /> Approve
                       </button>
                       <button
-                        onClick={() => { agendaReg.update(a.id, { approval_status: "Revision Requested" } as never); toast.info("Revision requested."); }}
+                        onClick={async () => { const saved = await agendaReg.update(a.id, { approval_status: "Revision Requested" } as never); if (saved !== false) toast.info("Revision requested."); }}
                         style={{ padding: "0.3rem 0.65rem", borderRadius: 6, background: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b44", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}
                       >
                         <RefreshCw size={12} /> Revise
                       </button>
                       <button
-                        onClick={() => { agendaReg.update(a.id, { approval_status: "Rejected" } as never); toast.error("Temporary agenda rejected."); }}
+                        onClick={async () => { const saved = await agendaReg.update(a.id, { approval_status: "Rejected" } as never); if (saved !== false) toast.info("Temporary agenda rejected."); }}
                         style={{ padding: "0.3rem 0.65rem", borderRadius: 6, background: "#ef444422", color: "#ef4444", border: "1px solid #ef444444", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}
                       >
                         <AlertCircle size={12} /> Reject
