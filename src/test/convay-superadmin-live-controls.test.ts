@@ -11,13 +11,16 @@ describe("Super Admin full live-meeting Maker and Checker controls", () => {
   });
 
   it("Super Admin can use all meeting-record actions independently of participant type", () => {
-    expect(source).toContain('const canRecordMeeting = access.loaded && (access.is_super_admin || canRecord(myRole))');
-    expect(source).toContain("if (!canRecordMeeting)");
+    expect(source).toContain('const hasGrant = (code: string) => access.loaded &&');
+    expect(source).toContain('access.is_super_admin || access.effective_permissions.includes(code)');
+    expect(source).toContain('const hasLeadership = access.is_super_admin || canRecord(myRole)');
+    expect(source).toContain('const canRecordMeeting = hasLeadership && hasGrant("mtg_start")');
     expect(source).toContain("&& canRecordMeeting &&");
   });
 
   it("super admin can operate meeting controls while restricted roles need mtg_start", () => {
-    expect(source).toContain("access.is_super_admin || (canControl(myRole) && access.effective_permissions.includes(\"mtg_start\"))");
+    expect(source).toContain("const canControlMeeting = (access.is_super_admin || canControl(myRole)) &&");
+    expect(source).toContain('hasGrant("mtg_start") && hasGrant("mtg_update")');
     expect(source).toContain("&& canControlMeeting &&");
   });
 
