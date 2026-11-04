@@ -30,6 +30,7 @@ import { friendlyDate, friendlyDue, friendlyTime, timeAgo } from "./dateUtils";
 import { dashboardCalendarWindow, isMeetingApprovalPending } from "./dashboardOverviewRules";
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
+import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
@@ -481,6 +482,16 @@ interface MeetingHeroCarouselProps {
 function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetails, userRole }: MeetingHeroCarouselProps) {
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [keyboardFocused, setKeyboardFocused] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!media) return;
+    setPrefersReducedMotion(media.matches);
+    const changed = (event: MediaQueryListEvent) => setPrefersReducedMotion(event.matches);
+    media.addEventListener?.("change", changed);
+    return () => media.removeEventListener?.("change", changed);
+  }, []);
   const { themeId } = useSettings();
   const isDark = themeId === "dark-mode";
   const carouselBg = isDark
@@ -493,10 +504,10 @@ function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetai
 
   // Auto-advance every 4 seconds unless paused or single slide
   useEffect(() => {
-    if (total <= 1 || paused) return;
+    if (!mayAutoAdvanceMeetings(total, paused, keyboardFocused, prefersReducedMotion)) return;
     const id = setInterval(next, 4000);
     return () => clearInterval(id);
-  }, [total, paused, next]);
+  }, [total, paused, keyboardFocused, prefersReducedMotion, next]);
 
   // Clamp index when meetings change
   useEffect(() => {
@@ -533,6 +544,10 @@ function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetai
       }}
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
+      onFocusCapture={() => setKeyboardFocused(true)}
+      onBlurCapture={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setKeyboardFocused(false);
+      }}
     >
       {/* Slides */}
       {meetings.map((m, i) => {
@@ -1062,8 +1077,7 @@ export function DashboardPage() {
 
   const getMeetingRowAction = useCallback((m: Meeting) => {
     const resolved: ResolvedAction[] = resolveMtgActions(m as Parameters<typeof resolveMtgActions>[0]);
-    const direct = resolved.filter(a => a.visible && a.placement === "direct").sort((a, b) => a.priority - b.priority);
-    const best = direct[0];
+    const best = selectAvailableDirectMeetingAction(resolved);
     if (!best) return null;
     const highlight = LIVE_ACTION_IDS.has(best.id);
     const mid = String(m.meeting_id ?? m.id ?? "");
@@ -1092,8 +1106,7 @@ export function DashboardPage() {
 
   const getPrimaryAction = useCallback((m: Meeting) => {
     const resolved: ResolvedAction[] = resolveMtgActions(m as Parameters<typeof resolveMtgActions>[0]);
-    const direct = resolved.filter(a => a.visible && a.placement === "direct").sort((a, b) => a.priority - b.priority);
-    const best = direct[0];
+    const best = selectAvailableDirectMeetingAction(resolved);
     if (!best) return null;
     const tone = (best.tone === "danger" ? "warning" : best.tone ?? "neutral") as "primary" | "success" | "warning" | "neutral";
     return { label: best.label, tone, onClick: () => handleHeroActionClick(best.id, m) };
