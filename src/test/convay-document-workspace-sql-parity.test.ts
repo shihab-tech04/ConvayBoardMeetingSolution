@@ -18,6 +18,10 @@ describe("Document workspace SQL contract and access control",()=>{
     expect(sql).toContain("new.payload:=jsonb_set(new.payload,'{acknowledged_user_id}'");
     expect(sql).toContain("Document acknowledgements and approvals are append-only");
     expect(sql).toContain("convay_document_ack_user_unique");
+    expect(sql).toContain("current_user='postgres'");
+    expect(sql).toContain("current_setting('convay.authorized_document_cleanup',true)='true'");
+    expect(sql).toContain("perform set_config('convay.authorized_document_cleanup','true',true)");
+    expect(sql).toContain("perform set_config('convay.authorized_document_cleanup','',true)");
   });
   it("recognizes external document IDs and deletes associated workspace rows",()=>{
     expect(sql).toContain("d.payload->>'doc_id'=p_doc");
