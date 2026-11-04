@@ -22,7 +22,9 @@ import {
 } from "../../data/boardMeetingData";
 import { useDocumentAcknowledgementRegistry } from "../../data/documentWorkspaceData";
 import { friendlyDue } from "./dateUtils";
-import { fieldMatchesUser, isWorkflowRole } from "./homeWorkspaceUtils";
+import { fieldMatchesUser, isWorkflowRole, roleAssignmentMatchesUser } from "./homeWorkspaceUtils";
+import { dashboardCalendarWindow } from "./dashboardOverviewRules";
+import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
 import type { ColDef, TableRow, FilterDef, MobileCardMapping, TableCellValue } from "../modulePageUtils";
 import type { TabDef } from "../../components/tables/UnifiedDataTable";
 
@@ -199,23 +201,40 @@ export function PSRDashboardPage() {
   const [kpiFilter, setKpiFilter]           = useState<string | null>(null);
   const [drawerRow, setDrawerRow]           = useState<TableRow | null>(null);
 
-  const today    = new Date().toISOString().slice(0, 10);
-  const weekEnd  = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const { today, weekEnd } = dashboardCalendarWindow(new Date());
   const monthStr = today.slice(0, 7);
 
-  const { items: meetings }   = useMeetingRegistry();
-  const { items: agendas }    = useAgendaRegistry();
-  const { items: boardPacks } = useBoardPackRegistry();
-  const { items: rsvps }      = useRSVPRegistry();
-  const { items: conflicts }  = useConflictRegistry();
-  const { items: minutes }    = useMinutesRegistry();
-  const { items: actions }    = useActionItemRegistry();
-  const { items: documents }  = useDocumentRegistry();
-  const { items: acks }       = useDocumentAcknowledgementRegistry();
+  const meetingRegistry = useMeetingRegistry();
+  const agendaRegistry = useAgendaRegistry();
+  const boardPackRegistry = useBoardPackRegistry();
+  const rsvpRegistry = useRSVPRegistry();
+  const conflictRegistry = useConflictRegistry();
+  const minutesRegistry = useMinutesRegistry();
+  const actionRegistry = useActionItemRegistry();
+  const documentRegistry = useDocumentRegistry();
+  const acknowledgementRegistry = useDocumentAcknowledgementRegistry();
 
-  const userName    = (currentUser.name ?? "").toLowerCase();
-  const userDesig   = currentUser.designation ?? "";
-  const hasRoleAccess = isWorkflowRole(userDesig);
+  const { items: meetings } = meetingRegistry;
+  const { items: agendas } = agendaRegistry;
+  const { items: boardPacks } = boardPackRegistry;
+  const { items: rsvps } = rsvpRegistry;
+  const { items: conflicts } = conflictRegistry;
+  const { items: minutes } = minutesRegistry;
+  const { items: actions } = actionRegistry;
+  const { items: documents } = documentRegistry;
+  const { items: acks } = acknowledgementRegistry;
+
+  // A failed or pending SQL read is not proof that the user's task queue is empty.
+  const taskSources = [
+    meetingRegistry, agendaRegistry, boardPackRegistry, rsvpRegistry, conflictRegistry,
+    minutesRegistry, actionRegistry, documentRegistry, acknowledgementRegistry,
+  ];
+  const taskDataState = resolveDashboardDataState(taskSources);
+
+  const userName = (currentUser.name ?? "").toLowerCase();
+  const userDesig = currentUser.designation ?? "";
+  const userRole = currentUser.role ?? "";
+  const hasRoleAccess = isWorkflowRole(userDesig) || isWorkflowRole(userRole);
 
   // ── Task assembly — name-based + role-based ownership ──────────────────────
 
@@ -225,7 +244,13 @@ export function PSRDashboardPage() {
     // Meeting approvals — user is chairperson/organizer/secretary by name,
     // OR user has a workflow role (secretariat/secretary/admin) and the meeting is pending
     for (const m of meetings) {
-      if (!["Pending Approval", "Awaiting Minutes", "Awaiting Approval"].includes(String(m.approval_status ?? ""))) continue;
+      const meetingStatus = String(m.approval_status ?? m.status ?? "");
+      if (!["Pending Approval", "Awaiting Minutes", "Awaiting Approval"].includes(meetingStatus)) continue;
+      const isMinutesPreparation = meetingStatus === "Awaiting Minutes";
+      if (isMinutesPreparation && minutes.some(min =>
+        String(min.meeting_id ?? "") === String(m.id) &&
+        ["Draft", "Awaiting Review"].includes(String(min.approval_status ?? "")),
+      )) continue;
       const isInvolved =
         fieldMatchesUser(m.chairperson, userName) ||
         fieldMatchesUser(m.organizer, userName) ||
@@ -238,9 +263,9 @@ export function PSRDashboardPage() {
         sourceId: String(m.id),
         sourceType: "meeting",
         meetingId: String(m.id),
-        title: "Review meeting approval",
-        description: "Meeting approval required",
-        type: "Approval",
+        title: isMinutesPreparation ? "Prepare meeting minutes" : "Review meeting approval",
+        description: isMinutesPreparation ? "Minutes preparation required" : "Meeting approval required",
+        type: isMinutesPreparation ? "Review" : "Approval",
         relatedMeeting: String(m.meeting_title ?? ""),
         dueDate: due,
         dueLabel: friendlyDue(due),
@@ -372,8 +397,9 @@ export function PSRDashboardPage() {
     for (const a of actions) {
       const assignedTo = String(a.assigned_to ?? "");
       const isDirectlyAssigned = fieldMatchesUser(assignedTo, userName);
-      // Role match: if assigned_to contains a workflow-role keyword and user has that role
-      const isRoleAssigned = hasRoleAccess && isWorkflowRole(assignedTo);
+      // Role assignments must match the user's role, not any unrelated workflow role.
+      const isRoleAssigned = hasRoleAccess &&
+        roleAssignmentMatchesUser(assignedTo, userRole, userDesig);
       if (!isDirectlyAssigned && !isRoleAssigned) continue;
 
       const status = String(a.implementation_status ?? "");
@@ -608,6 +634,10 @@ export function PSRDashboardPage() {
           navigate(`/meetings/${task.sourceId}/live`);
           return;
         }
+        if (status === "Awaiting Minutes") {
+          navigate("/archive-reports/minutes");
+          return;
+        }
         navigate("/meetings/all-meetings");
         break;
       }
@@ -623,6 +653,31 @@ export function PSRDashboardPage() {
   };
 
   const handlePrint = () => window.print();
+
+  if (taskDataState !== "ready") {
+    return (
+      <div className="dashboard-page home-workspace-page">
+        <section
+          className="dash-compact-card"
+          role={taskDataState === "error" ? "alert" : "status"}
+          aria-live={taskDataState === "error" ? "assertive" : "polite"}
+          style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12 }}
+        >
+          <h1 className="dashboard-page__title">My Tasks</h1>
+          {taskDataState === "error" ? (
+            <>
+              <p>Tasks could not be loaded. Your assignments are not being shown as an empty queue.</p>
+              <PrimaryButton type="button" size="sm" onClick={() => void retryDashboardSources(taskSources)}>
+                Retry loading
+              </PrimaryButton>
+            </>
+          ) : (
+            <p>Loading your assigned tasks and follow-up activities.</p>
+          )}
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="dashboard-page home-workspace-page">
