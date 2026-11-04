@@ -29,6 +29,8 @@ import type { ResolvedAction } from "../../actions/types";
 import { friendlyDate, friendlyDue, friendlyTime, timeAgo } from "./dateUtils";
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
 
 // ── Full-page Meeting Detail Modal ────────────────────────────────────────────
@@ -261,16 +263,6 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
 
 // ── Role derivation ────────────────────────────────────────────────────────────
 
-type ViewRole = "chairperson" | "secretary" | "board_member" | "admin";
-
-function deriveViewRole(roleStr: string): ViewRole {
-  const r = roleStr.toLowerCase();
-  if (r.includes("chairman") || r.includes("chairperson")) return "chairperson";
-  if (r.includes("secretary"))                              return "secretary";
-  if (r.includes("admin") || r.includes("administrator"))  return "admin";
-  if (r.includes("director") || r.includes("member"))      return "board_member";
-  return "secretary";
-}
 
 const ROLE_LABELS: Record<ViewRole, string> = {
   chairperson:  "Chairperson",
@@ -954,6 +946,7 @@ const ACTION_TO_ENTRY: Record<string, LiveMeetingEntryAction> = {
 export function DashboardPage() {
   const navigate = useNavigate();
   const userId   = useSelector((s: { auth: { userId: string | null } }) => s.auth.userId);
+  const sessionUser = useCurrentUser();
   const { users } = useUserRegistry();
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   const [liveMeeting, setLiveMeeting] = useState<{ meetingId: string; entryAction: LiveMeetingEntryAction } | null>(null);
@@ -969,7 +962,8 @@ export function DashboardPage() {
     );
   }, [userId, users]);
 
-  const viewRole: ViewRole = deriveViewRole(currentUser?.role ?? "");
+  // The authenticated session role is canonical; legacy registry records are only a fallback.
+  const viewRole: ViewRole = deriveDashboardRole(sessionUser.role, currentUser?.role);
 
   const { resolve: resolveMtgActions } = useResolvedActions("meeting");
 
@@ -1239,7 +1233,7 @@ export function DashboardPage() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
-  const firstName = currentUser ? currentUser.name.split(" ")[0] : null;
+  const firstName = (sessionUser.name || currentUser?.name || "").trim().split(/\s+/)[0] || null;
 
   return (
     <div className="dashboard-page" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
