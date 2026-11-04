@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-const sql = readFileSync("supabase/migrations/20261104230000_convay_ballot_eligibility_append_only.sql", "utf8");
+const sql = readFileSync("supabase/migrations/20261104181406_convay_ballot_eligibility_append_only.sql", "utf8");
 
 describe("PT-07 / VT-07 / BR-11: SQL-backed eligible ballot records", () => {
   it("enforces one recorded ballot per real voter per voting session", () => {
