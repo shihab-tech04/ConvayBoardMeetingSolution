@@ -7,6 +7,7 @@ import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { normalizeMeetingSchedule } from "./meetingSchedule";
+import { meetingAccessBlockers } from "./meetingAccess";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
 import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
@@ -838,8 +839,6 @@ export function OnlineReturnRegisterPage() {
         try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")) as AdditionalDocEntry[]; }
         catch { return []; }
       })();
-      const mode = String(values.mode ?? "Physical");
-
       // ── Schedule Meeting validation ─────────────────────────────────────────
       {
         const blockers: string[] = [];
@@ -872,10 +871,7 @@ export function OnlineReturnRegisterPage() {
           else if (mr !== "Meeting Ready") blockers.push(`Agenda "${ag.agenda_title ?? e.agenda_id}" is not Meeting Ready`);
         });
 
-        if (mode === "Physical" && !String(values.venue ?? "").trim())
-          blockers.push("Physical meeting requires a venue address");
-        if ((mode === "Virtual" || mode === "Hybrid") && !String(values.virtual_link ?? "").trim())
-          blockers.push(`${mode} meeting requires a virtual meeting link`);
+        blockers.push(...meetingAccessBlockers(values));
 
         const body2 = govRegistry.items.find(b => b.id === committee || b.body_id === committee || b.body_name === committee);
         const govRule = quorumRuleRegistry.items.find(r =>
