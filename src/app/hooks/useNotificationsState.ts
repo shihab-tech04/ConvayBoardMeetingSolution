@@ -31,6 +31,8 @@ export function useNotificationsState() {
       : [],
   );
   const requestVersion = useRef(0);
+  const activeOwnerRef = useRef<string | null>(isAuthenticated && userId ? userId : null);
+  activeOwnerRef.current = isAuthenticated && userId ? userId : null;
   const [loading, setLoading] = useState(
     () => Boolean(isAuthenticated && userId && import.meta.env.MODE !== "test"),
   );
@@ -50,7 +52,7 @@ export function useNotificationsState() {
     setLoading(true);
     setError(null);
     try {
-      const records = await listPersonalNotifications();
+      const records = await listPersonalNotifications(userId);
       if (request !== requestVersion.current || mutationAtRequest !== mutationVersionFor(userId)) return;
       dispatch(setNotifications({ ownerId: userId, items: records }));
     } catch (reason) {
@@ -77,28 +79,36 @@ export function useNotificationsState() {
   }, [dispatch, isAuthenticated, userId, reload]);
 
   const markRead = useCallback(async (id: string) => {
+    if (!isAuthenticated || !userId || activeOwnerRef.current !== userId) return false;
     invalidateNotificationsFor(userId);
     try {
-      await persistNotificationRead(id);
+      await persistNotificationRead(id, userId);
+      // A delayed acknowledgement from account A must not update account B.
+      if (activeOwnerRef.current !== userId) return false;
       dispatch(markNotificationRead(id));
       return true;
     } catch (reason) {
+      if (activeOwnerRef.current !== userId) return false;
       toast.error(reason instanceof Error ? reason.message : "Unable to mark notification as read");
       return false;
     }
-  }, [dispatch, userId]);
+  }, [dispatch, isAuthenticated, userId]);
 
   const markAllRead = useCallback(async () => {
+    if (!isAuthenticated || !userId || activeOwnerRef.current !== userId) return false;
     invalidateNotificationsFor(userId);
     try {
-      await persistAllNotificationsRead();
+      await persistAllNotificationsRead(userId);
+      // Ignore stale responses after logout or identity switch.
+      if (activeOwnerRef.current !== userId) return false;
       dispatch(markAllNotificationsRead());
       return true;
     } catch (reason) {
+      if (activeOwnerRef.current !== userId) return false;
       toast.error(reason instanceof Error ? reason.message : "Unable to mark notifications as read");
       return false;
     }
-  }, [dispatch, userId]);
+  }, [dispatch, isAuthenticated, userId]);
 
   return {
     notifications: items as Notification[],
