@@ -670,6 +670,17 @@ export function OnlineReturnRegisterPage() {
       { id: "Cancelled",       label: "Cancelled"       },
     ] satisfies StatusTabDef[],
     onCustomAction:  handleCustomAction,
+    approvalPermission: "mtg_approve",
+    approvalStatusField: "approval_status",
+    onApproveRecord: async (id, values) => {
+      const approved = await convayAuth.approveMeeting(id, String(values.approval_remark ?? ""));
+      try {
+        await registry.refresh?.();
+      } catch {
+        toast.error("Meeting approval was saved, but the register could not refresh. Reload the page to see the latest status.");
+      }
+      return approved.approval_status === "Approved";
+    },
 
     // ── Save Draft: upserts a meeting record with status "Draft" ─────────────────
     onSaveDraft: async (values, existingDraftId) => {

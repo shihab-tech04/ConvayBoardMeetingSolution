@@ -55,6 +55,7 @@ function deriveMeetingRoles(record: Record<string, unknown>, ctx: ActionContext)
 
   // Approver — role/permissions or designation
   const canApprove =
+    ctx.permissions.includes("mtg_approve") ||
     ctx.permissions.includes("meeting_approve") ||
     ctx.userRole === "Super Admin" ||
     ctx.userRole === "Board Secretary" ||

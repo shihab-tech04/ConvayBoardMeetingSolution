@@ -902,8 +902,9 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         extraFooterActions={
           <>
             {(drawer && cfg.drawerActionsResolver ? cfg.drawerActionsResolver(drawer) : cfg.drawerActions)?.map((action) => {
-              const genericApprovalAction = action.id === "approve" && !cfg.onCustomAction;
-              const approvalDisabledReason = genericApprovalAction
+              const usesSharedApprovalFlow = action.id === "approve" &&
+                Boolean(cfg.onApproveRecord && cfg.approvalPermission);
+              const approvalDisabledReason = usesSharedApprovalFlow
                 ? isAlreadyApproved(drawer)
                   ? `${entityName} is already approved.`
                   : approvalBlockedReason
@@ -916,7 +917,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 : null;
               const handleClick = () => {
                 // These action IDs always use GenPage's internal modal state
-                if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id)) {
+                if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id) || usesSharedApprovalFlow) {
                   handleActionClick(action.id, drawer!);
                 } else if (cfg.onCustomAction) {
                   cfg.onCustomAction(action.id, drawer!);

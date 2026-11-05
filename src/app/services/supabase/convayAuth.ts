@@ -235,6 +235,28 @@ export const convayAuth = {
     return result;
   },
 
+  /**
+   * Approve a pending meeting through the permission-checked SQL operation.
+   * The database verifies mtg_approve and performs only this lifecycle change.
+   */
+  async approveMeeting(recordId: string, approvalRemark = ""): Promise<Record<string, unknown>> {
+    const id = recordId.trim();
+    if (!id) throw new Error("A meeting ID is required");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_approve_meeting", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_record_id: id,
+        p_approval_remark: approvalRemark.trim() || null,
+      }),
+    });
+    const approved = await res.json() as Record<string, unknown>;
+    if (approved.id !== id || approved.approval_status !== "Approved") {
+      throw new Error("Supabase did not confirm the meeting approval.");
+    }
+    return approved;
+  },
+
   async registry<T extends { id: string }>(
     entity: string,
     action: "list" | "create" | "update" | "delete",
