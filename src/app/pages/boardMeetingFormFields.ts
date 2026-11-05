@@ -97,7 +97,9 @@ export const MEETING_FORM_FIELDS: FormField[] = [
   { key: "confidentiality",  label: "Confidentiality",    type: "select",   required: true, options: CONFIDENTIALITY_LEVELS, defaultValue: "Confidential", step: 0 },
   { key: "purpose",          label: "Meeting Purpose",    type: "textarea", span: true, rows: 2,
     placeholder: "State the primary purpose of this meeting", step: 0 },
-  { key: "description",      label: "Description / Notes",type: "textarea", span: true, rows: 3, step: 0 },
+  { key: "description",      label: "Description",        type: "textarea", span: true, rows: 3, step: 0 },
+  { key: "notes",            label: "Supporting Notes",   type: "textarea", span: true, rows: 3,
+    placeholder: "Add supporting notes for the meeting", step: 0 },
 
   // ── Step 1: Participants (rendered entirely by ParticipantSelectorStep custom renderer) ──
   // No standard form fields — all participant data written via participant_links_json.
@@ -130,7 +132,7 @@ export const MEETING_FORM_SECTIONS: SectionDef[] = [
   { id: "s0-datetime",    step: 0, title: "Date & Time",          icon: CalendarClock, fieldKeys: ["meeting_date", "start_time", "end_time", "time_zone"] },
   { id: "s0-leadership",  step: 0, title: "Meeting Leadership",   icon: Landmark,      fieldKeys: ["chairperson", "secretary", "organizer"] },
   { id: "s0-prefs",       step: 0, title: "Meeting Preferences",  icon: Settings2,     fieldKeys: ["confidentiality"] },
-  { id: "s0-purpose",     step: 0, title: "Purpose & Notes",      icon: AlignLeft,     fieldKeys: ["purpose", "description"] },
+  { id: "s0-purpose",     step: 0, title: "Purpose & Notes",      icon: AlignLeft,     fieldKeys: ["purpose", "description", "notes"] },
   // Step 1: Participants — fully rendered by ParticipantSelectorStep (stepRenderers[1]); no standard sections.
   // Step 2: Agendas and Documents — rendered by AgendaDocumentStep (stepRenderers[2]); no standard sections.
   // Step 3: Meeting Mode and Quorum

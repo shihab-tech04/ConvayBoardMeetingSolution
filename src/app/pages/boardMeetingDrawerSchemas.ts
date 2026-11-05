@@ -18,6 +18,8 @@ export const MEETING_DRAWER_COLS: ColDef[] = [
     { key: "mode",             label: "Mode" },
     { key: "confidentiality",  label: "Confidentiality" },
     { key: "purpose",          label: "Purpose" },
+    { key: "description",      label: "Description" },
+    { key: "notes",            label: "Supporting Notes" },
     { key: "approval_status",  label: "Status", badge: true },
   ]),
   dg("Leadership", [
