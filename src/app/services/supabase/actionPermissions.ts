@@ -11,6 +11,7 @@ const ACTIONS: Record<EntityType, Record<string, string>> = {
     view: "mtg_view", view_record: "mtg_view", review_quorum: "mtg_view",
     continue_setup: "mtg_update", submit_for_approval: "mtg_update",
     approve: "mtg_approve", reject: "mtg_approve", request_revision: "mtg_approve",
+    schedule_meeting: "mtg_update", publish_meeting: "mtg_update",
     publish: "mtg_update", edit: "mtg_update", delete: "mtg_cancel",
     manage_participants: "mtg_participants", start: "mtg_start",
     join: "mtg_join", rejoin: "mtg_join", continue_meeting: "mtg_start",
