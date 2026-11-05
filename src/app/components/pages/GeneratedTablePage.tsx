@@ -727,6 +727,13 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const draftSubmitInFlight = useRef(false);
   const [entrySaving, setEntrySaving] = useState(false);
   const [draftSaving, setDraftSaving] = useState(false);
+  const preserveCurrentEntryValues = useCallback(() => {
+    setStepValues(prev => ({ ...prev, ...latestEntryValues.current }));
+  }, []);
+  const goToEntryStep = useCallback((step: number) => {
+    preserveCurrentEntryValues();
+    setEntryStep(step);
+  }, [preserveCurrentEntryValues]);
   const handleEntrySubmit = useCallback(async (values: Record<string, EntryFormValue>): Promise<boolean> => {
     if (entrySubmitInFlight.current || draftSubmitInFlight.current) return false;
     if (!cfg.onRowCreate && import.meta.env.MODE !== "test") {
@@ -1383,12 +1390,12 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
             stepIcons={cfg.stepIcons}
             stepShortLabels={cfg.formShortSteps}
             currentStep={entryStep}
-            onStepClick={(s) => setEntryStep(s)}
+            onStepClick={goToEntryStep}
             footer={
               <>
                 <SecondaryButton style={{ marginRight: "auto" }} type="button" disabled={entrySaving || draftSaving} onClick={closeEntry}>Cancel</SecondaryButton>
                 {isMultiStep && entryStep > 0 && (
-                  <SecondaryButton type="button" onClick={() => setEntryStep(s => Math.max(0, s - 1))}>Back</SecondaryButton>
+                  <SecondaryButton type="button" onClick={() => goToEntryStep(Math.max(0, entryStep - 1))}>Back</SecondaryButton>
                 )}
                 {cfg.onSaveDraft && (
                   <SecondaryButton type="button" disabled={entrySaving || draftSaving} onClick={async () => {
