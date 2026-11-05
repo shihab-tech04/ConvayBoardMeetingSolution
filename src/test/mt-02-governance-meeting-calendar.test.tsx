@@ -131,6 +131,6 @@ describe("MT-02 governance-wide Meeting Calendar", () => {
     state.data.meetings = [meeting("MTG-02", "Review Board Meeting", "Someone Else")];
     render(<OfflineReturnRegisterPage />);
     fireEvent.click(screen.getAllByText("Review Board Meeting")[0]);
-    expect(state.navigate).toHaveBeenCalledWith("/meetings/all-meetings");
+    expect(state.navigate).toHaveBeenCalledWith("/meetings/MTG-02/record");
   });
 });
