@@ -6,6 +6,7 @@ import type { PageCfg, TableRow, StatusTabDef } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
+import { normalizeMeetingSchedule } from "./meetingSchedule";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useResolvedActions } from "../../actions/useResolvedActions";
@@ -828,6 +829,7 @@ export function OnlineReturnRegisterPage() {
       const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now  = new Date().toISOString();
       const identity = normalizeMeetingIdentity(values);
+      const schedule = normalizeMeetingSchedule(values);
       const meetingTitle = identity.meeting_title || "Untitled Meeting";
       const committee = identity.committee;
 
@@ -922,10 +924,7 @@ export function OnlineReturnRegisterPage() {
 
       const meetingCorePayload = {
         ...identity,
-        meeting_date:  String(values.meeting_date ?? ""),
-        start_time:    String(values.start_time ?? ""),
-        end_time:      String(values.end_time ?? ""),
-        time_zone:     String(values.time_zone ?? "Asia/Dhaka (GMT+6)"),
+        ...schedule,
         mode:          String(values.mode ?? "Physical"),
         venue:         String(values.venue ?? ""),
         virtual_platform: "Convay",
@@ -1109,14 +1108,13 @@ export function OnlineReturnRegisterPage() {
     // ── Update: syncs core meeting fields back to registry ────────────────────
     onRowUpdate: (id, values) => {
       const identity = normalizeMeetingIdentity(values);
+      const schedule = normalizeMeetingSchedule(values);
       const chairpersonName = resolveUserName(String(values.chairperson ?? ""));
       const secretaryName   = resolveUserName(String(values.secretary   ?? ""));
       const organizerName   = resolveUserName(String(values.organizer   ?? ""));
       return registry.update(id, {
         ...identity,
-        meeting_date:        String(values.meeting_date     ?? ""),
-        start_time:          String(values.start_time       ?? ""),
-        end_time:            String(values.end_time         ?? ""),
+        ...schedule,
         mode:                String(values.mode             ?? ""),
         venue:               String(values.venue            ?? ""),
         virtual_platform:    String(values.virtual_platform ?? ""),
