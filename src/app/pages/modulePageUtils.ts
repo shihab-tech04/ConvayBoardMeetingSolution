@@ -107,6 +107,12 @@ export interface PageCfg {
   approvalPermission?: string;
   /** Status field shown by this page after approval; defaults to approval_status. */
   approvalStatusField?: string;
+  /** Persists the shared Reject Record action. Return true only after the authoritative store confirms rejection. */
+  onRejectRecord?: (id: string, values: Record<string, unknown>) => boolean | Promise<boolean>;
+  /** Server-backed permission code required for the shared rejection action. */
+  rejectionPermission?: string;
+  /** Status field shown by this page after rejection; defaults to approval_status. */
+  rejectionStatusField?: string;
   /** Override the primary submit button label on the last wizard step (default "Save"). */
   lastStepSubmitLabel?: string;
   /** When set, shows a "Save Draft" secondary button on every wizard step.

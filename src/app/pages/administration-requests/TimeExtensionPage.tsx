@@ -51,6 +51,8 @@ export function TimeExtensionPage() {
     drawerActions: EDIT,
     approvalPermission: "act_update",
     approvalStatusField: "approval_status",
+    rejectionPermission: "act_update",
+    rejectionStatusField: "approval_status",
     drawerTitle: "Extension Request Details",
     drawerCols: RETENTION_RULE_DRAWER_COLS,
     rows,
@@ -94,6 +96,12 @@ export function TimeExtensionPage() {
       return registry.update(id, {
         approval_status: String(values.approval_status ?? "Approved"),
         approval_remark: String(values.approval_remark ?? ""),
+      } as never);
+    },
+    onRejectRecord(id, values) {
+      return registry.update(id, {
+        approval_status: String(values.approval_status ?? "Rejected"),
+        rejection_reason: String(values.rejection_reason ?? ""),
       } as never);
     },
   };
