@@ -18,16 +18,22 @@ const SELECT_FIELDS = "id,recipient_user_id,type,priority,title,message,module,d
 const PAGE_SIZE = 200;
 
 /** Authenticated, RLS-scoped notification reads. Never silently truncate at a PostgREST row limit. */
-export async function listPersonalNotifications(): Promise<Notification[]> {
+export async function listPersonalNotifications(recipientUserId: string): Promise<Notification[]> {
+  if (!recipientUserId) throw new Error("A signed-in user is required to read notifications.");
   const result: Notification[] = [];
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const path = "/rest/v1/convay_user_notifications?select=" + SELECT_FIELDS
+      + "&recipient_user_id=eq." + encodeURIComponent(recipientUserId)
       + "&order=created_at.desc,id.desc&limit=" + PAGE_SIZE + "&offset=" + offset;
     const response = await convayAuth.authenticatedRequest(path);
     const data: unknown = await response.json();
     if (!Array.isArray(data)) throw new Error("Invalid notification response");
     const rows = data as StoredNotification[];
     for (const row of rows) {
+      // A request may outlive a session switch; validate owner, not just RLS.
+      if (row.recipient_user_id !== recipientUserId) {
+        throw new Error("Notification ownership changed. Please reload your inbox.");
+      }
       result.push({
         id: row.id,
         type: row.type,
@@ -45,9 +51,10 @@ export async function listPersonalNotifications(): Promise<Notification[]> {
 }
 
 /** Column-level SQL grant allows users to change only their own is_read flag. */
-export async function persistNotificationRead(id: string): Promise<void> {
+export async function persistNotificationRead(id: string, recipientUserId: string): Promise<void> {
+  if (!recipientUserId) throw new Error("A signed-in user is required to update notifications.");
   const url = "/rest/v1/convay_user_notifications?id=eq." + encodeURIComponent(id)
-    + "&select=id";
+    + "&recipient_user_id=eq." + encodeURIComponent(recipientUserId) + "&select=id";
   const response = await convayAuth.authenticatedRequest(url, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Prefer: "return=representation" },
@@ -59,8 +66,11 @@ export async function persistNotificationRead(id: string): Promise<void> {
   }
 }
 
-export async function persistAllNotificationsRead(): Promise<void> {
-  await convayAuth.authenticatedRequest("/rest/v1/convay_user_notifications?is_read=eq.false", {
+export async function persistAllNotificationsRead(recipientUserId: string): Promise<void> {
+  if (!recipientUserId) throw new Error("A signed-in user is required to update notifications.");
+  await convayAuth.authenticatedRequest(
+    "/rest/v1/convay_user_notifications?is_read=eq.false&recipient_user_id=eq." + encodeURIComponent(recipientUserId), {
+
     method: "PATCH",
     headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
     body: JSON.stringify({ is_read: true }),
