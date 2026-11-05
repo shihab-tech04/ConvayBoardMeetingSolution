@@ -69,7 +69,7 @@ describe("Supabase Auth migration", () => {
   it("never calls the privileged endpoint without a validated session", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await expect(convayAuth.users("create", { name: "Test", email: "test@example.com", password: "password" }))
+    await expect(convayAuth.users("invite", { name: "Test", email: "test@example.com" }))
       .rejects.toThrow("Session expired");
     expect(fetchMock).not.toHaveBeenCalled();
   });

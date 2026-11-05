@@ -9,6 +9,8 @@ import { reloadAccessSnapshot, clearAccessSnapshot } from "../services/supabase/
 import { clearEntityRegistryCache } from "../hooks/useEntityRegistry";
 import { useAppearance } from "../hooks/useAppearance";
 import { LoginPage } from "../pages/auth/LoginPage";
+import { InvitationAcceptancePage } from "../pages/auth/InvitationAcceptancePage";
+import { isSupabaseInvitationCallback } from "../services/supabase/invitationCallback";
 import { AppShell } from "./AppShell";
 import { HelpProvider } from "../context/HelpContext";
 import { HelpDrawer } from "../components/help/HelpDrawer";
@@ -19,6 +21,11 @@ import { HelpDrawer } from "../components/help/HelpDrawer";
  * HelpProvider wraps both login and app so the help drawer is available everywhere.
  */
 export function AppRoot() {
+  // If Supabase falls back to the configured Site URL, the invite token may
+  // arrive at the application root instead of /invite/accept. Handle that
+  // verified callback before the ordinary sign-in/session gate redirects it.
+  const isInviteCallback = typeof window !== "undefined" &&
+    isSupabaseInvitationCallback(window.location.search, window.location.hash);
   const dispatch = useDispatch<AppDispatch>();
   const isAuthenticated = useSelector((s: RootState) => s.auth.isAuthenticated);
   // Defer the shell swap so lazy route components suspend inside a transition
@@ -29,6 +36,10 @@ export function AppRoot() {
   }, [isAuthenticated]);
 
   useEffect(() => {
+    if (isInviteCallback) {
+      setChecking(false);
+      return;
+    }
     let cancelled = false;
     void convayAuth.restore().then(async profile => {
       if (cancelled) return;
@@ -48,7 +59,7 @@ export function AppRoot() {
       if (!cancelled) setChecking(false);
     });
     return () => { cancelled = true; };
-  }, [dispatch]);
+  }, [dispatch, isInviteCallback]);
 
   useAppearance();
 
@@ -61,8 +72,8 @@ export function AppRoot() {
 
   return (
     <HelpProvider>
-      {checking ? <div className="lp-root" role="status"><p>Verifying your session…</p></div> : showShell ? <AppShell /> : <LoginPage />}
-      <HelpDrawer />
+      {isInviteCallback ? <InvitationAcceptancePage /> : checking ? <div className="lp-root" role="status"><p>Verifying your session…</p></div> : showShell ? <AppShell /> : <LoginPage />}
+      {!isInviteCallback && <HelpDrawer />}
     </HelpProvider>
   );
 }
