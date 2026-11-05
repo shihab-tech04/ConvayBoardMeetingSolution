@@ -259,8 +259,7 @@ export function OnlineReturnRegisterPage() {
       return;
     }
     if (actionId === "reject") {
-      const saved = await registry.update(mid, { approval_status: "Rejected" } as never);
-      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting rejected.");
+      toast.error("Meeting rejection is not connected to the shared rejection flow.");
       return;
     }
     if (actionId === "publish") {
@@ -675,6 +674,18 @@ export function OnlineReturnRegisterPage() {
         toast.error("Meeting approval was saved, but the register could not refresh. Reload the page to see the latest status.");
       }
       return approved.approval_status === "Approved";
+    },
+    rejectionPermission: "mtg_approve",
+    rejectionStatusField: "status",
+    onRejectRecord: async (id, values) => {
+      const reason = String(values.rejection_reason ?? "").trim();
+      const rejected = await convayAuth.rejectMeeting(id, reason);
+      try {
+        await registry.refresh?.();
+      } catch {
+        toast.error("Meeting rejection was saved, but the register could not refresh. Reload the page to see the latest status.");
+      }
+      return rejected.approval_status === "Rejected" && rejected.rejection_reason === reason;
     },
     requestRevisionPermission: "mtg_approve",
     onRequestRevision: async (id, instructions) => {

@@ -257,6 +257,35 @@ export const convayAuth = {
     return approved;
   },
 
+  /** Reject a pending meeting through the permission-checked SQL operation. */
+  async rejectMeeting(recordId: string, rejectionReason: string): Promise<Record<string, unknown>> {
+    const id = recordId.trim();
+    const cleanReason = rejectionReason.trim();
+    if (!id) throw new Error("A meeting ID is required");
+    if (cleanReason.length < 5) {
+      throw new Error("Please provide a reason (at least 5 characters)");
+    }
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_reject_meeting", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_record_id: id,
+        p_rejection_reason: cleanReason,
+      }),
+    });
+    const rejected = await res.json() as Record<string, unknown>;
+    if (
+      rejected.id !== id ||
+      rejected.approval_status !== "Rejected" ||
+      rejected.rejection_reason !== cleanReason ||
+      typeof rejected.rejected_by !== "string" ||
+      typeof rejected.rejected_at !== "string"
+    ) {
+      throw new Error("Supabase did not confirm the meeting rejection.");
+    }
+    return rejected;
+  },
+
   /** Return a pending meeting for revision through the narrowly scoped SQL operation. */
   async requestMeetingRevision(recordId: string, instructions: string): Promise<Record<string, unknown>> {
     const id = recordId.trim();
