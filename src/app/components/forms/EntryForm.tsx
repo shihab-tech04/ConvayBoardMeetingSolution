@@ -32,6 +32,8 @@ export type EntryFormValue = string | string[] | boolean | File[];
 
 export interface FormField {
   key?: string;
+  /** Optional row key that stores the canonical select value when the visible row key stores a display label. */
+  initialValueKey?: string;
   label: string;
   type: EntryFieldType;
   options?: Array<string | { value: string; label: string }>;
