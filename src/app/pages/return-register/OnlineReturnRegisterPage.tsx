@@ -1,5 +1,5 @@
 import { convayAuth } from "../../services/supabase/convayAuth";
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, StatusTabDef } from "../modulePageUtils";
@@ -37,6 +37,7 @@ import type { SelectedAgendaEntry, AdditionalDocEntry } from "../../components/f
 import { QuorumAndAccessPanel, generateConvayMeeting } from "../../components/forms/QuorumAndAccessPanel";
 import { DocumentComposerModal } from "../../components/documents/DocumentComposerModal";
 import { AgendaFormModal } from "../../components/agenda/AgendaFormModal";
+import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import { patchFormOptions } from "../../utils/patchFormOptions";
 import { MeetingContextualModals } from "../meetings/MeetingContextualModals";
 import { calculateMeetingQuorum, quorumStatusLabel } from "../../utils/quorumCalculation";
@@ -218,9 +219,51 @@ export function OnlineReturnRegisterPage() {
   // ── Contextual modal state ──────────────────────────────────────────────────
   const [ctxMeeting, setCtxMeeting]   = useState<TableRow | null>(null);
   const [ctxAction,  setCtxAction]    = useState<string | null>(null);
+  const [lifecycleConfirmation, setLifecycleConfirmation] = useState<{
+    action: "schedule_meeting" | "publish_meeting";
+    recordId: string;
+  } | null>(null);
+  const lifecycleTransitionsInFlight = useRef(new Set<string>());
+
+  const confirmLifecycleTransition = useCallback(async () => {
+    const pending = lifecycleConfirmation;
+    if (!pending || lifecycleTransitionsInFlight.current.has(pending.recordId)) return;
+    lifecycleTransitionsInFlight.current.add(pending.recordId);
+    try {
+      if (pending.action === "schedule_meeting") {
+        await convayAuth.scheduleMeeting(pending.recordId);
+      } else {
+        await convayAuth.publishMeeting(pending.recordId);
+      }
+      try {
+        await registry.refresh?.();
+      } catch {
+        toast.warning("The change was saved, but the meeting register could not refresh. Reload the page to see the latest status.");
+        setLifecycleConfirmation(null);
+        return;
+      }
+      toast.success(pending.action === "schedule_meeting" ? "Meeting scheduled." : "Meeting published.");
+      setLifecycleConfirmation(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The meeting status could not be changed.";
+      toast.error(message);
+    } finally {
+      lifecycleTransitionsInFlight.current.delete(pending.recordId);
+    }
+  }, [lifecycleConfirmation, registry]);
 
   const handleCustomAction = useCallback(async (actionId: string, row: TableRow) => {
     const mid = (row.meeting_id ?? row.id) as string;
+
+    if (actionId === "schedule_meeting" || actionId === "publish_meeting") {
+      const recordId = row.id ?? row.meeting_id;
+      if (typeof recordId !== "string" || !recordId.trim()) {
+        toast.error("A meeting ID is required.");
+        return;
+      }
+      setLifecycleConfirmation({ action: actionId, recordId: recordId.trim() });
+      return;
+    }
 
     // ── Live-meeting navigation ───────────────────────────────────────────
     if (actionId === "start" || actionId === "start_meeting") {
@@ -263,8 +306,7 @@ export function OnlineReturnRegisterPage() {
       return;
     }
     if (actionId === "publish") {
-      const saved = await registry.update(mid, { approval_status: "Published" } as never);
-      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting published.");
+      setLifecycleConfirmation({ action: "publish_meeting", recordId: String(mid ?? "").trim() });
       return;
     }
     if (actionId === "cancel") {
@@ -1133,6 +1175,21 @@ export function OnlineReturnRegisterPage() {
   return (
     <>
       <GenPage cfg={cfg} />
+      {lifecycleConfirmation && (
+        <SConfirmModal
+          title={lifecycleConfirmation.action === "schedule_meeting" ? "Schedule Meeting" : "Publish Meeting"}
+          message={lifecycleConfirmation.action === "schedule_meeting"
+            ? "Schedule this approved meeting using its saved date and time?"
+            : "Publish this scheduled meeting? Its status will change to Published."}
+          confirmLabel={lifecycleConfirmation.action === "schedule_meeting" ? "Schedule Meeting" : "Publish Meeting"}
+          onConfirm={() => { void confirmLifecycleTransition(); }}
+          onClose={() => {
+            if (!lifecycleTransitionsInFlight.current.has(lifecycleConfirmation.recordId)) {
+              setLifecycleConfirmation(null);
+            }
+          }}
+        />
+      )}
       <MeetingContextualModals
         meeting={ctxMeeting}
         actionId={ctxAction}
