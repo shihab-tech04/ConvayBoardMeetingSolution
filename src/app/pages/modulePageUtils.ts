@@ -44,6 +44,10 @@ export interface PageCfg {
   /** Per-row dynamic replacement for drawerActions — used only when provided. */
   drawerActionsResolver?: (row: TableRow) => RowAction[];
   rows: TableRow[];
+  /** Optional authoritative registry load state for pages backed by Supabase. */
+  dataLoading?: boolean;
+  dataError?: string | null;
+  onDataRetry?: () => void | Promise<void>;
   kpis?: KpiDef[];
   entryBtn?: string;
   extraBtns?: {
