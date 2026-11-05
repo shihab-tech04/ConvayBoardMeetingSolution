@@ -300,6 +300,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const [revisionRow, setRevisionRow] = useState<TableRow | null>(null);
   const [revisionInstructions, setRevisionInstructions] = useState("");
   const [revisionError, setRevisionError] = useState("");
+  const [revisionSaving, setRevisionSaving] = useState(false);
+  const revisionInFlight = useRef(false);
   const [cancelRow, setCancelRow] = useState<TableRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelError, setCancelError] = useState("");
@@ -344,6 +346,21 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const rejectionStatusField = cfg.rejectionStatusField ?? "approval_status";
   const isAlreadyRejected = (row: TableRow | null | undefined) =>
     row ? String(row[rejectionStatusField] ?? "").trim().toLowerCase() === "rejected" : false;
+  const hasRevisionPermission = Boolean(
+    cfg.requestRevisionPermission &&
+    access.loaded &&
+    (access.is_super_admin || access.effective_permissions.includes(cfg.requestRevisionPermission)),
+  );
+  const revisionBlockedReason = !cfg.onRequestRevision
+    ? "Revision requests are not connected to SQL for this module."
+    : !cfg.requestRevisionPermission
+      ? "Revision permission is not configured for this module."
+      : !access.loaded
+        ? "Revision permission could not be verified. Refresh and try again."
+        : !hasRevisionPermission
+          ? "You do not have permission to request a revision."
+          : null;
+  const requestRevisionStatusField = cfg.requestRevisionStatusField ?? "approval_status";
   const [activeStatusTab, setActiveStatusTab] = useState("all");
   const [wizardDraftId, setWizardDraftId] = useState<string | null>(null);
   // Ref tracks latest allValues from the active EntryForm so Save Draft can read current state
@@ -692,6 +709,78 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
     }
   }, [rejectRow, cfg, rejectionBlockedReason, rejectionStatusField, entityName, rejectReason]);
 
+  const handleRequestRevisionSubmit = useCallback(async () => {
+    if (revisionInFlight.current || !revisionRow) return;
+    const instructions = revisionInstructions.trim();
+    if (instructions.length < 10) {
+      const message = "Please provide revision instructions (at least 10 characters)";
+      setRevisionError(message);
+      return;
+    }
+
+    if (!cfg.onRequestRevision) {
+      const message = revisionBlockedReason ?? "Revision requests are not connected to SQL for this module.";
+      setRevisionError(message);
+      toast.error(message);
+      return;
+    }
+
+    const permission = cfg.requestRevisionPermission;
+    if (!permission) {
+      const message = revisionBlockedReason ?? "Revision permission is not configured for this module.";
+      setRevisionError(message);
+      toast.error(message);
+      return;
+    }
+    if (!hasAccess(permission, readAccessSnapshot())) {
+      const message = "You do not have permission to request a revision.";
+      setRevisionError(message);
+      toast.error(message);
+      return;
+    }
+
+    const id = String(revisionRow.id ?? "").trim();
+    if (!id) {
+      const message = "This record has no ID and cannot be returned for revision.";
+      setRevisionError(message);
+      toast.error(message);
+      return;
+    }
+
+    revisionInFlight.current = true;
+    setRevisionSaving(true);
+    setRevisionError("");
+    try {
+      const result = await cfg.onRequestRevision(id, instructions);
+      if (result !== true) {
+        throw new Error(result === false
+          ? "Revision request was not saved. Check your permissions and try again."
+          : "Supabase did not confirm the revision request. No success was reported.");
+      }
+
+      const revisionPatch = {
+        [requestRevisionStatusField]: "Revision Requested",
+        approval_status: "Revision Requested",
+        status: "Revision Requested",
+        revision_instructions: instructions,
+      };
+      setRows(prev => prev.map(row => String(row.id ?? "") === id ? { ...row, ...revisionPatch } : row));
+      setDrawer(current => current && String(current.id ?? "") === id
+        ? { ...current, ...revisionPatch }
+        : current);
+      setRevisionRow(null);
+      setRevisionInstructions("");
+      toast.success("Revision requested");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to request revision. Please retry.";
+      setRevisionError(message);
+      toast.error(message);
+    } finally {
+      revisionInFlight.current = false;
+      setRevisionSaving(false);
+    }
+  }, [revisionRow, revisionInstructions, cfg, revisionBlockedReason, requestRevisionStatusField]);
+
   const handleDrawerEdit = useCallback(() => {
     if (!drawer) return;
     setDrawer(null);
@@ -915,9 +1004,12 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                   ? `${entityName} is already rejected.`
                   : rejectionBlockedReason
                 : null;
+              const usesSharedRevisionFlow = action.id === "request_revision" &&
+                Boolean(cfg.onRequestRevision);
+              const revisionDisabledReason = usesSharedRevisionFlow ? revisionBlockedReason : null;
               const handleClick = () => {
                 // These action IDs always use GenPage's internal modal state
-                if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id) || usesSharedApprovalFlow) {
+                if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id) || usesSharedApprovalFlow || usesSharedRevisionFlow) {
                   handleActionClick(action.id, drawer!);
                 } else if (cfg.onCustomAction) {
                   cfg.onCustomAction(action.id, drawer!);
@@ -930,8 +1022,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 <SecondaryButton
                   key={action.id}
                   onClick={handleClick}
-                  disabled={action.enabled === false || Boolean(approvalDisabledReason) || Boolean(rejectionDisabledReason)}
-                  title={approvalDisabledReason ?? rejectionDisabledReason ?? (action.enabled === false ? (action.disabledReason ?? undefined) : undefined)}
+                  disabled={action.enabled === false || Boolean(approvalDisabledReason) || Boolean(rejectionDisabledReason) || Boolean(revisionDisabledReason)}
+                  title={approvalDisabledReason ?? rejectionDisabledReason ?? revisionDisabledReason ?? (action.enabled === false ? (action.disabledReason ?? undefined) : undefined)}
                   style={action.color ? { color: action.color, borderColor: action.color } : undefined}
                 >
                   {action.label}
@@ -1115,22 +1207,14 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         open={revisionRow !== null}
         title={`Request Revision — ${entityName}`}
         size="sm"
-        onClose={() => setRevisionRow(null)}
+        onClose={() => { if (!revisionSaving) setRevisionRow(null); }}
         footer={
           <>
-            <SecondaryButton style={{ marginRight: "auto" }} onClick={() => setRevisionRow(null)}>
+            <SecondaryButton style={{ marginRight: "auto" }} disabled={revisionSaving} onClick={() => setRevisionRow(null)}>
               {"Cancel"}
             </SecondaryButton>
-            <SecondaryButton onClick={() => {
-              if (revisionInstructions.trim().length < 10) {
-                setRevisionError("Please provide revision instructions (at least 10 characters)");
-                return;
-              }
-              setRows(prev => prev.map(r => r === revisionRow ? { ...r, approval_status: "Revision Requested" } : r));
-              setRevisionRow(null);
-              toast.success("Revision requested");
-            }} style={{ background: "var(--color-warning, #f59e0b)", color: "#fff", border: "none" }}>
-              {"Request Revision"}
+            <SecondaryButton onClick={() => void handleRequestRevisionSubmit()} disabled={revisionSaving} style={{ background: "var(--color-warning, #f59e0b)", color: "#fff", border: "none" }}>
+              {revisionSaving ? "Saving…" : "Request Revision"}
             </SecondaryButton>
           </>
         }
@@ -1141,6 +1225,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
             label={"Revision Instructions *"}
             value={revisionInstructions}
             onChange={v => { setRevisionInstructions(v); if (v.trim().length >= 10) setRevisionError(""); }}
+            disabled={revisionSaving}
             rows={4}
             error={revisionError}
           />
