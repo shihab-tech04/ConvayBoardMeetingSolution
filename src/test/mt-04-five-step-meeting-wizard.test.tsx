@@ -29,9 +29,19 @@ vi.mock("../app/services/supabase/convayAccess", () => ({
   hasAccess: (_permission: string, access = state.access) => access.loaded && access.is_super_admin,
 }));
 vi.mock("../app/components/tables", () => ({
-  UnifiedDataTable: ({ rows }: { rows: TableRow[] }) => <div>{rows.length} rows</div>,
+  UnifiedDataTable: ({ rows, onViewRow }: { rows: TableRow[]; onViewRow?: (row: TableRow) => void }) => (
+    <div>{rows.map(row => (
+      <button key={String(row.id)} type="button" onClick={() => onViewRow?.(row)}>
+        {`Open ${String(row.id)}`}
+      </button>
+    ))}</div>
+  ),
 }));
-vi.mock("../app/components/drawers/DynamicDetailsDrawer", () => ({ DynamicDetailsDrawer: () => null }));
+vi.mock("../app/components/drawers/DynamicDetailsDrawer", () => ({
+  DynamicDetailsDrawer: ({ open, rowData, extraFooterActions }: {
+    open: boolean; rowData: TableRow | null; extraFooterActions?: React.ReactNode;
+  }) => open && rowData ? <section data-testid="draft-details-drawer">{extraFooterActions}</section> : null,
+}));
 vi.mock("../app/components/cards/CollapsibleKpiSection", () => ({ CollapsibleKpiSection: () => null }));
 vi.mock("../app/components/modals/SConfirmModal", () => ({ SConfirmModal: () => null }));
 vi.mock("../app/components/forms/AppTextArea", () => ({ AppTextArea: () => null }));
@@ -164,5 +174,86 @@ describe("MT-04 five-step meeting creation wizard", () => {
       meeting_title: "Quarterly Board Meeting",
       participant_note: "Invite all voting members",
     });
+  });
+});
+
+describe("MT-11 save draft and continue", () => {
+  const draftRow: TableRow = {
+    id: "MTG-DRAFT-11",
+    meeting_id: "MTG-DRAFT-11",
+    meeting_title: "Saved board meeting",
+    participant_note: "Saved participant note",
+    approval_status: "Draft",
+    draft_current_step: "1",
+  };
+  const continueAction = { id: "continue_setup", label: "Continue Setup", icon: () => null };
+
+  function openSavedDraft(overrides: Partial<PageCfg> = {}) {
+    const view = renderWizard({
+      rows: [draftRow],
+      drawerActionsResolver: () => [continueAction],
+      ...overrides,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open MTG-DRAFT-11" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue Setup" }));
+    return view;
+  }
+
+  it("reopens the saved wizard step with persisted values and saves against the same draft ID", async () => {
+    const saveDraft = vi.fn().mockResolvedValue("MTG-DRAFT-11");
+    openSavedDraft({ onSaveDraft: saveDraft });
+
+    expect(screen.getByLabelText(/Participant Note/)).toHaveValue("Saved participant note");
+    fireEvent.click(screen.getByRole("button", { name: "Meeting Details" }));
+    expect(screen.getByLabelText(/Meeting Title/)).toHaveValue("Saved board meeting");
+    fireEvent.click(screen.getByRole("button", { name: "Save Draft" }));
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledOnce());
+    expect(saveDraft.mock.calls[0][0]).toMatchObject({
+      meeting_title: "Saved board meeting",
+      participant_note: "Saved participant note",
+      _current_step: 0,
+    });
+    expect(saveDraft.mock.calls[0][1]).toBe("MTG-DRAFT-11");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("passes the existing draft identity to final scheduling instead of creating another meeting", async () => {
+    const schedule = vi.fn().mockResolvedValue(true);
+    const saveDraft = vi.fn();
+    openSavedDraft({ onRowCreate: schedule, onSaveDraft: saveDraft });
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Schedule Meeting" }));
+
+    await waitFor(() => expect(schedule).toHaveBeenCalledOnce());
+    expect(schedule.mock.calls[0][0]).toMatchObject({
+      meeting_title: "Saved board meeting",
+      participant_note: "Saved participant note",
+      _draft_meeting_id: "MTG-DRAFT-11",
+    });
+    expect(saveDraft).not.toHaveBeenCalled();
+  });
+
+  it("prevents duplicate in-flight saves and keeps the modal open when the write fails", async () => {
+    let finishSave!: (id: string) => void;
+    const saveDraft = vi.fn(() => new Promise<string>(resolve => { finishSave = resolve; }));
+    const firstRender = openSavedDraft({ onSaveDraft: saveDraft });
+    const saveButton = screen.getByRole("button", { name: "Save Draft" });
+
+    fireEvent.click(saveButton);
+    fireEvent.click(saveButton);
+    expect(saveDraft).toHaveBeenCalledOnce();
+    finishSave("MTG-DRAFT-11");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    firstRender.unmount();
+
+    const failedSave = vi.fn().mockRejectedValue(new Error("permission denied"));
+    openSavedDraft({ onSaveDraft: failedSave });
+    fireEvent.click(screen.getByRole("button", { name: "Save Draft" }));
+    await waitFor(() => expect(state.toast.error).toHaveBeenCalledWith("permission denied"));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 });
