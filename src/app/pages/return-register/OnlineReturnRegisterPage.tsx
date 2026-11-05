@@ -5,6 +5,7 @@ import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, StatusTabDef } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
+import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useResolvedActions } from "../../actions/useResolvedActions";
@@ -826,8 +827,9 @@ export function OnlineReturnRegisterPage() {
     onRowCreate: async (values) => {
       const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now  = new Date().toISOString();
-      const meetingTitle = String(values.meeting_title ?? "Untitled Meeting");
-      const committee    = String(values.committee ?? "");
+      const identity = normalizeMeetingIdentity(values);
+      const meetingTitle = identity.meeting_title || "Untitled Meeting";
+      const committee = identity.committee;
 
       // Resolve clean user names from the rich-label selector options
       const chairpersonName = resolveUserName(String(values.chairperson ?? ""));
@@ -864,8 +866,7 @@ export function OnlineReturnRegisterPage() {
       // ── Schedule Meeting validation ─────────────────────────────────────────
       {
         const blockers: string[] = [];
-        if (!String(values.meeting_title ?? "").trim())       blockers.push("Meeting title is required");
-        if (!String(values.committee ?? "").trim())           blockers.push("Governance body is required");
+        blockers.push(...validateMeetingIdentity(identity));
         if (!String(values.meeting_date ?? "").trim())        blockers.push("Meeting date is required");
         if (!String(values.start_time ?? "").trim() || !String(values.end_time ?? "").trim())
                                                               blockers.push("Start and end time are required");
@@ -920,9 +921,7 @@ export function OnlineReturnRegisterPage() {
       const newId = isDraftUpsert ? existingDraftId : generateId("MTG", registry.items.map(m => m.meeting_id));
 
       const meetingCorePayload = {
-        meeting_title: meetingTitle,
-        meeting_type:  String(values.meeting_type ?? ""),
-        committee,
+        ...identity,
         meeting_date:  String(values.meeting_date ?? ""),
         start_time:    String(values.start_time ?? ""),
         end_time:      String(values.end_time ?? ""),
@@ -1109,13 +1108,12 @@ export function OnlineReturnRegisterPage() {
 
     // ── Update: syncs core meeting fields back to registry ────────────────────
     onRowUpdate: (id, values) => {
+      const identity = normalizeMeetingIdentity(values);
       const chairpersonName = resolveUserName(String(values.chairperson ?? ""));
       const secretaryName   = resolveUserName(String(values.secretary   ?? ""));
       const organizerName   = resolveUserName(String(values.organizer   ?? ""));
       return registry.update(id, {
-        meeting_title:       String(values.meeting_title    ?? ""),
-        meeting_type:        String(values.meeting_type     ?? ""),
-        committee:           String(values.committee        ?? ""),
+        ...identity,
         meeting_date:        String(values.meeting_date     ?? ""),
         start_time:          String(values.start_time       ?? ""),
         end_time:            String(values.end_time         ?? ""),
