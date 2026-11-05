@@ -323,6 +323,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const [approveRemark, setApproveRemark] = useState("");
   const [approvalSaving, setApprovalSaving] = useState(false);
   const approvalInFlight = useRef(false);
+  const [rejectionSaving, setRejectionSaving] = useState(false);
+  const rejectionInFlight = useRef(false);
   const [rejectReason, setRejectReason] = useState("");
   const [rejectError, setRejectError] = useState("");
   const [revisionRow, setRevisionRow] = useState<TableRow | null>(null);
@@ -355,6 +357,23 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const approvalStatusField = cfg.approvalStatusField ?? "approval_status";
   const isAlreadyApproved = (row: TableRow | null | undefined) =>
     row ? String(row[approvalStatusField] ?? "").trim().toLowerCase() === "approved" : false;
+  const hasRejectionPermission = Boolean(
+    cfg.rejectionPermission &&
+    access.loaded &&
+    (access.is_super_admin || access.effective_permissions.includes(cfg.rejectionPermission)),
+  );
+  const rejectionBlockedReason = !cfg.onRejectRecord
+    ? "Rejection is not connected to SQL for this module."
+    : !cfg.rejectionPermission
+      ? "Rejection permission is not configured for this module."
+      : !access.loaded
+        ? "Rejection permission could not be verified. Refresh and try again."
+        : !hasRejectionPermission
+          ? "You do not have permission to reject this record."
+          : null;
+  const rejectionStatusField = cfg.rejectionStatusField ?? "approval_status";
+  const isAlreadyRejected = (row: TableRow | null | undefined) =>
+    row ? String(row[rejectionStatusField] ?? "").trim().toLowerCase() === "rejected" : false;
   const [activeStatusTab, setActiveStatusTab] = useState("all");
   const [wizardDraftId, setWizardDraftId] = useState<string | null>(null);
   // Ref tracks latest allValues from the active EntryForm so Save Draft can read current state
@@ -511,6 +530,14 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         setApproveRemark("");
         break;
       case "reject":
+        if (rejectionBlockedReason) {
+          toast.error(rejectionBlockedReason);
+          break;
+        }
+        if (isAlreadyRejected(row)) {
+          toast.info(`${entityName} is already rejected.`);
+          break;
+        }
         setDrawer(null);
         setRejectRow(row);
         setRejectReason("");
@@ -569,7 +596,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
           setDrawer(row);
         }
     }
-  }, [entryFields, cfg, approvalBlockedReason, entityName, approvalStatusField]);
+  }, [entryFields, cfg, approvalBlockedReason, rejectionBlockedReason, entityName, approvalStatusField, rejectionStatusField]);
 
   const handleApproveSubmit = useCallback(async () => {
     if (approvalInFlight.current || !approveRow) return;
@@ -620,6 +647,70 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
       setApprovalSaving(false);
     }
   }, [approveRow, approvalBlockedReason, cfg, approveRemark, approvalStatusField, entityName]);
+
+  const handleRejectSubmit = useCallback(async () => {
+    if (rejectionInFlight.current || !rejectRow) return;
+    const permission = cfg.rejectionPermission;
+    if (!cfg.onRejectRecord || !permission) {
+      const message = rejectionBlockedReason ?? "Rejection is not configured for this module.";
+      setRejectError(message);
+      toast.error(message);
+      return;
+    }
+    if (!hasAccess(permission, readAccessSnapshot())) {
+      const message = "You do not have permission to reject this record.";
+      setRejectError(message);
+      toast.error(message);
+      return;
+    }
+    const id = String(rejectRow.id ?? "").trim();
+    if (!id) {
+      const message = "This record has no ID and cannot be rejected.";
+      setRejectError(message);
+      toast.error(message);
+      return;
+    }
+    if (isAlreadyRejected(rejectRow)) {
+      toast.info(`${entityName} is already rejected.`);
+      setRejectRow(null);
+      return;
+    }
+    const reason = rejectReason.trim();
+    if (reason.length < 5) {
+      setRejectError("Please provide a reason (at least 5 characters)");
+      return;
+    }
+
+    rejectionInFlight.current = true;
+    setRejectionSaving(true);
+    setRejectError("");
+    try {
+      const result = await cfg.onRejectRecord(id, {
+        [rejectionStatusField]: "Rejected",
+        approval_status: "Rejected",
+        rejection_reason: reason,
+      });
+      if (result !== true) {
+        throw new Error(result === false
+          ? "Rejection was not saved. Check your permissions and try again."
+          : "Supabase did not confirm the rejection. No success was reported.");
+      }
+
+      setRows(prev => prev.map(row => String(row.id ?? "") === id
+        ? { ...row, [rejectionStatusField]: "Rejected", approval_status: "Rejected", rejection_reason: reason }
+        : row));
+      setRejectRow(null);
+      setRejectReason("");
+      toast.success(`${entityName} rejected.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to reject record. Please retry.";
+      setRejectError(message);
+      toast.error(message);
+    } finally {
+      rejectionInFlight.current = false;
+      setRejectionSaving(false);
+    }
+  }, [rejectRow, cfg, rejectionBlockedReason, rejectionStatusField, entityName, rejectReason]);
 
   const handleDrawerEdit = useCallback(() => {
     if (!drawer) return;
@@ -830,6 +921,12 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                   ? `${entityName} is already approved.`
                   : approvalBlockedReason
                 : null;
+              const genericRejectionAction = action.id === "reject" && !cfg.onCustomAction;
+              const rejectionDisabledReason = genericRejectionAction
+                ? isAlreadyRejected(drawer)
+                  ? `${entityName} is already rejected.`
+                  : rejectionBlockedReason
+                : null;
               const handleClick = () => {
                 // These action IDs always use GenPage's internal modal state
                 if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id)) {
@@ -845,8 +942,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 <SecondaryButton
                   key={action.id}
                   onClick={handleClick}
-                  disabled={action.enabled === false || Boolean(approvalDisabledReason)}
-                  title={approvalDisabledReason ?? (action.enabled === false ? (action.disabledReason ?? undefined) : undefined)}
+                  disabled={action.enabled === false || Boolean(approvalDisabledReason) || Boolean(rejectionDisabledReason)}
+                  title={approvalDisabledReason ?? rejectionDisabledReason ?? (action.enabled === false ? (action.disabledReason ?? undefined) : undefined)}
                   style={action.color ? { color: action.color, borderColor: action.color } : undefined}
                 >
                   {action.label}
@@ -996,24 +1093,19 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         open={rejectRow !== null}
         title={`Reject ${entityName}`}
         size="sm"
-        onClose={() => setRejectRow(null)}
+        onClose={() => { if (!rejectionSaving) setRejectRow(null); }}
         footer={
           <>
-            <SecondaryButton style={{ marginRight: "auto" }} onClick={() => setRejectRow(null)}>
+            <SecondaryButton style={{ marginRight: "auto" }} disabled={rejectionSaving} onClick={() => setRejectRow(null)}>
               {"Cancel"}
             </SecondaryButton>
-            <SecondaryButton onClick={() => {
-              if (rejectReason.trim().length < 5) {
-                setRejectError("Please provide a reason (at least 5 characters)");
-                return;
-              }
-              const updated = { ...rejectRow!, approval_status: "Rejected", rejection_reason: rejectReason };
-              setRows(prev => prev.map(r => r === rejectRow ? updated : r));
-              cfg.onRowUpdate?.(String(rejectRow!.id ?? ""), { approval_status: "Rejected", rejection_reason: rejectReason });
-              setRejectRow(null);
-              toast.success(`${entityName} rejected.`);
-            }} style={{ background: "var(--color-error, #ef4444)", color: "#fff", border: "none" }}>
-              {"Reject"}
+            <SecondaryButton
+              onClick={() => { void handleRejectSubmit(); }}
+              disabled={rejectionSaving || Boolean(rejectionBlockedReason)}
+              title={rejectionBlockedReason ?? undefined}
+              style={{ background: "var(--color-error, #ef4444)", color: "#fff", border: "none" }}
+            >
+              {rejectionSaving ? "Rejecting…" : "Reject"}
             </SecondaryButton>
           </>
         }

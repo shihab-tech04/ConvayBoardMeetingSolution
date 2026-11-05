@@ -81,6 +81,7 @@ vi.mock("../app/components/buttons/PrimaryButton", () => ({ PrimaryButton: () =>
 import { GeneratedTablePage } from "../app/components/pages/GeneratedTablePage";
 
 const initialRecord: TableRow = { id: "record-1", approval_status: "Pending" };
+const rejectionAction = { id: "reject", label: "Reject Record", icon: () => null };
 
 function config(overrides: Partial<PageCfg> = {}): PageCfg {
   return {
@@ -107,12 +108,22 @@ async function openApproval() {
   return screen.findByRole("dialog", { name: "Approve Record" });
 }
 
+async function openRejection() {
+  fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Reject Record" }));
+  return screen.findByRole("dialog", { name: "Reject Record" });
+}
+
+function enterRejectionReason(reason = "Needs changes") {
+  fireEvent.change(screen.getByLabelText("Rejection Reason *"), { target: { value: reason } });
+}
+
 beforeEach(() => {
   state.access = {
     loaded: true,
     error: null,
     is_super_admin: false,
-    effective_permissions: ["mtg_approve"],
+    effective_permissions: ["mtg_approve", "mtg_reject"],
     user_role_ids: [],
     roles: [],
     permissions: [],
@@ -211,5 +222,93 @@ describe("GeneratedTablePage shared Approve Record", () => {
     renderPage(config({ rows: [{ ...persisted }], onApproveRecord: save }));
     fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
     expect(screen.getByTestId("details-drawer")).toHaveTextContent("Approved");
+  });
+});
+
+describe("GeneratedTablePage shared Reject Record", () => {
+  const rejectionConfig = (overrides: Partial<PageCfg> = {}) => config({
+    title: "Records",
+    drawerActions: [rejectionAction],
+    rejectionPermission: "mtg_reject",
+    rejectionStatusField: "approval_status",
+    ...overrides,
+  });
+
+  it("waits for confirmed persistence before closing or reporting success", async () => {
+    let confirmWrite!: (value: true) => void;
+    const save = vi.fn(() => new Promise<true>(resolve => { confirmWrite = resolve; }));
+    renderPage(rejectionConfig({ onRejectRecord: save }));
+    await openRejection();
+    enterRejectionReason();
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    expect(save).toHaveBeenCalledWith("record-1", {
+      approval_status: "Rejected",
+      rejection_reason: "Needs changes",
+    });
+    expect(screen.getByRole("button", { name: "Rejecting…" })).toBeDisabled();
+    expect(screen.getByRole("dialog", { name: "Reject Record" })).toBeInTheDocument();
+    expect(state.toast.success).not.toHaveBeenCalled();
+
+    confirmWrite(true);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Reject Record" })).not.toBeInTheDocument());
+    expect(state.toast.success).toHaveBeenCalledWith("Record rejected.");
+    expect(state.toast.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps the row pending and dialog open when the SQL write is rejected", async () => {
+    const save = vi.fn().mockRejectedValue(new Error("permission denied by row-level security"));
+    renderPage(rejectionConfig({ onRejectRecord: save }));
+    await openRejection();
+    enterRejectionReason();
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    await waitFor(() => expect(state.toast.error).toHaveBeenCalledWith("permission denied by row-level security"));
+    expect(screen.getByRole("dialog", { name: "Reject Record" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
+    expect(screen.getByTestId("details-drawer")).toHaveTextContent("Pending");
+    expect(state.toast.success).not.toHaveBeenCalled();
+  });
+
+  it("denies rejection if the configured permission is absent", () => {
+    state.access.effective_permissions = ["mtg_approve"];
+    const save = vi.fn().mockResolvedValue(true);
+    renderPage(rejectionConfig({ onRejectRecord: save }));
+    fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
+
+    const rejectButton = screen.getByRole("button", { name: "Reject Record" });
+    expect(rejectButton).toBeDisabled();
+    expect(rejectButton).toHaveAttribute("title", "You do not have permission to reject this record.");
+    fireEvent.click(rejectButton);
+    expect(save).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Reject Record" })).not.toBeInTheDocument();
+  });
+
+  it("prevents duplicate submits and shows the persisted rejection after remount", async () => {
+    let persisted = { ...initialRecord };
+    let confirmWrite!: (value: true) => void;
+    const save = vi.fn((_id: string, patch: Record<string, unknown>) => new Promise<true>(resolve => {
+      confirmWrite = value => {
+        persisted = { ...persisted, ...patch };
+        resolve(value);
+      };
+    }));
+    const view = renderPage(rejectionConfig({ onRejectRecord: save }));
+    await openRejection();
+    enterRejectionReason();
+    const rejectButton = screen.getByRole("button", { name: "Reject" });
+    fireEvent.click(rejectButton);
+    fireEvent.click(rejectButton);
+    expect(save).toHaveBeenCalledOnce();
+
+    confirmWrite(true);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Reject Record" })).not.toBeInTheDocument());
+    view.unmount();
+
+    renderPage(rejectionConfig({ rows: [{ ...persisted }], onRejectRecord: save }));
+    fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
+    expect(screen.getByTestId("details-drawer")).toHaveTextContent("Rejected");
+    expect(screen.getByRole("button", { name: "Reject Record" })).toBeDisabled();
   });
 });
