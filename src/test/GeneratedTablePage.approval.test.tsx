@@ -137,6 +137,41 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("GeneratedTablePage shared Approve Record", () => {
+  it("uses the confirmed SQL approval flow for meeting actions even when other actions are custom", async () => {
+    let confirmWrite!: (value: true) => void;
+    const save = vi.fn(() => new Promise<true>(resolve => { confirmWrite = resolve; }));
+    const customAction = vi.fn();
+    renderPage(config({
+      onCustomAction: customAction,
+      drawerActions: [],
+      drawerActionsResolver: () => [{
+        id: "approve",
+        label: "Approve Meeting Request",
+        icon: () => null,
+        enabled: true,
+      }],
+      onApproveRecord: save,
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve Meeting Request" }));
+    expect(screen.getByRole("dialog", { name: "Approve Record" })).toBeInTheDocument();
+    expect(customAction).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(save).toHaveBeenCalledWith("record-1", {
+      approval_status: "Approved",
+      approval_remark: "",
+    });
+    expect(screen.getByRole("dialog", { name: "Approve Record" })).toBeInTheDocument();
+    expect(state.toast.success).not.toHaveBeenCalled();
+
+    confirmWrite(true);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve Record" })).not.toBeInTheDocument());
+    expect(state.toast.success).toHaveBeenCalledWith("Record approved.");
+    expect(customAction).not.toHaveBeenCalled();
+  });
+
   it("waits for a confirmed SQL write before closing or reporting success", async () => {
     let confirmWrite!: (value: true) => void;
     const save = vi.fn(() => new Promise<true>(resolve => { confirmWrite = resolve; }));
