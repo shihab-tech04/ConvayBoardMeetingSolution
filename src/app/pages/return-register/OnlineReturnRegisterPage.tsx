@@ -614,6 +614,7 @@ export function OnlineReturnRegisterPage() {
     rows: tableRows,
     kpis,
     entryBtn:      "Create Meeting",
+    awaitCreateSave: true,
     initialModal:  autoOpenCreate ? "entry" : undefined,
     fullPageModal:   true,
     formFields:      dynamicMeetingFields,

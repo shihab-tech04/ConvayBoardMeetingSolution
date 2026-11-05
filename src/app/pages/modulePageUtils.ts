@@ -93,6 +93,8 @@ export interface PageCfg {
   ) => React.ReactNode>;
   /** Called after a row is created. Use to sync with external registries. */
   onRowCreate?: (values: Record<string, unknown>) => void | boolean | Promise<void | boolean>;
+  /** Hold the create wizard open until the authoritative save succeeds. */
+  awaitCreateSave?: boolean;
   /** Called after a row is updated. Use to sync with external registries. */
   onRowUpdate?: (id: string, values: Record<string, unknown>) => void | boolean | Promise<void | boolean>;
   /** Override the primary submit button label on the last wizard step (default "Save"). */
