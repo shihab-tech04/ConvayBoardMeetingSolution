@@ -610,7 +610,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
           </div>
           <div className="table-page__actions">
             {cfg.entryBtn && (
-              <Button type="button" variant="primary" size="lg" leadingIcon={Plus} onClick={() => cfg.onEntryBtnClick ? cfg.onEntryBtnClick() : setModal("entry")}>{cfg.entryBtn}</Button>
+              <Button type="button" variant="primary" size="lg" leadingIcon={Plus} disabled={Boolean(cfg.dataLoading || cfg.dataError)} onClick={() => cfg.onEntryBtnClick ? cfg.onEntryBtnClick() : setModal("entry")}>{cfg.entryBtn}</Button>
             )}
             {cfg.extraBtns?.map((b) => {
               const Icon = b.icon;
@@ -636,8 +636,30 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         </div>
       )}
 
-      {cfg.kpis && <CollapsibleKpiSection kpis={cfg.kpis} open={kpiOpen} />}
+      {!cfg.dataLoading && !cfg.dataError && cfg.kpis && <CollapsibleKpiSection kpis={cfg.kpis} open={kpiOpen} />}
 
+      {cfg.dataLoading || cfg.dataError ? (
+        <section
+          className="dash-compact-card"
+          role={cfg.dataError ? "alert" : "status"}
+          aria-live={cfg.dataError ? "assertive" : "polite"}
+          style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12 }}
+        >
+          <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--color-text-primary)" }}>
+            {cfg.dataError ? "Meeting records could not be loaded" : "Loading meeting records"}
+          </h2>
+          <p style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
+            {cfg.dataError
+              ? "The register cannot show reliable results until Supabase records are available."
+              : "Retrieving meetings and related governance records."}
+          </p>
+          {cfg.dataError && cfg.onDataRetry && (
+            <Button type="button" variant="primary" size="sm" onClick={() => void cfg.onDataRetry?.()}>
+              Retry loading
+            </Button>
+          )}
+        </section>
+      ) : (
       <UnifiedDataTable
         title={resolvedTitle}
         countLabel={`${entityName.toLowerCase()}s`}
@@ -669,6 +691,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         activeTab={tabDefs.length > 1 ? activeStatusTab : undefined}
         onTabChange={tabDefs.length > 1 ? (id) => { setActiveStatusTab(id); setPage(1); } : undefined}
       />
+      )}
 
       <DynamicDetailsDrawer
         open={drawer !== null}
