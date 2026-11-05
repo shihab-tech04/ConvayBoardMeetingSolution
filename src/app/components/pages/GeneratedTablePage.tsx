@@ -17,6 +17,7 @@ import type { TabDef } from "../tables";
 import type { PageCfg, TableRow } from "../../pages/modulePageUtils";
 import { type AttachmentItem, getAttachmentPreviewKind, formatFileSize } from "../attachments/attachmentTypes";
 import { ZONES, CIRCLES, AY_OPTS } from "../../pages/modulePageUtils";
+import { hasAccess, readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 
 const PER = 10;
 
@@ -280,6 +281,7 @@ function buildPsrBulkEntryFields(): FormField[] {
 
 export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTablePageProps) {
   const navigate = useNavigate();
+  const access = useAccessSnapshot();
   const resolvedTitle = cfg.title;
   const resolvedDesc  = cfg.desc;
   const storageKey    = `kpi-collapsed:${cfg.titleKey ?? cfg.title}`;
@@ -319,6 +321,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const [approveRow, setApproveRow] = useState<TableRow | null>(null);
   const [rejectRow, setRejectRow] = useState<TableRow | null>(null);
   const [approveRemark, setApproveRemark] = useState("");
+  const [approvalSaving, setApprovalSaving] = useState(false);
+  const approvalInFlight = useRef(false);
   const [rejectReason, setRejectReason] = useState("");
   const [rejectError, setRejectError] = useState("");
   const [revisionRow, setRevisionRow] = useState<TableRow | null>(null);
@@ -333,6 +337,24 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const [createNextRow, setCreateNextRow] = useState<TableRow | null>(null);
   const [reviewRow, setReviewRow] = useState<TableRow | null>(null);
   const [reviewStep, setReviewStep] = useState(0);
+
+  const hasApprovalPermission = Boolean(
+    cfg.approvalPermission &&
+    access.loaded &&
+    (access.is_super_admin || access.effective_permissions.includes(cfg.approvalPermission)),
+  );
+  const approvalBlockedReason = !cfg.onApproveRecord
+    ? "Approval is not connected to SQL for this module."
+    : !cfg.approvalPermission
+      ? "Approval permission is not configured for this module."
+      : !access.loaded
+        ? "Approval permission could not be verified. Refresh and try again."
+        : !hasApprovalPermission
+          ? "You do not have permission to approve this record."
+          : null;
+  const approvalStatusField = cfg.approvalStatusField ?? "approval_status";
+  const isAlreadyApproved = (row: TableRow | null | undefined) =>
+    row ? String(row[approvalStatusField] ?? "").trim().toLowerCase() === "approved" : false;
   const [activeStatusTab, setActiveStatusTab] = useState("all");
   const [wizardDraftId, setWizardDraftId] = useState<string | null>(null);
   // Ref tracks latest allValues from the active EntryForm so Save Draft can read current state
@@ -476,6 +498,14 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         setDeleteRow(row);
         break;
       case "approve":
+        if (approvalBlockedReason) {
+          toast.error(approvalBlockedReason);
+          break;
+        }
+        if (isAlreadyApproved(row)) {
+          toast.info(`${entityName} is already approved.`);
+          break;
+        }
         setDrawer(null);
         setApproveRow(row);
         setApproveRemark("");
@@ -539,7 +569,57 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
           setDrawer(row);
         }
     }
-  }, [entryFields, cfg]);
+  }, [entryFields, cfg, approvalBlockedReason, entityName, approvalStatusField]);
+
+  const handleApproveSubmit = useCallback(async () => {
+    if (approvalInFlight.current || !approveRow) return;
+    const permission = cfg.approvalPermission;
+    if (!cfg.onApproveRecord || !permission) {
+      toast.error(approvalBlockedReason ?? "Approval is not configured for this module.");
+      return;
+    }
+    if (!hasAccess(permission, readAccessSnapshot())) {
+      toast.error("You do not have permission to approve this record.");
+      return;
+    }
+
+    const id = String(approveRow.id ?? "").trim();
+    if (!id) {
+      toast.error("This record has no ID and cannot be approved.");
+      return;
+    }
+    if (isAlreadyApproved(approveRow)) {
+      toast.info(`${entityName} is already approved.`);
+      setApproveRow(null);
+      return;
+    }
+
+    approvalInFlight.current = true;
+    setApprovalSaving(true);
+    try {
+      const result = await cfg.onApproveRecord(id, {
+        approval_status: "Approved",
+        approval_remark: approveRemark,
+      });
+      if (result !== true) {
+        throw new Error(result === false
+          ? "Approval was not saved. Check your permissions and try again."
+          : "Supabase did not confirm the approval. No success was reported.");
+      }
+
+      setRows(prev => prev.map(row => String(row.id ?? "") === id
+        ? { ...row, [approvalStatusField]: "Approved", approval_status: "Approved", approval_remark: approveRemark }
+        : row));
+      setApproveRow(null);
+      setApproveRemark("");
+      toast.success(`${entityName} approved.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to approve record. Please retry.");
+    } finally {
+      approvalInFlight.current = false;
+      setApprovalSaving(false);
+    }
+  }, [approveRow, approvalBlockedReason, cfg, approveRemark, approvalStatusField, entityName]);
 
   const handleDrawerEdit = useCallback(() => {
     if (!drawer) return;
@@ -744,6 +824,12 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         extraFooterActions={
           <>
             {(drawer && cfg.drawerActionsResolver ? cfg.drawerActionsResolver(drawer) : cfg.drawerActions)?.map((action) => {
+              const genericApprovalAction = action.id === "approve" && !cfg.onCustomAction;
+              const approvalDisabledReason = genericApprovalAction
+                ? isAlreadyApproved(drawer)
+                  ? `${entityName} is already approved.`
+                  : approvalBlockedReason
+                : null;
               const handleClick = () => {
                 // These action IDs always use GenPage's internal modal state
                 if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id)) {
@@ -759,8 +845,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 <SecondaryButton
                   key={action.id}
                   onClick={handleClick}
-                  disabled={action.enabled === false}
-                  title={action.enabled === false ? (action.disabledReason ?? undefined) : undefined}
+                  disabled={action.enabled === false || Boolean(approvalDisabledReason)}
+                  title={approvalDisabledReason ?? (action.enabled === false ? (action.disabledReason ?? undefined) : undefined)}
                   style={action.color ? { color: action.color, borderColor: action.color } : undefined}
                 >
                   {action.label}
@@ -877,19 +963,19 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         open={approveRow !== null}
         title={`Approve ${entityName}`}
         size="sm"
-        onClose={() => setApproveRow(null)}
+        onClose={() => { if (!approvalSaving) setApproveRow(null); }}
         footer={
           <>
-            <SecondaryButton style={{ marginRight: "auto" }} onClick={() => setApproveRow(null)}>
+            <SecondaryButton style={{ marginRight: "auto" }} disabled={approvalSaving} onClick={() => setApproveRow(null)}>
               {"Cancel"}
             </SecondaryButton>
-            <SecondaryButton onClick={() => {
-              cfg.onRowUpdate?.(String(approveRow!.id ?? ""), { approval_status: "Approved", approval_remark: approveRemark });
-              setRows(prev => prev.map(r => r === approveRow ? { ...r, approval_status: "Approved", approval_remark: approveRemark } : r));
-              setApproveRow(null);
-              toast.success(`${entityName} approved.`);
-            }} style={{ background: "var(--color-success, #22c55e)", color: "#fff", border: "none" }}>
-              {"Approve"}
+            <SecondaryButton
+              onClick={() => { void handleApproveSubmit(); }}
+              disabled={approvalSaving || Boolean(approvalBlockedReason)}
+              title={approvalBlockedReason ?? undefined}
+              style={{ background: "var(--color-success, #22c55e)", color: "#fff", border: "none" }}
+            >
+              {approvalSaving ? "Approving…" : "Approve"}
             </SecondaryButton>
           </>
         }
