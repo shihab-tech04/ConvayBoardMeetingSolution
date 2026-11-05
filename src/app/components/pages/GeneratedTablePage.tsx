@@ -550,11 +550,20 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   }, [drawer]);
 
   // ── Submit handlers ───────────────────────────────────────────────────────
-  const handleEntrySubmit = useCallback(async (values: Record<string, EntryFormValue>) => {
+  // A native submit can fire twice before React rerenders. Never issue two
+  // concurrent atomic SQL batches for the same create form.
+  const entrySubmitInFlight = useRef(false);
+  const draftSubmitInFlight = useRef(false);
+  const [entrySaving, setEntrySaving] = useState(false);
+  const [draftSaving, setDraftSaving] = useState(false);
+  const handleEntrySubmit = useCallback(async (values: Record<string, EntryFormValue>): Promise<boolean> => {
+    if (entrySubmitInFlight.current || draftSubmitInFlight.current) return false;
     if (!cfg.onRowCreate && import.meta.env.MODE !== "test") {
       toast.error("This action is not connected to SQL and cannot save yet.");
-      return;
+      return false;
     }
+    entrySubmitInFlight.current = true;
+    setEntrySaving(true);
     try {
       const result = await cfg.onRowCreate?.(values as Record<string, unknown>);
       if (result === false) throw new Error("The record was not saved.");
@@ -566,8 +575,13 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
       setModal(null);
       if (result === true || !cfg.onRowCreate || import.meta.env.MODE === "test")
         toast.success(`${entityName} created.`);
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to save record");
+      return false;
+    } finally {
+      entrySubmitInFlight.current = false;
+      setEntrySaving(false);
     }
   }, [rows, entryFields, cfg, entityName]);
 
@@ -1071,7 +1085,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                   <SecondaryButton type="button" onClick={() => setEntryStep(s => Math.max(0, s - 1))}>Back</SecondaryButton>
                 )}
                 {isLastStep ? (
-                  <PrimaryButton type="submit" form="entry-form-next-meeting">Create Meeting</PrimaryButton>
+                  <PrimaryButton type="submit" form="entry-form-next-meeting" disabled={entrySaving}>{entrySaving ? "Saving..." : "Create Meeting"}</PrimaryButton>
                 ) : (
                   <PrimaryButton type="submit" form="entry-form-next-meeting">Continue</PrimaryButton>
                 )}
@@ -1103,10 +1117,11 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 };
               })()}
               onClose={closeNext}
-              onSubmit={(values) => {
+              closeOnSubmit={!cfg.awaitCreateSave}
+              onSubmit={async (values) => {
                 const merged = { ...stepValues, ...values };
-                handleEntrySubmit(merged);
-                closeNext();
+                const saved = await handleEntrySubmit(merged);
+                if (saved) closeNext();
               }}
               onNext={(values) => {
                 setStepValues(prev => ({ ...prev, ...values }));
@@ -1193,12 +1208,15 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
             onStepClick={(s) => setEntryStep(s)}
             footer={
               <>
-                <SecondaryButton style={{ marginRight: "auto" }} type="button" onClick={closeEntry}>Cancel</SecondaryButton>
+                <SecondaryButton style={{ marginRight: "auto" }} type="button" disabled={entrySaving || draftSaving} onClick={closeEntry}>Cancel</SecondaryButton>
                 {isMultiStep && entryStep > 0 && (
                   <SecondaryButton type="button" onClick={() => setEntryStep(s => Math.max(0, s - 1))}>Back</SecondaryButton>
                 )}
                 {cfg.onSaveDraft && (
-                  <SecondaryButton type="button" onClick={async () => {
+                  <SecondaryButton type="button" disabled={entrySaving || draftSaving} onClick={async () => {
+                    if (entrySubmitInFlight.current || draftSubmitInFlight.current) return;
+                    draftSubmitInFlight.current = true;
+                    setDraftSaving(true);
                     const merged = { ...stepValues, ...latestEntryValues.current, _current_step: entryStep };
                     try {
                       const result = await cfg.onSaveDraft!(merged, wizardDraftId ?? undefined);
@@ -1210,11 +1228,14 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                       }
                     } catch (error) {
                       toast.error(error instanceof Error ? error.message : "Unable to save draft");
+                    } finally {
+                      draftSubmitInFlight.current = false;
+                      setDraftSaving(false);
                     }
-                  }}>Save Draft</SecondaryButton>
+                  }}>{draftSaving ? "Saving draft..." : "Save Draft"}</SecondaryButton>
                 )}
                 {isLastStep ? (
-                  <PrimaryButton type="submit" form="entry-form-create">{cfg.lastStepSubmitLabel ?? "Save"}</PrimaryButton>
+                  <PrimaryButton type="submit" form="entry-form-create" disabled={entrySaving || draftSaving}>{entrySaving ? "Saving..." : cfg.lastStepSubmitLabel ?? "Save"}</PrimaryButton>
                 ) : (
                   <PrimaryButton type="submit" form="entry-form-create">Continue</PrimaryButton>
                 )}
@@ -1224,13 +1245,16 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
             <EntryForm
               formId="entry-form-create"
               onClose={closeEntry}
-              onSubmit={(values) => {
+              closeOnSubmit={!cfg.awaitCreateSave}
+              onSubmit={async (values) => {
                 const merged = { ...stepValues, ...values };
                 if (wizardDraftId) merged._draft_meeting_id = wizardDraftId;
-                handleEntrySubmit(merged);
-                setEntryStep(0);
-                setStepValues({});
-                setWizardDraftId(null);
+                const saved = await handleEntrySubmit(merged);
+                if (saved) {
+                  setEntryStep(0);
+                  setStepValues({});
+                  setWizardDraftId(null);
+                }
               }}
               onNext={(values) => {
                 setStepValues(prev => ({ ...prev, ...values }));
