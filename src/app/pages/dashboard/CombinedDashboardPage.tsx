@@ -436,6 +436,12 @@ export function CombinedDashboardPage({
 
   const openEvent = (e: CalEvent) => {
     if (e.sourceType === "meeting") {
+      // The governance calendar is for planning/review. Opening an event must
+      // inspect that exact record; starting/joining is a separate authorized CTA.
+      if (meetingCalendarMode) {
+        navigate(`/meetings/${encodeURIComponent(e.sourceId)}/record`);
+        return;
+      }
       const mtg = meetings.find(m => String(m.id) === e.sourceId);
       const status = String(mtg?.approval_status ?? mtg?.status ?? "");
       if (["In Progress", "Paused", "On Break"].includes(status)) {
@@ -692,9 +698,11 @@ export function CombinedDashboardPage({
                 </div>
                 {selectedDayEvts.length === 0 ? (
                   <div className="cal-empty" style={{ padding: "20px 0 8px" }}>
-                    <p className="cal-empty__heading">No events on this date</p>
+                    <p className="cal-empty__heading">{meetingCalendarMode ? "No meetings on this date" : "No events on this date"}</p>
                     <p className="cal-empty__body">
-                      Your meetings and deadlines for this date will appear here.
+                      {meetingCalendarMode
+                        ? "Meetings scheduled for this date will appear here."
+                        : "Your meetings and deadlines for this date will appear here."}
                     </p>
                   </div>
                 ) : (
@@ -777,7 +785,7 @@ export function CombinedDashboardPage({
               {selectedWeekDayEvts.length === 0 ? (
                 <div className="cal-empty" style={{ padding: "32px 0" }}>
                   <p className="cal-empty__heading">
-                    No events on {format(selectedWeekDay, "EEEE, d MMMM")}
+                    {meetingCalendarMode ? "No meetings" : "No events"} on {format(selectedWeekDay, "EEEE, d MMMM")}
                   </p>
                   <p className="cal-empty__body">Select another day or check the Agenda view.</p>
                 </div>
