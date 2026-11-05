@@ -24,6 +24,9 @@ export const MEETING_DRAWER_COLS: ColDef[] = [
     { key: "revision_instructions", label: "Revision Instructions" },
     { key: "revision_requested_by", label: "Revision Requested By" },
     { key: "revision_requested_at", label: "Revision Requested At" },
+    { key: "rejection_reason", label: "Rejection Reason" },
+    { key: "rejected_by", label: "Rejected By" },
+    { key: "rejected_at", label: "Rejected At" },
   ]),
   dg("Leadership", [
     { key: "chairperson",  label: "Chairperson" },
