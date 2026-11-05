@@ -3,7 +3,8 @@ import { useState, useCallback, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, StatusTabDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
+import { fc, BADGE } from "../modulePageUtils";
+import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useResolvedActions } from "../../actions/useResolvedActions";
@@ -102,6 +103,18 @@ export function OnlineReturnRegisterPage() {
   const orgUnitRegistry         = useOrgUnitRegistry();
   const agendaDocLinkRegistry   = useAgendaDocumentLinkRegistry();
   const meetingDocLinkRegistry  = useMeetingDocumentLinkRegistry();
+
+  // Any required registry error must not be misrepresented as an empty register.
+  const meetingSources = [
+    registry, participantRegistry, agendaRegistry, rsvpRegistry,
+    documentRegistry, boardPackRegistry, govRegistry, partGroupRegistry,
+    agendaLinkRegistry, quorumRuleRegistry, bmsUserRegistry, govMembershipRegistry,
+    participantLinkRegistry, orgUnitRegistry, agendaDocLinkRegistry, meetingDocLinkRegistry,
+  ];
+  const { dataLoading, dataError } = meetingRegisterSourceState(meetingSources);
+  const retryMeetingSources = () => Promise.allSettled(
+    meetingSources.map(source => source.refresh ? source.refresh() : Promise.resolve()),
+  ).then(() => undefined);
 
   // ── Location & Access: inject Convay card inside the s3-mode section ─────────
   const meetingSections = useMemo(() => MEETING_FORM_SECTIONS.map(sec => {
@@ -518,6 +531,7 @@ export function OnlineReturnRegisterPage() {
       ...m,
       id:               m.id,
       meeting_id:       mid,
+      meeting_year:     /^\d{4}-\d{2}-\d{2}/.test(String(m.meeting_date ?? "")) ? String(m.meeting_date).slice(0, 4) : "",
       meeting_mode:     m.mode,
       committee:        committeeLabel,
       submitted_by:     m.organizer,
@@ -585,7 +599,10 @@ export function OnlineReturnRegisterPage() {
       status:     "status",
       date:       "meeting_date",
     },
-    filters:       BASE_FILTERS,
+    filters:       buildMeetingRegisterFilters(tableRows),
+    dataLoading,
+    dataError,
+    onDataRetry: retryMeetingSources,
     actions:       ROW_VIEW,
     drawerActionsResolver: (row) =>
       resolveMeetingActions(row)
