@@ -1711,7 +1711,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* Video stage */}
           <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
-            {viewMode === "speaker" && (
+            {isOnlineMeeting && (
+              <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
+                <LiveMeetingMedia meetingId={meetingId} micOn={myMicOn} camOn={myCamOn} sharing={isSharing}
+                  onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={setIsSharing}
+                  onPresence={connected => { if (myLink) setAttendance(currentUser.id, connected ? "Present" : "Left"); }} />
+              </div>
+            )}
+            {!isOnlineMeeting && viewMode === "speaker" && (
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
                 <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
                   {activeSpeaker && <ParticipantTile p={activeSpeaker} isActive size="large" />}
@@ -1725,7 +1732,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 </div>
               </div>
             )}
-            {viewMode === "grid" && (
+            {!isOnlineMeeting && viewMode === "grid" && (
               <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", alignContent: "start", overflowY: "auto" }}>
                 {participants.map(p => (
                   <div key={p.id} style={{ cursor: "pointer" }} onClick={() => { setActiveSpeakerId(p.id); setViewMode("speaker"); }}>
@@ -2499,15 +2506,17 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* ── BOTTOM DOCK ──────────────────────────────────────────────────── */}
           <div style={{ height: 64, background: "#1e293b", borderTop: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0 1rem", flexShrink: 0 }}>
+            {isOnlineMeeting && <>
             <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
               {myMicOn ? <Mic size={18} /> : <MicOff size={18} />}
             </DockButton>
             <DockButton active={myCamOn} danger={!myCamOn} label={myCamOn  ? "Stop Video"  : "Start Video"}  onClick={() => setMyCamOn(v => !v)}>
               {myCamOn ? <Video size={18} /> : <VideoOff size={18} />}
             </DockButton>
-            <DockButton active={isSharing} label={isSharing ? "Stop Share" : "Share Screen"} onClick={() => { setIsSharing(v => !v); if (!isSharing) setViewMode("document"); }}>
+            <DockButton active={isSharing} label={isSharing ? "Stop Share" : "Share Screen"} onClick={() => setIsSharing(v => !v)}>
               {isSharing ? <MonitorOff size={18} /> : <Monitor size={18} />}
             </DockButton>
+            </>}
 
             <div style={{ width: 1, height: 32, background: "#334155", margin: "0 0.25rem" }} />
 
