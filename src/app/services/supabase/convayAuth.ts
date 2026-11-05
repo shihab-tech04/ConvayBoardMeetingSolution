@@ -20,6 +20,8 @@ export interface ConvayProfile {
   created_at?: string;
   updated_at?: string;
   last_sign_in_at?: string | null;
+  invitation_status?: "pending" | "verified" | "accepted" | null;
+  email_verified_at?: string | null;
 }
 interface Tokens {
   access_token: string;
@@ -417,7 +419,7 @@ export const convayAuth = {
   },
 
 
-  async users(action: "list" | "create" | "update" | "set_status" | "set_password" | "delete", payload: UserMutation = {}):
+  async users(action: "list" | "invite" | "update" | "set_status" | "set_password" | "delete", payload: UserMutation = {}):
     Promise<{ users?: ConvayProfile[]; user?: ConvayProfile; ok?: boolean }> {
     const session = await validSession();
     if (!session) throw new Error("Session expired. Please sign in again.");
@@ -433,6 +435,45 @@ export const convayAuth = {
     const body = await responseBody(res);
     if (!res.ok) throw new Error(errorMessage(body, "Unable to complete user operation"));
     return body;
+  },
+
+  /** Confirm that the one-time Supabase invitation link belongs to a verified email. */
+  async verifyInvitation(accessToken: string): Promise<{ email: string }> {
+    if (!accessToken) throw new Error("This invitation link is invalid or expired.");
+    const res = await fetch(SUPABASE_URL + "/auth/v1/user", {
+      headers: { apikey: API_KEY, Authorization: "Bearer " + accessToken },
+      cache: "no-store",
+    });
+    const body = await responseBody(res);
+    if (!res.ok || typeof body.email !== "string" || !body.email_confirmed_at) {
+      throw new Error("Verify your email from the invitation link before setting a password.");
+    }
+    return { email: body.email };
+  },
+
+  /** Complete a real Supabase Auth invitation using the verified link token. */
+  async completeInvitation(accessToken: string, email: string, password: string): Promise<ConvayProfile> {
+    if (!accessToken || !email || password.length < 8) {
+      throw new Error("A valid invitation and password of at least 8 characters are required.");
+    }
+    const res = await fetch(SUPABASE_URL + "/functions/v1/convay-users", {
+      method: "POST",
+      headers: {
+        apikey: API_KEY,
+        Authorization: "Bearer " + accessToken,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: "accept_invite", email, password }),
+      cache: "no-store",
+    });
+    const body = await responseBody(res);
+    if (!res.ok) throw new Error(errorMessage(body, "Unable to activate this invitation"));
+    const profile = await this.signIn(email, password, false);
+    if (profile.account_status !== "active") {
+      await this.signOut();
+      throw new Error("Convay did not confirm the activated account.");
+    }
+    return profile;
   },
 };
 

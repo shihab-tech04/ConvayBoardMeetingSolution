@@ -28,6 +28,8 @@ import { InvalidListPage }          from "./pages/psr-verification/InvalidListPa
 import { ApprovalListPage }         from "./pages/psr-verification/ApprovalListPage";
 import { TransferHistoryPage }      from "./pages/psr-verification/TransferHistoryPage";
 import { SupabaseUserManagementPage } from "./pages/administration-requests/SupabaseUserManagementPage";
+import { InvitationAcceptancePage } from "./pages/auth/InvitationAcceptancePage";
+import { isSupabaseInvitationCallback } from "./services/supabase/invitationCallback";
 import { RoleManagementPage }       from "./pages/administration-requests/RoleManagementPage";
 import { PermissionListPage }       from "./pages/administration-requests/PermissionListPage";
 import { ParticipantGroupsPage }    from "./pages/governance/ParticipantGroupsPage";
@@ -91,12 +93,17 @@ export function preloadAllRoutes() {}
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export const router = createBrowserRouter([
+  // Invitation links are public only for completing a verified Supabase Auth invite.
+  { path: "/invite/accept", Component: InvitationAcceptancePage },
   {
     path: "/",
     Component: AppRoot,
     children: [
       // Root → home/overview
-      { index: true, loader: async () => redirect("/home/overview") },
+      { index: true, loader: async () => {
+        if (typeof window !== "undefined" && isSupabaseInvitationCallback(window.location.search, window.location.hash)) return null;
+        return redirect("/home/overview");
+      } },
 
       // Parent placeholder routes
       { path: "home",               Component: PlaceholderPage },
