@@ -82,7 +82,9 @@ export interface SectionDef {
 export interface EntryFormProps {
   fields: FormField[];
   onClose: () => void;
-  onSubmit?: (values: Record<string, EntryFormValue>) => void;
+  onSubmit?: (values: Record<string, EntryFormValue>) => void | Promise<void>;
+  /** Opt out of automatic closing when the parent must await a persisted save. */
+  closeOnSubmit?: boolean;
   submitLabel?: string;
   initialValues?: Record<string, EntryFormValue>;
   onSaveDraft?: (values: Record<string, EntryFormValue>) => void;
@@ -174,6 +176,7 @@ export function EntryForm({
   fields,
   onClose,
   onSubmit,
+  closeOnSubmit = true,
   submitLabel,
   initialValues,
   onSaveDraft,
@@ -296,8 +299,8 @@ export function EntryForm({
       onNext(allValues);
       return;
     }
-    onSubmit?.(allValues);
-    onClose();
+    void onSubmit?.(allValues);
+    if (closeOnSubmit) onClose();
   };
 
   const handleSaveDraft = () => {
