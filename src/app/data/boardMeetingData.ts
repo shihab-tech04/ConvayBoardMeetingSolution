@@ -170,6 +170,7 @@ export interface Meeting {
   confidentiality: string;
   purpose: string;
   description: string;
+  notes?: string;
   approval_status: string;
   quorum_forecast: string;
   readiness: string;

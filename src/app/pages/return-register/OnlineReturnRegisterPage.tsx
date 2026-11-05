@@ -8,6 +8,7 @@ import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meeti
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { normalizeMeetingSchedule } from "./meetingSchedule";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
+import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useResolvedActions } from "../../actions/useResolvedActions";
@@ -692,9 +693,7 @@ export function OnlineReturnRegisterPage() {
         ...meetingLeadershipPayload(leadership),
         language:         "English",
         priority:         "Normal",
-        confidentiality:  String(values.confidentiality  ?? "Confidential"),
-        purpose:          String(values.purpose           ?? ""),
-        description:      String(values.description       ?? ""),
+        ...meetingContextPayload(values, "Confidential"),
         approval_status:  "Draft",
         quorum_forecast:  "Pending",
         readiness:        "In Preparation",
@@ -907,9 +906,7 @@ export function OnlineReturnRegisterPage() {
         ...meetingLeadershipPayload(leadership),
         language:      "English",
         priority:      "Normal",
-        confidentiality: String(values.confidentiality ?? "Confidential"),
-        purpose:       String(values.purpose ?? ""),
-        description:   String(values.description ?? ""),
+        ...meetingContextPayload(values, "Confidential"),
         approval_status: approvalStatus,
         quorum_forecast: "Pending",
         readiness:       "In Preparation",
@@ -1076,9 +1073,11 @@ export function OnlineReturnRegisterPage() {
 
     // ── Update: syncs core meeting fields back to registry ────────────────────
     onRowUpdate: (id, values) => {
-      const identity = normalizeMeetingIdentity(values);
-      const schedule = normalizeMeetingSchedule(values);
-      const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
+      const existingMeeting = registry.items.find(meeting => meeting.id === id || meeting.meeting_id === id);
+      const submittedValues = mergeMeetingUpdateValues(existingMeeting, values);
+      const identity = normalizeMeetingIdentity(submittedValues);
+      const schedule = normalizeMeetingSchedule(submittedValues);
+      const leadership = resolveMeetingLeadership(submittedValues, bmsUserRegistry.items);
       if (leadership.missing.length > 0) {
         toast.error(`Cannot save changes. Select active registered users for ${leadership.missing.map(meetingLeadershipLabel).join(", ")}.`);
         return false;
@@ -1086,17 +1085,15 @@ export function OnlineReturnRegisterPage() {
       return registry.update(id, {
         ...identity,
         ...schedule,
-        mode:                String(values.mode             ?? ""),
-        venue:               String(values.venue            ?? ""),
-        virtual_platform:    String(values.virtual_platform ?? ""),
-        virtual_link:        String(values.virtual_link     ?? ""),
+        mode:                String(submittedValues.mode             ?? ""),
+        venue:               String(submittedValues.venue            ?? ""),
+        virtual_platform:    String(submittedValues.virtual_platform ?? ""),
+        virtual_link:        String(submittedValues.virtual_link     ?? ""),
         ...meetingLeadershipPayload(leadership),
-        confidentiality:     String(values.confidentiality  ?? ""),
-        purpose:             String(values.purpose           ?? ""),
-        description:         String(values.description       ?? ""),
-        rsvp_deadline:       String(values.rsvp_deadline     ?? ""),
-        invitation_date:     String(values.invitation_date   ?? ""),
-        board_pack_date:     String(values.board_pack_date   ?? ""),
+        ...meetingContextPayload(submittedValues, existingMeeting?.confidentiality ?? ""),
+        rsvp_deadline:       String(submittedValues.rsvp_deadline     ?? ""),
+        invitation_date:     String(submittedValues.invitation_date   ?? ""),
+        board_pack_date:     String(submittedValues.board_pack_date   ?? ""),
         updated_at:          new Date().toISOString(),
       } as never);
     },

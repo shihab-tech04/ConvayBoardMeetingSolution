@@ -69,6 +69,16 @@ function Row({ label, value, warn }: { label: string; value: string; warn?: bool
   );
 }
 
+function MultilineRow({ label, value }: { label: string; value: string }) {
+  if (!value) return null;
+  return (
+    <div className="space-y-1">
+      <span className="block text-[11px] text-[var(--muted-foreground)] font-medium">{label}</span>
+      <p className="m-0 min-w-0 text-xs font-semibold text-[var(--foreground)] whitespace-pre-wrap break-words">{value}</p>
+    </div>
+  );
+}
+
 function Empty({ text }: { text: string }) {
   return <span className="text-[10px] italic text-[var(--muted-foreground)]">{text}</span>;
 }
@@ -389,6 +399,9 @@ export function MeetingReviewPanel({
           <Row label="Time"            value={[v(values, "start_time"), v(values, "end_time")].filter(Boolean).join(" – ")} />
           <Row label="Time Zone"       value={v(values, "time_zone")} />
           <Row label="Confidentiality" value={v(values, "confidentiality")} />
+          <MultilineRow label="Purpose" value={v(values, "purpose")} />
+          <MultilineRow label="Description" value={v(values, "description")} />
+          <MultilineRow label="Supporting Notes" value={v(values, "notes")} />
           {scheduledMin > 0 && <Row label="Duration" value={durationLabel(scheduledMin)} />}
         </SummaryCard>
 
