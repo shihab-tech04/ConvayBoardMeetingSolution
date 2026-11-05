@@ -8,6 +8,8 @@ const mockStore = vi.hoisted(() => ({
   ownerId: null as string | null,
   dispatch: (_action: { type: string; payload?: unknown }) => undefined,
   fetchNotifications: vi.fn(),
+  persistOne: vi.fn(),
+  persistAll: vi.fn(),
 }));
 
 vi.mock("react-redux", () => ({
@@ -20,20 +22,22 @@ vi.mock("react-redux", () => ({
 }));
 vi.mock("../app/services/supabase/convayNotifications", () => ({
   listPersonalNotifications: mockStore.fetchNotifications,
-  persistNotificationRead: vi.fn().mockResolvedValue(undefined),
-  persistAllNotificationsRead: vi.fn().mockResolvedValue(undefined),
+  persistNotificationRead: mockStore.persistOne,
+  persistAllNotificationsRead: mockStore.persistAll,
 }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
 import { useNotificationsState } from "../app/hooks/useNotificationsState";
 
 function Probe() {
-  const { notifications, loading, error } = useNotificationsState();
+  const { notifications, loading, error, markRead, markAllRead } = useNotificationsState();
   return (
     <div>
       <span data-testid="ids">{notifications.map(n => n.id).join(",")}</span>
       <span data-testid="loading">{loading ? "loading" : "ready"}</span>
       <span data-testid="error">{error ?? "none"}</span>
+      <button onClick={() => void markRead("shared-id")}>Mark one</button>
+      <button onClick={() => void markAllRead()}>Mark all</button>
     </div>
   );
 }
@@ -51,11 +55,18 @@ beforeEach(() => {
   mockStore.ownerId = null;
   mockStore.items = [];
   mockStore.fetchNotifications.mockReset();
+  mockStore.persistOne.mockReset().mockResolvedValue(undefined);
+  mockStore.persistAll.mockReset().mockResolvedValue(undefined);
   mockStore.dispatch = action => {
     if (action.type === "notifications/setNotifications") {
       const next = action.payload as { ownerId: string | null; items: typeof mockStore.items };
       mockStore.ownerId = next.ownerId;
       mockStore.items = next.items;
+    } else if (action.type === "notifications/markNotificationRead") {
+      const target = mockStore.items.find(item => item.id === action.payload);
+      if (target) target.isRead = true;
+    } else if (action.type === "notifications/markAllNotificationsRead") {
+      mockStore.items.forEach(item => { item.isRead = true; });
     }
   };
 });
@@ -95,5 +106,35 @@ describe("HM-07 account-safe notification hydration", () => {
     mockStore.fetchNotifications.mockImplementation(() => new Promise(() => undefined));
     render(<Probe />);
     expect(screen.getByTestId("ids")).toBeEmptyDOMElement();
+  });
+
+  it("does not apply a delayed single-read receipt from A to B's same-id record", async () => {
+    let finish!: () => void;
+    mockStore.persistOne.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    mockStore.fetchNotifications.mockResolvedValue([record("shared-id")]);
+    const view = render(<Probe />);
+    await waitFor(() => expect(mockStore.ownerId).toBe("user-a"));
+    await act(async () => screen.getByRole("button", { name: "Mark one" }).click());
+    expect(mockStore.persistOne).toHaveBeenCalledWith("shared-id", "user-a");
+    mockStore.userId = "user-b";
+    view.rerender(<Probe />);
+    await waitFor(() => expect(mockStore.ownerId).toBe("user-b"));
+    await act(async () => { finish(); });
+    expect(mockStore.items[0].isRead).toBe(false);
+  });
+
+  it("does not mark B's entire inbox read when A's delayed bulk receipt completes", async () => {
+    let finish!: () => void;
+    mockStore.persistAll.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    mockStore.fetchNotifications.mockResolvedValue([record("shared-id")]);
+    const view = render(<Probe />);
+    await waitFor(() => expect(mockStore.ownerId).toBe("user-a"));
+    await act(async () => screen.getByRole("button", { name: "Mark all" }).click());
+    expect(mockStore.persistAll).toHaveBeenCalledWith("user-a");
+    mockStore.userId = "user-b";
+    view.rerender(<Probe />);
+    await waitFor(() => expect(mockStore.ownerId).toBe("user-b"));
+    await act(async () => { finish(); });
+    expect(mockStore.items[0].isRead).toBe(false);
   });
 });
