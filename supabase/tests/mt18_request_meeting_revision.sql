@@ -7,7 +7,6 @@ declare
   v_admin uuid;
   v_actor uuid := gen_random_uuid();
   v_allowed_id text := 'MT18-ALLOWED-' || gen_random_uuid()::text;
-  v_denied_id text := 'MT18-DENIED-' || gen_random_uuid()::text;
   v_payload jsonb;
   v_function_security_definer boolean;
   v_expected_error boolean;
@@ -27,7 +26,7 @@ begin
   join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public'
     and p.proname = 'convay_request_meeting_revision'
-    and pg_get_function_identity_arguments(p.oid) = 'text, text';
+    and pg_get_function_identity_arguments(p.oid) = 'p_record_id text, p_revision_instructions text';
   if v_function_security_definer is distinct from false then
     raise exception 'Public revision RPC must remain SECURITY INVOKER';
   end if;
@@ -100,16 +99,9 @@ begin
   end if;
 
   perform set_config('request.jwt.claim.sub', v_actor::text, true);
-  insert into public.convay_entity_records(entity_key, record_id, payload, created_by, updated_by)
-  values (
-    'bms.meetings', v_denied_id,
-    jsonb_build_object('id', v_denied_id, 'approval_status', 'Pending Approval'),
-    null, null
-  );
-
   v_expected_error := false;
   begin
-    perform public.convay_request_meeting_revision(v_denied_id, 'Unauthorized revision request test.');
+    perform public.convay_request_meeting_revision(v_allowed_id, 'Unauthorized revision request test.');
   exception when sqlstate '42501' then
     v_expected_error := true;
   end;
@@ -119,8 +111,9 @@ begin
 
   select payload into v_payload
   from public.convay_entity_records
-  where entity_key = 'bms.meetings' and record_id = v_denied_id;
-  if v_payload->>'approval_status' <> 'Pending Approval' then
+  where entity_key = 'bms.meetings' and record_id = v_allowed_id;
+  if v_payload->>'approval_status' <> 'Revision Requested'
+     or v_payload->>'revision_instructions' <> 'Please correct the submitted meeting agenda.' then
     raise exception 'Unauthorized revision request changed the meeting';
   end if;
 end
