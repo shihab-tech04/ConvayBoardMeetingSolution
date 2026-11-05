@@ -49,6 +49,8 @@ export function TimeExtensionPage() {
     filters: BASE_FILTERS,
     actions: ROW_VIEW,
     drawerActions: EDIT,
+    approvalPermission: "act_update",
+    approvalStatusField: "approval_status",
     drawerTitle: "Extension Request Details",
     drawerCols: RETENTION_RULE_DRAWER_COLS,
     rows,
@@ -86,6 +88,12 @@ export function TimeExtensionPage() {
         requested_due_date: values.requested_due_date != null ? String(values.requested_due_date) : undefined,
         approved_by:        values.approved_by        != null ? String(values.approved_by)        : undefined,
         approval_status:    values.approval_status    != null ? String(values.approval_status)    : undefined,
+      } as never);
+    },
+    onApproveRecord(id, values) {
+      return registry.update(id, {
+        approval_status: String(values.approval_status ?? "Approved"),
+        approval_remark: String(values.approval_remark ?? ""),
       } as never);
     },
   };

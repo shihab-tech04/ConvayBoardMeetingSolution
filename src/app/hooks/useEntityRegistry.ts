@@ -8,9 +8,9 @@ export interface EntityRecord {
 }
 export interface EntityRegistry<T extends { id: string }> {
   items: T[];
-  add: (item: T) => void | Promise<boolean>;
-  update: (id: string, patch: Partial<T>) => void | Promise<boolean>;
-  remove: (id: string) => void | Promise<boolean>;
+  add: (item: T) => boolean | Promise<boolean>;
+  update: (id: string, patch: Partial<T>) => boolean | Promise<boolean>;
+  remove: (id: string) => boolean | Promise<boolean>;
   getById: (id: string) => T | undefined;
   loading?: boolean;
   error?: string | null;
@@ -95,20 +95,23 @@ export function createEntityRegistry<T extends { id: string }>(
       const add = useCallback((item: T) => {
         const next = [item, ...read()];
         save(next); setCustom(next);
+        return true;
       }, []);
       const update = useCallback((id: string, patch: Partial<T>) => {
         const target = merge(read()).find(x => x.id === id);
-        if (!target) return;
+        if (!target) return false;
         const nextItem = { ...target, ...patch };
         const originals = read();
         const next = originals.some(x => x.id === id)
           ? originals.map(x => x.id === id ? nextItem : x)
           : [...originals, nextItem];
         save(next); setCustom(next);
+        return true;
       }, []);
       const remove = useCallback((id: string) => {
         const next = read().filter(x => x.id !== id);
         save(next); setCustom(next);
+        return true;
       }, []);
       const getById = useCallback((id: string) => merge(read()).find(x => x.id === id), []);
       return { items: merge(custom), add, update, remove, getById };
