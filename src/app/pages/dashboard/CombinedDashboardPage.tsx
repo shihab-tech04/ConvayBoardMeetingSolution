@@ -161,7 +161,11 @@ function FeaturedMeetingCard({
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function CombinedDashboardPage({ title }: { title?: string } = {}) {
+export function CombinedDashboardPage({
+  title,
+  scope = "personal",
+}: { title?: string; scope?: "personal" | "meetings" } = {}) {
+  const meetingCalendarMode = scope === "meetings";
   const navigate = useNavigate();
   const now = new Date();
   const calendarWindow = calendarDateWindows(now);
@@ -185,11 +189,13 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
   const { items: participants } = participantRegistry;
   const { resolve: resolveMtgActions } = useResolvedActions("meeting");
 
-  // A partial/failed SQL read must never masquerade as an empty personal calendar.
-  const calendarSources = [
-    meetingRegistry, actionRegistry, boardPackRegistry,
-    rsvpRegistry, minutesRegistry, participantRegistry,
-  ];
+  // MT-02 Meeting Calendar shows every meeting visible through Supabase RLS.
+  // Its loading/error state depends only on that registry; personal calendar
+  // retains the richer dependencies for its assigned tasks and deadlines.
+  const calendarSources = meetingCalendarMode
+    ? [meetingRegistry]
+    : [meetingRegistry, actionRegistry, boardPackRegistry,
+       rsvpRegistry, minutesRegistry, participantRegistry];
   const calendarDataState = resolveDashboardDataState(calendarSources);
 
   // ── Build personal events — explicit ownership only ───────────────────────
@@ -207,7 +213,7 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
         String(m.id),
         userName,
       );
-      if (!isInvolved && !isParticipantOf) continue;
+      if (!meetingCalendarMode && !isInvolved && !isParticipantOf) continue;
       out.push({
         id: `mtg-${m.id}`,
         sourceId: String(m.id),
@@ -224,6 +230,7 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
       });
     }
 
+    if (!meetingCalendarMode) {
     // Board pack review deadlines — user created
     for (const p of boardPacks) {
       const date = String(p.meeting_date ?? "");
@@ -296,8 +303,9 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
       });
     }
 
+    } // Meeting Calendar excludes personal deadlines, RSVPs and action items.
     return out.sort((a, b) => a.date.localeCompare(b.date));
-  }, [meetings, boardPacks, rsvps, actions, minutes, participants, userName]);
+  }, [meetings, boardPacks, rsvps, actions, minutes, participants, userName, meetingCalendarMode]);
 
   // ── Calendar state ────────────────────────────────────────────────────────
 
@@ -305,15 +313,17 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
   const weekEnd0 = calendarWindow.weekEnd;
   const thisWeekHasEvents = events.some(e => e.date >= weekStart0 && e.date <= weekEnd0);
 
-  const [activeTab, setActiveTab] = useState(thisWeekHasEvents ? "week" : "agenda");
+  const [activeTab, setActiveTab] = useState(
+    meetingCalendarMode ? "month" : thisWeekHasEvents ? "week" : "agenda",
+  );
   const [hasUserSelectedTab, setHasUserSelectedTab] = useState(false);
   // SQL records generally arrive asynchronously. Set the initial tab from the
   // loaded records, but never override a tab the person selected themselves.
   useEffect(() => {
     if (calendarDataState === "ready" && !hasUserSelectedTab) {
-      setActiveTab(thisWeekHasEvents ? "week" : "agenda");
+      setActiveTab(meetingCalendarMode ? "month" : thisWeekHasEvents ? "week" : "agenda");
     }
-  }, [calendarDataState, thisWeekHasEvents, hasUserSelectedTab]);
+  }, [calendarDataState, thisWeekHasEvents, hasUserSelectedTab, meetingCalendarMode]);
   const [viewDate, setViewDate]           = useState(now);
   const [selectedDay, setSelectedDay]     = useState<Date | null>(null);
   const [selectedWeekDay, setSelectedWeekDay] = useState<Date>(now);
@@ -328,6 +338,7 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
   const nextMtg   = events.find(e => e.type === "meeting" && e.date >= today);
   const mtgsMonth = events.filter(e => e.type === "meeting" && e.date >= monthStart && e.date <= monthEnd).length;
   const deadlines7 = events.filter(e => e.date >= today && e.date <= cutoff7 && e.type !== "meeting").length;
+  const meetings7 = events.filter(e => e.date >= today && e.date <= cutoff7 && e.type === "meeting").length;
 
   // ── Resolve immediate action for featured meeting ─────────────────────────
 
@@ -470,13 +481,17 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
           <h1 className="dashboard-page__title">{title ?? "My Calendar"}</h1>
           {calendarDataState === "error" ? (
             <>
-              <p>Your meetings and deadlines could not be loaded. No empty calendar is shown until the data is available.</p>
+              <p>{meetingCalendarMode
+                ? "Meeting records could not be loaded. Retry to see your authorized meeting schedule."
+                : "Your meetings and deadlines could not be loaded. No empty calendar is shown until the data is available."}</p>
               <Button type="button" size="sm" variant="primary" onClick={() => void retryDashboardSources(calendarSources)}>
                 Retry loading
               </Button>
             </>
           ) : (
-            <p>Loading your meetings, review dates and assigned deadlines.</p>
+            <p>{meetingCalendarMode
+              ? "Loading the board and committee meeting calendar."
+              : "Loading your meetings, review dates and assigned deadlines."}</p>
           )}
         </section>
       </div>
@@ -491,7 +506,9 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
         <div className="dashboard-page__header-body">
           <h1 className="dashboard-page__title">{title ?? "My Calendar"}</h1>
           <p className="dashboard-page__subtitle">
-            View your meetings, review deadlines, voting windows, and assigned due dates.
+            {meetingCalendarMode
+              ? "Plan and review board and committee meetings across governance bodies."
+              : "View your meetings, review deadlines, voting windows, and assigned due dates."}
           </p>
         </div>
       </div>
@@ -516,9 +533,9 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
         <StatCard
           density="compact"
           icon={AlertCircle}
-          value={String(deadlines7)}
-          label="Upcoming Deadlines"
-          tone={deadlines7 > 0 ? "warning" : "neutral"}
+          value={String(meetingCalendarMode ? meetings7 : deadlines7)}
+          label={meetingCalendarMode ? "Meetings Next 7 Days" : "Upcoming Deadlines"}
+          tone={!meetingCalendarMode && deadlines7 > 0 ? "warning" : "neutral"}
           onClick={() => { setActiveTab("agenda"); setHasUserSelectedTab(true); }}
         />
       </div>
@@ -563,7 +580,7 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
 
         {/* Passive legend */}
         <div className="cal-toolbar__legend">
-          {LEGEND_TYPES.map(t => (
+          {(meetingCalendarMode ? (["meeting"] as EventType[]) : LEGEND_TYPES).map(t => (
             <span key={t} className="cal-legend__item">
               <span className="cal-legend__dot" style={{ background: TYPE_DOT[t] }} />
               {TYPE_LABEL[t]}
@@ -815,9 +832,11 @@ export function CombinedDashboardPage({ title }: { title?: string } = {}) {
             {agendaGroups.length === 0 ? (
               <div className="cal-empty" style={{ padding: "40px 20px" }}>
                 <Calendar size={28} strokeWidth={1.5} className="cal-empty__icon" />
-                <p className="cal-empty__heading">No upcoming events</p>
+                <p className="cal-empty__heading">{meetingCalendarMode ? "No upcoming meetings" : "No upcoming events"}</p>
                 <p className="cal-empty__body">
-                  You have no meetings or deadlines in the next 60 days.
+                  {meetingCalendarMode
+                    ? "No meeting dates in the next 60 days."
+                    : "You have no meetings or deadlines in the next 60 days."}
                 </p>
               </div>
             ) : (
