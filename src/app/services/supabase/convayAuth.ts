@@ -257,6 +257,33 @@ export const convayAuth = {
     return approved;
   },
 
+  /** Return a pending meeting for revision through the narrowly scoped SQL operation. */
+  async requestMeetingRevision(recordId: string, instructions: string): Promise<Record<string, unknown>> {
+    const id = recordId.trim();
+    const cleanInstructions = instructions.trim();
+    if (!id) throw new Error("A meeting ID is required");
+    if (cleanInstructions.length < 10) {
+      throw new Error("Please provide revision instructions (at least 10 characters)");
+    }
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_request_meeting_revision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_record_id: id,
+        p_revision_instructions: cleanInstructions,
+      }),
+    });
+    const revised = await res.json() as Record<string, unknown>;
+    if (
+      revised.id !== id ||
+      revised.approval_status !== "Revision Requested" ||
+      revised.revision_instructions !== cleanInstructions
+    ) {
+      throw new Error("Supabase did not confirm the meeting revision request.");
+    }
+    return revised;
+  },
+
   async registry<T extends { id: string }>(
     entity: string,
     action: "list" | "create" | "update" | "delete",

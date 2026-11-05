@@ -113,6 +113,12 @@ export interface PageCfg {
   rejectionPermission?: string;
   /** Status field shown by this page after rejection; defaults to approval_status. */
   rejectionStatusField?: string;
+  /** Persists the shared Request Revision action and confirms the returned payload. */
+  onRequestRevision?: (id: string, instructions: string) => boolean | Promise<boolean>;
+  /** Server-backed permission code required for the shared revision action. */
+  requestRevisionPermission?: string;
+  /** Status field shown by this page after a revision request; defaults to approval_status. */
+  requestRevisionStatusField?: string;
   /** Override the primary submit button label on the last wizard step (default "Save"). */
   lastStepSubmitLabel?: string;
   /** When set, shows a "Save Draft" secondary button on every wizard step.

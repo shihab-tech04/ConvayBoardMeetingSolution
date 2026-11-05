@@ -263,11 +263,6 @@ export function OnlineReturnRegisterPage() {
       if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting rejected.");
       return;
     }
-    if (actionId === "request_revision") {
-      const saved = await registry.update(mid, { approval_status: "Revision Requested" } as never);
-      if (saved === true || import.meta.env.MODE === "test") toast.success("Revision requested.");
-      return;
-    }
     if (actionId === "publish") {
       const saved = await registry.update(mid, { approval_status: "Published" } as never);
       if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting published.");
@@ -680,6 +675,17 @@ export function OnlineReturnRegisterPage() {
         toast.error("Meeting approval was saved, but the register could not refresh. Reload the page to see the latest status.");
       }
       return approved.approval_status === "Approved";
+    },
+    requestRevisionPermission: "mtg_approve",
+    onRequestRevision: async (id, instructions) => {
+      const revised = await convayAuth.requestMeetingRevision(id, instructions);
+      try {
+        await registry.refresh?.();
+      } catch {
+        toast.error("Revision request was saved, but the register could not refresh. Reload the page to see the latest status.");
+      }
+      return revised.approval_status === "Revision Requested" &&
+        revised.revision_instructions === instructions.trim();
     },
 
     // ── Save Draft: upserts a meeting record with status "Draft" ─────────────────
