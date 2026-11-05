@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import type { PageCfg, TableRow } from "../app/pages/modulePageUtils";
 
@@ -46,6 +46,7 @@ vi.mock("../app/components/drawers/DynamicDetailsDrawer", () => ({
   }) => open && rowData ? (
     <section data-testid="details-drawer">
       <p>{String(rowData.approval_status ?? rowData.status ?? "")}</p>
+      {rowData.revision_instructions && <p>{String(rowData.revision_instructions)}</p>}
       {extraFooterActions}
     </section>
   ) : null,
@@ -67,10 +68,10 @@ vi.mock("../app/components/buttons/SecondaryButton", () => ({
   ),
 }));
 vi.mock("../app/components/forms/AppTextArea", () => ({
-  AppTextArea: ({ id, label, value, onChange }: {
-    id: string; label: string; value: string; onChange: (value: string) => void;
+  AppTextArea: ({ id, label, value, error, disabled, onChange }: {
+    id: string; label: string; value: string; error?: string; disabled?: boolean; onChange: (value: string) => void;
   }) => (
-    <label htmlFor={id}>{label}<textarea id={id} value={value} onChange={event => onChange(event.target.value)} /></label>
+    <label htmlFor={id}>{label}<textarea id={id} value={value} disabled={disabled} onChange={event => onChange(event.target.value)} />{error && <span role="alert">{error}</span>}</label>
   ),
 }));
 vi.mock("../app/components/cards/CollapsibleKpiSection", () => ({ CollapsibleKpiSection: () => null }));
@@ -82,6 +83,7 @@ import { GeneratedTablePage } from "../app/components/pages/GeneratedTablePage";
 
 const initialRecord: TableRow = { id: "record-1", approval_status: "Pending" };
 const rejectionAction = { id: "reject", label: "Reject Record", icon: () => null };
+const revisionAction = { id: "request_revision", label: "Request Revision", icon: () => null };
 
 function config(overrides: Partial<PageCfg> = {}): PageCfg {
   return {
@@ -112,6 +114,25 @@ async function openRejection() {
   fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
   fireEvent.click(screen.getByRole("button", { name: "Reject Record" }));
   return screen.findByRole("dialog", { name: "Reject Record" });
+}
+
+function revisionConfig(overrides: Partial<PageCfg> = {}) {
+  return config({
+    drawerActions: [revisionAction],
+    requestRevisionPermission: "mtg_approve",
+    requestRevisionStatusField: "approval_status",
+    ...overrides,
+  });
+}
+
+async function openRevisionRequest() {
+  fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Request Revision" }));
+  return screen.findByRole("dialog", { name: "Request Revision — Record" });
+}
+
+function enterRevisionInstructions(instructions = "Please correct the submitted meeting agenda.") {
+  fireEvent.change(screen.getByLabelText("Revision Instructions *"), { target: { value: instructions } });
 }
 
 function enterRejectionReason(reason = "Needs changes") {
@@ -345,5 +366,120 @@ describe("GeneratedTablePage shared Reject Record", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
     expect(screen.getByTestId("details-drawer")).toHaveTextContent("Rejected");
     expect(screen.getByRole("button", { name: "Reject Record" })).toBeDisabled();
+  });
+});
+
+describe("GeneratedTablePage shared Request Revision", () => {
+  it("waits for confirmed persistence before updating status or reporting success", async () => {
+    let confirmWrite!: (value: boolean) => void;
+    const save = vi.fn((_id: string, _instructions: string) => new Promise<boolean>(resolve => {
+      confirmWrite = resolve;
+    }));
+    renderPage(revisionConfig({ onRequestRevision: save }));
+    await openRevisionRequest();
+    enterRevisionInstructions();
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Request Revision — Record" }))
+      .getByRole("button", { name: "Request Revision" }));
+
+    expect(save).toHaveBeenCalledWith("record-1", "Please correct the submitted meeting agenda.");
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    expect(screen.getByRole("dialog", { name: "Request Revision — Record" })).toBeInTheDocument();
+    expect(state.toast.success).not.toHaveBeenCalled();
+    expect(screen.getByTestId("details-drawer")).toHaveTextContent("Pending");
+
+    confirmWrite(true);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Request Revision — Record" })).not.toBeInTheDocument());
+    expect(screen.getByTestId("details-drawer")).toHaveTextContent("Revision Requested");
+    expect(state.toast.success).toHaveBeenCalledWith("Revision requested");
+    expect(state.toast.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps the modal and pending row unchanged after a rejected write, then allows retry", async () => {
+    const save = vi.fn()
+      .mockRejectedValueOnce(new Error("permission denied by row-level security"))
+      .mockResolvedValueOnce(true);
+    renderPage(revisionConfig({ onRequestRevision: save }));
+    await openRevisionRequest();
+    enterRevisionInstructions();
+    const dialog = screen.getByRole("dialog", { name: "Request Revision — Record" });
+    const submit = () => fireEvent.click(within(dialog).getByRole("button", { name: "Request Revision" }));
+    submit();
+
+    await waitFor(() => expect(state.toast.error).toHaveBeenCalledWith("permission denied by row-level security"));
+    expect(screen.getByRole("dialog", { name: "Request Revision — Record" })).toBeInTheDocument();
+    expect(screen.getByTestId("details-drawer")).toHaveTextContent("Pending");
+    expect(screen.getByRole("textbox", { name: /Revision Instructions/ })).toHaveValue("Please correct the submitted meeting agenda.");
+
+    submit();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Request Revision — Record" })).not.toBeInTheDocument());
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(state.toast.success).toHaveBeenCalledWith("Revision requested");
+  });
+
+  it("denies users without mtg_approve before calling persistence", async () => {
+    state.access.effective_permissions = ["mtg_view"];
+    const save = vi.fn().mockResolvedValue(true);
+    renderPage(revisionConfig({ onRequestRevision: save }));
+    fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
+    const action = screen.getByRole("button", { name: "Request Revision" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("title", "You do not have permission to request a revision.");
+    fireEvent.click(action);
+    expect(save).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Request Revision — Record" })).not.toBeInTheDocument();
+  });
+
+  it("prevents duplicate submits and renders the saved instructions after a refresh", async () => {
+    let confirmWrite!: (value: boolean) => void;
+    let persisted = { ...initialRecord };
+    const save = vi.fn((_id: string, instructions: string) => new Promise<boolean>(resolve => {
+      confirmWrite = value => {
+        if (value) persisted = { ...persisted, approval_status: "Revision Requested", status: "Revision Requested", revision_instructions: instructions };
+        resolve(value);
+      };
+    }));
+    const view = renderPage(revisionConfig({ onRequestRevision: save }));
+    await openRevisionRequest();
+    enterRevisionInstructions();
+    const submit = within(screen.getByRole("dialog", { name: "Request Revision — Record" }))
+      .getByRole("button", { name: "Request Revision" });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    expect(save).toHaveBeenCalledOnce();
+
+    confirmWrite(true);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Request Revision — Record" })).not.toBeInTheDocument());
+    view.unmount();
+
+    renderPage(revisionConfig({ rows: [persisted], onRequestRevision: save }));
+    fireEvent.click(screen.getByRole("button", { name: "Open record-1" }));
+    expect(screen.getByTestId("details-drawer")).toHaveTextContent("Revision Requested");
+    expect(screen.getByTestId("details-drawer")).toHaveTextContent("Please correct the submitted meeting agenda.");
+  });
+
+  it("rejects instructions shorter than ten characters without calling SQL", async () => {
+    const save = vi.fn().mockResolvedValue(true);
+    renderPage(revisionConfig({ onRequestRevision: save }));
+    await openRevisionRequest();
+    enterRevisionInstructions("Too short");
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Request Revision — Record" }))
+      .getByRole("button", { name: "Request Revision" }));
+
+    expect(await screen.findByText("Please provide revision instructions (at least 10 characters)")).toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
+    expect(state.toast.success).not.toHaveBeenCalled();
+  });
+
+  it("does not report a local-only success when no SQL callback is configured", async () => {
+    renderPage(revisionConfig());
+    await openRevisionRequest();
+    enterRevisionInstructions();
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Request Revision — Record" }))
+      .getByRole("button", { name: "Request Revision" }));
+
+    expect(await screen.findByText("Revision requests are not connected to SQL for this module.")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Request Revision — Record" })).toBeInTheDocument();
+    expect(screen.getByTestId("details-drawer")).toHaveTextContent("Pending");
+    expect(state.toast.success).not.toHaveBeenCalled();
   });
 });

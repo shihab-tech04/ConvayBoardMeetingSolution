@@ -21,6 +21,9 @@ export const MEETING_DRAWER_COLS: ColDef[] = [
     { key: "description",      label: "Description" },
     { key: "notes",            label: "Supporting Notes" },
     { key: "approval_status",  label: "Status", badge: true },
+    { key: "revision_instructions", label: "Revision Instructions" },
+    { key: "revision_requested_by", label: "Revision Requested By" },
+    { key: "revision_requested_at", label: "Revision Requested At" },
   ]),
   dg("Leadership", [
     { key: "chairperson",  label: "Chairperson" },
