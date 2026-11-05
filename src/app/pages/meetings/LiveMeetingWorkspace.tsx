@@ -42,6 +42,7 @@ import { getAgendaDescription } from "../../utils/agendaDescription";
 import { convayAuth } from "../../services/supabase/convayAuth";
 import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
+import { LiveMeetingMedia } from "./LiveMeetingMedia";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -415,6 +416,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   }, [access.loaded, access.error]);
 
   const meeting = meetings.find(m => m.meeting_id === meetingId);
+  const isOnlineMeeting = meeting?.mode === "Virtual" || meeting?.mode === "Hybrid";
 
   // Build participant list from registry — no synthetic defaults
   const baseParticipants: VirtualParticipant[] = (() => {
@@ -673,6 +675,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // "prejoin"   → for join actions or after readiness completes
   // "meeting"   → the live workspace
   const determineInitialPhase = (): "readiness" | "prejoin" | "meeting" => {
+    if (isOnlineMeeting && entryAction === "join_meeting") return "prejoin";
     if (ctrlStatus !== "not-started") return "meeting";
     if (entryAction === "start_meeting") return "readiness";
     if (entryAction === "join_meeting")  return "prejoin";
@@ -922,7 +925,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         meeting_id: meetingId, meeting_title: meeting?.meeting_title ?? "",
         participant_id: id, participant_name: pName, designation: "", role: pRole,
         check_in_time: checkInTime, check_out_time: checkOutTime,
-        attendance_mode: "In-Person",
+        attendance_mode: isOnlineMeeting ? "Online" : "In-Person",
         quorum_eligible: (link?.quorum_eligible ?? false) ? "Yes" : "No",
         signed: "No", notes: "", created_at: nowISO(),
       } as never);
@@ -951,7 +954,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, updateAttendanceRec, addAttendanceRec, addQuorumEvent]);
+  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent]);
 
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
@@ -1523,10 +1526,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           setMyMicOn(opts.micOn);
           setMyCamOn(opts.camOn);
           setPhase("meeting");
-          // Create or update canonical attendance record for the current user
-          if (myLink) {
-            setAttendance(currentUser.id, "Present");
-          }
+          // Online attendance only begins after a confirmed media connection.
+          if (!isOnlineMeeting && myLink) setAttendance(currentUser.id, "Present");
         }}
         onBack={() => onClose()}
       />
