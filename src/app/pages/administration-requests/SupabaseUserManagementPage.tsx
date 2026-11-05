@@ -16,7 +16,7 @@ import { fc, BADGE } from "../modulePageUtils";
 import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
 
-type Mode = "create" | "edit" | "password" | null;
+type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
 interface FormState { name: string; username: string; email: string; password: string; phone: string; }
 const blank: FormState = { name: "", username: "", email: "", password: "", phone: "" };
@@ -30,11 +30,16 @@ const columns: ColDef[] = [
   fc("lastActive", "Last Active"),
 ];
 const filters: FilterDef[] = [
-  { key: "status", label: "Account Status", type: "select", options: ["All", "Active", "Inactive", "Suspended"] },
+  { key: "status", label: "Account Status", type: "select", options: ["All", "Active", "Awaiting verification", "Finish account setup", "Inactive", "Suspended"] },
   { key: "role", label: "Role", type: "select", options: ["All", "Super Admin", "User"] },
 ];
 function displayStatus(status: string) {
   return status.charAt(0).toUpperCase() + status.slice(1);
+}
+function displayAccountStatus(user: ConvayProfile) {
+  if (user.invitation_status === "pending") return "Awaiting verification";
+  if (user.invitation_status === "verified") return "Finish account setup";
+  return displayStatus(user.account_status);
 }
 function csv(value: unknown) {
   return '"' + String(value ?? "").replace(/"/g, '""') + '"';
@@ -82,7 +87,7 @@ export function SupabaseUserManagementPage() {
     const q = search.trim().toLowerCase();
     if (q && ![u.username, u.display_name, u.email, u.employee_id, u.phone]
       .some(text => String(text ?? "").toLowerCase().includes(q))) return false;
-    if (applied.status && applied.status !== "All" && displayStatus(u.account_status) !== applied.status) return false;
+    if (applied.status && applied.status !== "All" && displayAccountStatus(u) !== applied.status) return false;
     if (applied.role && applied.role !== "All"
       && (u.account_role === "super_admin" ? "Super Admin" : "User") !== applied.role) return false;
     return true;
@@ -97,7 +102,7 @@ export function SupabaseUserManagementPage() {
     primaryRole: u.account_role === "super_admin" ? "Super Admin" :
       access.user_assignments.filter(a => a.user_id === u.user_id)
         .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ") || "Unassigned",
-    accountStatus: displayStatus(u.account_status),
+    accountStatus: displayAccountStatus(u),
     lastActive: u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleString() : "—",
   }));
   const stats = [
@@ -135,11 +140,11 @@ export function SupabaseUserManagementPage() {
     setForm(blank);
     setFormError("");
   };
-  const openCreate = () => {
+  const openInvite = () => {
     setForm(blank);
     setFormError("");
     setEditId(null);
-    setMode("create");
+    setMode("invite");
   };
   const openEdit = (user: ConvayProfile) => {
     setSelectedId(null);
@@ -166,24 +171,24 @@ export function SupabaseUserManagementPage() {
       setFormError("User name and email are required");
       return;
     }
-    if ((mode === "password" || mode === "create") && form.password.length < 6) {
+    if (mode === "password" && form.password.length < 6) {
       setFormError("Password must be at least 6 characters");
       return;
     }
     setWorking(true);
     setFormError("");
     try {
-      if (mode === "create") {
-        await convayAuth.users("create", {
+      if (mode === "invite") {
+        await convayAuth.users("invite", {
           name: form.name.trim(), username: form.username.trim() || undefined,
-          email: form.email.trim(), password: form.password,
+          email: form.email.trim(),
           phone: form.phone.trim() || undefined,
         });
-        toast.success("User created. They can sign in using their email and password.");
+        toast.success("Invitation sent. The account stays inactive until the user verifies their email and sets a password.");
       } else if (mode === "edit" && editing) {
         await convayAuth.users("update", {
           user_id: editing.user_id, name: form.name.trim(), username: form.username.trim(),
-          email: form.email.trim(), phone: form.phone.trim(),
+          phone: form.phone.trim(),
         });
         toast.success("User updated");
       } else if (mode === "password" && editing) {
@@ -253,7 +258,7 @@ export function SupabaseUserManagementPage() {
           </div>
           <div className="user-management__actions">
             <Button variant="secondary" size="sm" leadingIcon={Shield} onClick={() => navigate("/administration/roles-permissions/roles")}>Manage Roles</Button>
-            <Button variant="primary" size="lg" leadingIcon={UserPlus} onClick={openCreate}>Add User</Button>
+            <Button variant="primary" size="lg" leadingIcon={UserPlus} onClick={openInvite}>Invite User</Button>
           </div>
         </div>
       </div>
@@ -279,7 +284,7 @@ export function SupabaseUserManagementPage() {
         page={page} perPage={10} onPageChange={setPage}
         mobileCardMapping={{ primary: "name", identifier: "email",
           meta: ["userType", "primaryRole"], status: "accountStatus" }}
-        emptyLabel="No accounts yet. Add a user to get started."
+        emptyLabel="No accounts yet. Invite a user to get started."
         filteredEmptyLabel="No users match your search or filters."
         aria-label="User Management"
       />
@@ -292,11 +297,17 @@ export function SupabaseUserManagementPage() {
             <div className="user-drawer-footer">
               <div className="flex flex-col gap-2">
                 <Button variant="primary" size="lg" fullWidth onClick={() => openEdit(selected)}>Edit User</Button>
-                <Button variant="secondary" size="md" fullWidth onClick={() => openPassword(selected)}>Set Password</Button>
+                <Button variant="secondary" size="md" fullWidth onClick={() => openPassword(selected)}
+                  disabled={selected.invitation_status === "pending" || selected.invitation_status === "verified"}>
+                  Set Password
+                </Button>
                 <Button variant="secondary" size="md" fullWidth onClick={() => openRoleAssignment(selected)}>Assign Roles</Button>
                 <Button variant="secondary" size="md" fullWidth onClick={() => {
                   setConfirm({ id: selected.user_id, action: selected.account_status === "active" ? "suspended" : "active" });
-                }}>{selected.account_status === "active" ? "Suspend User" : "Activate User"}</Button>
+                }} disabled={selected.account_status !== "active" &&
+                  (selected.invitation_status === "pending" || selected.invitation_status === "verified")}>
+                  {selected.account_status === "active" ? "Suspend User" : "Activate User"}
+                </Button>
                 <Button variant="secondary" size="md" fullWidth onClick={() => {
                   setConfirm({ id: selected.user_id, action: "inactive" });
                 }}>Deactivate User</Button>
@@ -314,7 +325,10 @@ export function SupabaseUserManagementPage() {
             <p>Roles: {selected.account_role === "super_admin" ? "Super Admin" :
               access.user_assignments.filter(a => a.user_id === selected.user_id)
                 .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ") || "Unassigned"}</p>
-            <p>Status: {displayStatus(selected.account_status)}</p>
+            <p>Status: {displayAccountStatus(selected)}</p>
+            {selected.invitation_status && selected.invitation_status !== "accepted" && (
+              <p>Email verification: {selected.email_verified_at ? "Verified — the invitee must finish setting a password." : "Pending — access stays inactive until the invitee verifies this address."}</p>
+            )}
             {selected.phone && <p>Phone: {selected.phone}</p>}
           </div>
         </ResponsiveOverlay>
@@ -322,12 +336,12 @@ export function SupabaseUserManagementPage() {
 
       <AppModal
         open={mode !== null} onClose={closeForm}
-        title={mode === "create" ? "Add New User" : mode === "password" ? "Set User Password" : "Edit User"}
+        title={mode === "invite" ? "Invite User" : mode === "password" ? "Set User Password" : "Edit User"}
         icon={<UserPlus size={16}/>} size="md"
         footer={<div className="flex justify-end gap-2">
           <Button variant="ghost" size="lg" onClick={closeForm} disabled={working}>Cancel</Button>
           <Button variant="primary" size="lg" onClick={() => void save()} loading={working}>
-            {mode === "create" ? "Create User" : mode === "password" ? "Save Password" : "Save Changes"}
+            {mode === "invite" ? "Send invitation" : mode === "password" ? "Save Password" : "Save Changes"}
           </Button>
         </div>}
       >
@@ -339,12 +353,15 @@ export function SupabaseUserManagementPage() {
               <AppTextField id="convay-username" label="Account username (optional)" value={form.username}
                 onChange={v => setField("username", v)} placeholder="Optional unique account username"/>
               <AppTextField id="convay-user-email" label="Email address" value={form.email}
-                onChange={v => setField("email", v)} required placeholder="user@example.com"/>
+                onChange={v => setField("email", v)} required placeholder="user@example.com"
+                readOnly={mode === "edit"}
+                helper={mode === "edit" ? "Email changes require a separate verified process." : "The user must verify this address before access is activated."}/>
               <AppTextField id="convay-user-phone" label="Phone (optional)" value={form.phone}
                 onChange={v => setField("phone", v)} placeholder="Phone number"/>
             </>
           )}
-          {(mode === "create" || mode === "password") && (
+          {mode === "invite" && <p className="text-sm text-slate-600">Convay will email a secure invitation link. The account remains inactive until the recipient verifies this address and chooses their own password.</p>}
+          {mode === "password" && (
             <AppPasswordField id="convay-user-password" label="Password" value={form.password}
               onChange={v => setField("password", v)} autoComplete="new-password"
               placeholder="Set login password"/>
