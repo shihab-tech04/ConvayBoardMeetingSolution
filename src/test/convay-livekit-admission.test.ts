@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { checkOnlineAdmission, type AdmissionContext } from "../../supabase/functions/convay-livekit/admission";
+import { checkOnlineAdmission, checkOnlineRoomCapacity, type AdmissionContext } from "../../supabase/functions/convay-livekit/admission";
 
 const valid = (): AdmissionContext => ({
   meeting: {
@@ -52,5 +52,25 @@ describe("Convay LiveKit admission", () => {
   it("allows a permissioned administrative role after meeting start", () => {
     expect(checkOnlineAdmission({ ...valid(), isSuperAdmin: true, userId: "superadmin", links: [] }))
       .toEqual({ allowed: true });
+  });
+});
+
+describe("Convay LiveKit four-participant room capacity", () => {
+  it("admits while the configured four-person room has a free seat", () => {
+    expect(checkOnlineRoomCapacity({ maxParticipants: 4, numParticipants: 3 }))
+      .toEqual({ allowed: true });
+  });
+
+  it("rejects a full room before issuing another token", () => {
+    expect(checkOnlineRoomCapacity({ maxParticipants: 4, numParticipants: 4 }))
+      .toMatchObject({ allowed: false, status: 409 });
+  });
+
+  it("fails closed when the room is missing or has a different participant limit", () => {
+    expect(checkOnlineRoomCapacity(null)).toMatchObject({ allowed: false, status: 503 });
+    expect(checkOnlineRoomCapacity({ maxParticipants: 8, numParticipants: 1 }))
+      .toMatchObject({ allowed: false, status: 503 });
+    expect(checkOnlineRoomCapacity({ maxParticipants: 4 }))
+      .toMatchObject({ allowed: false, status: 503 });
   });
 });

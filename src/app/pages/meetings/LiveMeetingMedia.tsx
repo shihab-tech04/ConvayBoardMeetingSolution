@@ -98,8 +98,26 @@ export function LiveMeetingMedia({ meetingId, micOn, camOn, sharing, onMicChange
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ meetingId }),
         });
-        const access = await response.json() as { serverUrl: string; participantToken: string };
-        if (!access.serverUrl || !access.participantToken) throw new Error("Online meeting admission is unavailable");
+        const access = await response.json().catch(() => ({})) as {
+          serverUrl?: string;
+          participantToken?: string;
+          error?: unknown;
+        };
+        if (!response.ok) {
+          const serverError = typeof access.error === "string" ? access.error.trim() : "";
+          const statusMessage: Record<number, string> = {
+            401: "Sign in to Convay to join this meeting.",
+            403: "You do not have permission to join this meeting.",
+            409: "This online meeting is unavailable or has reached its participant limit.",
+            502: "Convay could not verify your meeting access. Try again or contact the organizer.",
+            503: "The online meeting service is not yet configured.",
+          };
+          throw new Error(serverError || statusMessage[response.status] || "Unable to connect to the online meeting.");
+        }
+        if (typeof access.serverUrl !== "string" || !access.serverUrl
+          || typeof access.participantToken !== "string" || !access.participantToken) {
+          throw new Error("Online meeting access could not be confirmed.");
+        }
         if (ended) return;
         nextRoom = new sdk.Room({ adaptiveStream: true, dynacast: true });
         for (const name of ["TrackSubscribed", "TrackUnsubscribed", "TrackPublished", "TrackUnpublished", "ParticipantConnected", "ParticipantDisconnected",

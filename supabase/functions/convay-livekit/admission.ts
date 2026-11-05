@@ -62,3 +62,28 @@ export function checkOnlineAdmission(ctx: AdmissionContext): AdmissionDecision {
   }
   return { allowed: true };
 }
+
+export interface OnlineRoomCapacity {
+  maxParticipants?: number;
+  numParticipants?: number;
+}
+
+export function checkOnlineRoomCapacity(
+  room: OnlineRoomCapacity | null,
+  expectedLimit = 4,
+): AdmissionDecision {
+  const participantCount = room?.numParticipants;
+  if (
+    !room
+    || room.maxParticipants !== expectedLimit
+    || typeof participantCount !== "number"
+    || !Number.isInteger(participantCount)
+    || participantCount < 0
+  ) {
+    return { allowed: false, status: 503, error: "The online meeting room is not configured for four participants." };
+  }
+  if (participantCount >= expectedLimit) {
+    return { allowed: false, status: 409, error: "This online meeting has reached its four-participant limit." };
+  }
+  return { allowed: true };
+}

@@ -1,12 +1,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { AccessToken } from "npm:livekit-server-sdk@2.19.2";
-import { checkOnlineAdmission, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
+import { AccessToken, RoomServiceClient } from "npm:livekit-server-sdk@2.19.2";
+import { checkOnlineAdmission, checkOnlineRoomCapacity, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
 
 /**
  * Server-side LiveKit admission. The browser never holds an API secret.
  * JWT validation is deliberately repeated here even when the Edge gateway
  * verifies the Authorization header, to tie the token to an active user.
  */
+const MAX_LIVEKIT_PARTICIPANTS = 4;
+const EMPTY_ROOM_TIMEOUT_SECONDS = 600;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const origins = new Set(["https://shihab-tech04.github.io", "http://localhost:5173", "http://127.0.0.1:5173"]);
@@ -114,6 +116,23 @@ Deno.serve(async req => {
       return response(req, 503, { error: "Online meeting service is not yet configured." });
     }
     const room = await opaqueId("room", meeting.id ?? meetingId);
+    const roomService = new RoomServiceClient(url.replace(/^wss:/i, "https:"), key, secret);
+    let liveRoom = (await roomService.listRooms([room])).find(item => item.name === room) ?? null;
+    if (!liveRoom) {
+      try {
+        liveRoom = await roomService.createRoom({
+          name: room,
+          emptyTimeout: EMPTY_ROOM_TIMEOUT_SECONDS,
+          maxParticipants: MAX_LIVEKIT_PARTICIPANTS,
+        });
+      } catch (createError) {
+        liveRoom = (await roomService.listRooms([room])).find(item => item.name === room) ?? null;
+        if (!liveRoom) throw createError;
+      }
+    }
+    const roomCapacity = checkOnlineRoomCapacity(liveRoom, MAX_LIVEKIT_PARTICIPANTS);
+    if (!roomCapacity.allowed) return response(req, roomCapacity.status, { error: roomCapacity.error });
+
     const identity = await opaqueId("user", user.id);
     const token = new AccessToken(key, secret, {
       identity, name: profiles[0].display_name || "Convay participant", ttl: 300,
