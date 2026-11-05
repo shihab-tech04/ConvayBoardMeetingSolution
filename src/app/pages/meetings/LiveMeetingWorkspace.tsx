@@ -1495,7 +1495,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             }
             return merged;
           });
-          setPhase("meeting");
+          setPhase(isOnlineMeeting ? "prejoin" : "meeting");
         }}
       />
     );
@@ -1504,7 +1504,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // ── Pre-join screen ────────────────────────────────────────────────────────
   if (phase === "prejoin") {
     // Block uninvited users only when canonical participant links exist for this meeting
-    if (meetingLinks.length > 0 && !myLink) {
+    if (meetingLinks.length > 0 && !myLink && !access.is_super_admin) {
       return (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "1rem", padding: "2rem", textAlign: "center", background: "#0f172a", color: "#f1f5f9" }}>
           <AlertCircle size={48} style={{ color: "#ef4444" }} />
