@@ -7,6 +7,7 @@ import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { normalizeMeetingSchedule } from "./meetingSchedule";
+import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useResolvedActions } from "../../actions/useResolvedActions";
@@ -322,22 +323,6 @@ export function OnlineReturnRegisterPage() {
       value: u.id,
       label: [u.name, u.designation, u.circle].filter(Boolean).join(" — "),
     }));
-
-  // Resolve user ID — value is now stored as user.id directly
-  const resolveUserId = (val: string): string => {
-    // New format: already a user ID
-    if (bmsUserRegistry.items.some(u => u.id === val)) return val;
-    // Legacy: "Name — Designation" rich label
-    const name = val.split(" — ")[0].trim();
-    return bmsUserRegistry.items.find(u => u.name === name)?.id ?? "";
-  };
-
-  // Resolve display name from user ID or legacy rich label
-  const resolveUserName = (val: string): string => {
-    const user = bmsUserRegistry.items.find(u => u.id === val);
-    if (user) return user.name;
-    return val.split(" — ")[0].trim();
-  };
 
   const dynamicMeetingFields = patchFormOptions(MEETING_FORM_FIELDS, {
     committee:               govOptions,
@@ -688,10 +673,8 @@ export function OnlineReturnRegisterPage() {
       const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now   = new Date().toISOString();
       const title = String(values.meeting_title ?? "Untitled Draft");
-      const draftChair = resolveUserName(String(values.chairperson ?? ""));
-      const draftSec   = resolveUserName(String(values.secretary   ?? ""));
-      const draftOrg   = resolveUserName(String(values.organizer   ?? ""));
-      const draftOrgId = resolveUserId(String(values.organizer     ?? ""));
+      const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
+      const draftOrg = leadership.names.organizer;
 
       const meetingPayload: Record<string, unknown> = {
         meeting_title:    title,
@@ -706,12 +689,7 @@ export function OnlineReturnRegisterPage() {
         virtual_platform: "Convay",
         virtual_link:     String(values.virtual_link     ?? ""),
         financial_year:   String(new Date().getFullYear() + "-" + (new Date().getFullYear() + 1)),
-        chairperson:      draftChair,
-        chairperson_user_id: resolveUserId(String(values.chairperson ?? "")),
-        secretary:        draftSec,
-        secretary_user_id: resolveUserId(String(values.secretary ?? "")),
-        organizer:        draftOrg,
-        organizer_user_id: draftOrgId,
+        ...meetingLeadershipPayload(leadership),
         language:         "English",
         priority:         "Normal",
         confidentiality:  String(values.confidentiality  ?? "Confidential"),
@@ -833,13 +811,11 @@ export function OnlineReturnRegisterPage() {
       const meetingTitle = identity.meeting_title || "Untitled Meeting";
       const committee = identity.committee;
 
-      // Resolve clean user names from the rich-label selector options
-      const chairpersonName = resolveUserName(String(values.chairperson ?? ""));
-      const secretaryName   = resolveUserName(String(values.secretary   ?? ""));
-      const organizerName   = resolveUserName(String(values.organizer   ?? ""));
-      const chairpersonId   = resolveUserId(String(values.chairperson   ?? ""));
-      const secretaryId     = resolveUserId(String(values.secretary     ?? ""));
-      const organizerId     = resolveUserId(String(values.organizer     ?? ""));
+      const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
+      const chairpersonId = leadership.ids.chairperson;
+      const secretaryId = leadership.ids.secretary;
+      const organizerId = leadership.ids.organizer;
+      const organizerName = leadership.names.organizer;
 
       // Warn if same person holds multiple roles (allowed but flagged)
       const uniqueRoleHolders = new Set([chairpersonId, secretaryId, organizerId].filter(Boolean));
@@ -872,9 +848,7 @@ export function OnlineReturnRegisterPage() {
         if (!String(values.meeting_date ?? "").trim())        blockers.push("Meeting date is required");
         if (!String(values.start_time ?? "").trim() || !String(values.end_time ?? "").trim())
                                                               blockers.push("Start and end time are required");
-        if (!chairpersonId)  blockers.push("Active Chairperson is required");
-        if (!secretaryId)    blockers.push("Active Secretary is required");
-        if (!organizerId)    blockers.push("Active Organizer is required");
+        blockers.push(...leadership.missing.map(role => `${meetingLeadershipLabel(role)} must be selected from active registered users`));
 
         const body = govRegistry.items.find(b => b.id === committee || b.body_id === committee || b.body_name === committee);
         if (body && (body as {status?: string}).status && (body as {status?: string}).status !== "Active")
@@ -930,12 +904,7 @@ export function OnlineReturnRegisterPage() {
         virtual_platform: "Convay",
         virtual_link:  String(values.virtual_link ?? ""),
         financial_year: String(new Date().getFullYear() + "-" + (new Date().getFullYear() + 1)),
-        chairperson:   chairpersonName,
-        chairperson_user_id: chairpersonId,
-        secretary:     secretaryName,
-        secretary_user_id: secretaryId,
-        organizer:     organizerName,
-        organizer_user_id: organizerId,
+        ...meetingLeadershipPayload(leadership),
         language:      "English",
         priority:      "Normal",
         confidentiality: String(values.confidentiality ?? "Confidential"),
@@ -1109,9 +1078,11 @@ export function OnlineReturnRegisterPage() {
     onRowUpdate: (id, values) => {
       const identity = normalizeMeetingIdentity(values);
       const schedule = normalizeMeetingSchedule(values);
-      const chairpersonName = resolveUserName(String(values.chairperson ?? ""));
-      const secretaryName   = resolveUserName(String(values.secretary   ?? ""));
-      const organizerName   = resolveUserName(String(values.organizer   ?? ""));
+      const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
+      if (leadership.missing.length > 0) {
+        toast.error(`Cannot save changes. Select active registered users for ${leadership.missing.map(meetingLeadershipLabel).join(", ")}.`);
+        return false;
+      }
       return registry.update(id, {
         ...identity,
         ...schedule,
@@ -1119,12 +1090,7 @@ export function OnlineReturnRegisterPage() {
         venue:               String(values.venue            ?? ""),
         virtual_platform:    String(values.virtual_platform ?? ""),
         virtual_link:        String(values.virtual_link     ?? ""),
-        chairperson:         chairpersonName,
-        chairperson_user_id: resolveUserId(String(values.chairperson ?? "")),
-        secretary:           secretaryName,
-        secretary_user_id:   resolveUserId(String(values.secretary   ?? "")),
-        organizer:           organizerName,
-        organizer_user_id:   resolveUserId(String(values.organizer   ?? "")),
+        ...meetingLeadershipPayload(leadership),
         confidentiality:     String(values.confidentiality  ?? ""),
         purpose:             String(values.purpose           ?? ""),
         description:         String(values.description       ?? ""),

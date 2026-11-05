@@ -12,6 +12,7 @@ import { PrimaryButton } from "../buttons/PrimaryButton";
 import { Button } from "../buttons/Button";
 import { AppTextArea } from "../forms/AppTextArea";
 import { EntryForm, type FormField, type EntryFormValue } from "../forms/EntryForm";
+import { buildInitialValuesFromRow } from "../forms/formInitialValues";
 import { UnifiedDataTable } from "../tables";
 import type { TabDef } from "../tables";
 import type { PageCfg, TableRow } from "../../pages/modulePageUtils";
@@ -204,37 +205,6 @@ function createGenericRow(
     }
   });
   return row;
-}
-
-function buildInitialValuesFromRow(row: TableRow, fields: FormField[]): Record<string, EntryFormValue> {
-  const out: Record<string, EntryFormValue> = {};
-  fields.forEach((f, i) => {
-    if (!f.key) return;
-    const id = f.key ?? `entry-field-${i}`;
-    const v = row[f.key];
-    if (v === undefined || v === null) return;
-    if (f.type === "toggle" || f.type === "checkbox") {
-      out[id] = v === true || v === "true" || v === "Yes";
-    } else if (f.type === "multiselect") {
-      out[id] = Array.isArray(v) ? (v as unknown as string[]) : String(v).split(",").map(s => s.trim()).filter(Boolean);
-    } else if (f.type === "file") {
-      out[id] = [];
-    } else if (f.type === "select" && Array.isArray(f.options) && f.options.length > 0 && typeof f.options[0] === "object") {
-      // Structured options: { value, label }. Resolve stored name→id if needed.
-      const strV = String(v);
-      const opts = f.options as { value: string; label: string }[];
-      if (opts.some(o => o.value === strV)) {
-        out[id] = strV;
-      } else {
-        // Try matching by label prefix (stored display name → option value)
-        const match = opts.find(o => o.label === strV || o.label.startsWith(strV + " —") || o.label.startsWith(strV + " ("));
-        out[id] = match ? match.value : "";
-      }
-    } else {
-      out[id] = String(v);
-    }
-  });
-  return out;
 }
 
 // ── Form field builders ───────────────────────────────────────────────────────────
