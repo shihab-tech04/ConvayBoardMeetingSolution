@@ -312,6 +312,27 @@ describe("GeneratedTablePage shared Reject Record", () => {
     expect(state.toast.error).not.toHaveBeenCalled();
   });
 
+  it("uses the shared reason dialog when a module also has custom actions", async () => {
+    const customAction = vi.fn();
+    const save = vi.fn().mockResolvedValue(true);
+    renderPage(rejectionConfig({
+      onCustomAction: customAction,
+      onRejectRecord: save,
+      rejectionPermission: "mtg_approve",
+    }));
+    await openRejection();
+    enterRejectionReason("The request is missing agenda documents.");
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Reject Record" })).not.toBeInTheDocument());
+    expect(save).toHaveBeenCalledWith("record-1", {
+      approval_status: "Rejected",
+      rejection_reason: "The request is missing agenda documents.",
+    });
+    expect(customAction).not.toHaveBeenCalled();
+    expect(state.toast.success).toHaveBeenCalledWith("Record rejected.");
+  });
+
   it("keeps the row pending and dialog open when the SQL write is rejected", async () => {
     const save = vi.fn().mockRejectedValue(new Error("permission denied by row-level security"));
     renderPage(rejectionConfig({ onRejectRecord: save }));

@@ -998,8 +998,9 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                   ? `${entityName} is already approved.`
                   : approvalBlockedReason
                 : null;
-              const genericRejectionAction = action.id === "reject" && !cfg.onCustomAction;
-              const rejectionDisabledReason = genericRejectionAction
+              const usesSharedRejectionFlow = action.id === "reject" &&
+                Boolean(cfg.onRejectRecord && cfg.rejectionPermission);
+              const rejectionDisabledReason = usesSharedRejectionFlow
                 ? isAlreadyRejected(drawer)
                   ? `${entityName} is already rejected.`
                   : rejectionBlockedReason
@@ -1009,7 +1010,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
               const revisionDisabledReason = usesSharedRevisionFlow ? revisionBlockedReason : null;
               const handleClick = () => {
                 // These action IDs always use GenPage's internal modal state
-                if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id) || usesSharedApprovalFlow || usesSharedRevisionFlow) {
+                if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id) || usesSharedApprovalFlow || usesSharedRejectionFlow || usesSharedRevisionFlow) {
                   handleActionClick(action.id, drawer!);
                 } else if (cfg.onCustomAction) {
                   cfg.onCustomAction(action.id, drawer!);
