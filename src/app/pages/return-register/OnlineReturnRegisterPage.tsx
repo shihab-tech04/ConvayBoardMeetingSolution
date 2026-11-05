@@ -8,6 +8,7 @@ import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meeti
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { normalizeMeetingSchedule } from "./meetingSchedule";
 import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
+import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
 import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
@@ -704,10 +705,11 @@ export function OnlineReturnRegisterPage() {
       };
 
       let mid: string;
-      if (existingDraftId && registry.items.some(m => (m.meeting_id ?? m.id) === existingDraftId)) {
+      const draftTarget = resolveMeetingDraftTarget(existingDraftId, registry.items);
+      if (draftTarget) {
         // Upsert — update existing draft record
-        batch.push({ entity_key: "bms.meetings", action: "update", record_id: existingDraftId, payload: meetingPayload });
-        mid = existingDraftId;
+        batch.push({ entity_key: "bms.meetings", action: "update", record_id: draftTarget.recordId, payload: meetingPayload });
+        mid = draftTarget.meetingId;
         // Remove old child links before re-adding (clean slate for participants/agendas)
         participantLinkRegistry.items
           .filter(l => l.meeting_id === mid)
@@ -888,8 +890,8 @@ export function OnlineReturnRegisterPage() {
 
       // Meeting record — upsert existing draft if _draft_meeting_id present, else create new
       const existingDraftId = String(values._draft_meeting_id ?? "");
-      const isDraftUpsert = !!existingDraftId && registry.items.some(m => (m.meeting_id ?? m.id) === existingDraftId);
-      const newId = isDraftUpsert ? existingDraftId : generateId("MTG", registry.items.map(m => m.meeting_id));
+      const draftTarget = resolveMeetingDraftTarget(existingDraftId, registry.items);
+      const newId = draftTarget?.meetingId ?? generateId("MTG", registry.items.map(m => m.meeting_id));
 
       const meetingCorePayload = {
         ...identity,
@@ -912,8 +914,8 @@ export function OnlineReturnRegisterPage() {
         updated_at:      now,
       };
 
-      if (isDraftUpsert) {
-        batch.push({ entity_key: "bms.meetings", action: "update", record_id: newId, payload: meetingCorePayload });
+      if (draftTarget) {
+        batch.push({ entity_key: "bms.meetings", action: "update", record_id: draftTarget.recordId, payload: meetingCorePayload });
         // Reconcile child records — remove old links before re-adding
         participantLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
         participantRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.participants", action: "delete", record_id: l.id }));

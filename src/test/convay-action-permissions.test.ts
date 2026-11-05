@@ -8,6 +8,7 @@ import type { EntityType, ResolvedAction } from "../app/actions/types";
 
 const cases: [EntityType, string, string][] = [
   ["meeting","edit","mtg_update"],
+  ["meeting","continue_setup","mtg_update"],
   ["meeting","approve","mtg_approve"],
   ["meeting","cancel","mtg_cancel"],
   ["agenda_item","approve","agd_approve"],
@@ -32,7 +33,9 @@ describe("Convay action permissions", () => {
   });
   it("does not allow a viewer to perform an unrelated write action", () => {
     expect(actionGranted("meeting", "edit", ["mtg_view"], false)).toBe(false);
+    expect(actionGranted("meeting", "continue_setup", ["mtg_view"], false)).toBe(false);
     expect(actionGranted("meeting", "edit", ["mtg_update"], false)).toBe(true);
+    expect(actionGranted("meeting", "continue_setup", ["mtg_update"], false)).toBe(true);
     expect(actionGranted("document", "publish", ["doc_view"], false)).toBe(false);
   });
   it("denies unknown non-admin action IDs", () => {

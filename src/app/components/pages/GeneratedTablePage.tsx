@@ -478,11 +478,21 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         setStepValues({});
         break;
       case "continue_setup":
-        setDrawer(null);
-        setEditRow(row);
-        setEntryStep(Number(row.draft_current_step) || 0);
-        setStepValues({});
-        break;
+        {
+          const draftId = String(row.id ?? row.meeting_id ?? "").trim();
+          if (!draftId) {
+            toast.error("This draft has no meeting ID. Refresh and try again.");
+            break;
+          }
+          setDrawer(null);
+          setEditRow(null);
+          setStepValues(buildInitialValuesFromRow(row, entryFields));
+          setEntryStep(Number(row.draft_current_step) || 0);
+          setWizardDraftId(draftId);
+          latestEntryValues.current = {};
+          setModal("entry");
+          break;
+        }
       case "delete":
         setDeleteRow(row);
         break;
@@ -1401,6 +1411,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
               formId="entry-form-create"
               onClose={closeEntry}
               closeOnSubmit={!cfg.awaitCreateSave}
+              initialValues={stepValues}
               onSubmit={async (values) => {
                 const merged = { ...stepValues, ...values };
                 if (wizardDraftId) merged._draft_meeting_id = wizardDraftId;
