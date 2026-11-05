@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MEETING_FORM_FIELDS } from "../app/pages/boardMeetingFormFields";
-import { meetingAccessBlockers, MEETING_MODE_OPTIONS } from "../app/pages/return-register/meetingAccess";
+import { meetingAccessBlockers, meetingUpdateAccessBlockers, MEETING_MODE_OPTIONS } from "../app/pages/return-register/meetingAccess";
 
 describe("MT-09/MT-10 — meeting mode, venue, and access", () => {
   it("offers only the approved Physical, Virtual, and Hybrid choices", () => {
@@ -49,4 +49,29 @@ describe("MT-09/MT-10 — meeting mode, venue, and access", () => {
     expect(meetingAccessBlockers({ mode: "Hybrid", venue: "  ", virtual_link: "  " }))
       .toHaveLength(2);
   });
+  it("prevents scheduled meeting edits from removing required Hybrid access", () => {
+    const saved = {
+      approval_status: "Scheduled",
+      mode: "Hybrid",
+      venue: "Conference Room B",
+      virtual_link: "https://app.convay.com/m/j/456",
+    };
+    expect(meetingUpdateAccessBlockers(saved, { venue: "" }))
+      .toEqual(["Hybrid meeting requires a venue address"]);
+    expect(meetingUpdateAccessBlockers(saved, { virtual_link: "" }))
+      .toEqual(["Hybrid meeting requires a virtual meeting link"]);
+    expect(meetingUpdateAccessBlockers(saved, { mode: "Physical", venue: "Conference Room B" }))
+      .toEqual([]);
+    expect(meetingUpdateAccessBlockers(saved, { notes: "Unrelated update" }))
+      .toEqual([]);
+  });
+
+  it("allows incomplete drafts without allowing invalid scheduled access edits", () => {
+    const draft = { approval_status: "Draft", mode: "Hybrid", venue: "Room A", virtual_link: "" };
+    expect(meetingUpdateAccessBlockers(draft, { venue: "" })).toEqual([]);
+    const physical = { approval_status: "Approved", mode: "Physical", venue: "Room A" };
+    expect(meetingUpdateAccessBlockers(physical, { mode: "Hybrid" }))
+      .toEqual(["Hybrid meeting requires a virtual meeting link"]);
+  });
+
 });

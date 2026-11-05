@@ -7,7 +7,7 @@ import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { normalizeMeetingSchedule } from "./meetingSchedule";
-import { meetingAccessBlockers } from "./meetingAccess";
+import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
 import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
@@ -1076,6 +1076,11 @@ export function OnlineReturnRegisterPage() {
       const leadership = resolveMeetingLeadership(submittedValues, bmsUserRegistry.items);
       if (leadership.missing.length > 0) {
         toast.error(`Cannot save changes. Select active registered users for ${leadership.missing.map(meetingLeadershipLabel).join(", ")}.`);
+        return false;
+      }
+      const accessErrors = meetingUpdateAccessBlockers(existingMeeting ? { ...existingMeeting } : undefined, values);
+      if (accessErrors.length > 0) {
+        toast.error(`Cannot save changes. ${accessErrors[0]}`);
         return false;
       }
       return registry.update(id, {
