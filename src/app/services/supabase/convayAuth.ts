@@ -47,7 +47,6 @@ export type UserMutation = {
   user_id?: string;
 };
 
-
 function readSession(): StoredSession | null {
   if (typeof window === "undefined") return null;
   try {
@@ -287,6 +286,50 @@ export const convayAuth = {
       throw new Error("Supabase did not confirm the meeting rejection.");
     }
     return rejected;
+  },
+
+  /** Schedule an approved meeting through the permission-checked SQL transition. */
+  async scheduleMeeting(recordId: string): Promise<Record<string, unknown>> {
+    const id = recordId.trim();
+    if (!id) throw new Error("A meeting ID is required");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_schedule_meeting", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_record_id: id }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to schedule the meeting."));
+    const scheduled = await res.json() as Record<string, unknown>;
+    if (
+      scheduled.id !== id ||
+      scheduled.approval_status !== "Scheduled" ||
+      typeof scheduled.scheduled_by !== "string" ||
+      typeof scheduled.scheduled_at !== "string"
+    ) {
+      throw new Error("Supabase did not confirm the meeting schedule.");
+    }
+    return scheduled;
+  },
+
+  /** Publish a scheduled meeting through the permission-checked SQL transition. */
+  async publishMeeting(recordId: string): Promise<Record<string, unknown>> {
+    const id = recordId.trim();
+    if (!id) throw new Error("A meeting ID is required");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_publish_meeting", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_record_id: id }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to publish the meeting."));
+    const published = await res.json() as Record<string, unknown>;
+    if (
+      published.id !== id ||
+      published.approval_status !== "Published" ||
+      typeof published.published_by !== "string" ||
+      typeof published.published_at !== "string"
+    ) {
+      throw new Error("Supabase did not confirm the meeting publication.");
+    }
+    return published;
   },
 
   /** Return a pending meeting for revision through the narrowly scoped SQL operation. */

@@ -22,6 +22,12 @@ describe("HM-08 dashboard contextual action destinations", () => {
     expect(destination("publish", "MTG-01")).toEqual({
       kind: "route", path: "/meetings/all-meetings", label: "Manage meeting",
     });
+    expect(destination("schedule_meeting", "MTG-01")).toEqual({
+      kind: "route", path: "/meetings/all-meetings", label: "Manage meeting",
+    });
+    expect(destination("publish_meeting", "MTG-01")).toEqual({
+      kind: "route", path: "/meetings/all-meetings", label: "Manage meeting",
+    });
   });
 
   it("opens the correct existing record and create routes", () => {

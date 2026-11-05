@@ -1,7 +1,7 @@
 import {
   Pencil, PlayCircle, Send, Trash2, Eye,
   CheckCircle2, XCircle, RotateCcw, Upload,
-  Clock, Users, Video, ArrowRightCircle,
+  Clock, Users, Video, ArrowRightCircle, CalendarDays,
   Play, FileText, Plus, Archive, BookOpen,
   AlertTriangle, BarChart2,
 } from "lucide-react";
@@ -204,16 +204,16 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
   if (status === "Approved") {
     return [
       {
-        id: "publish",
-        label: "Publish Meeting",
-        icon: Upload,
+        id: "schedule_meeting",
+        label: "Schedule Meeting",
+        icon: CalendarDays,
         tone: "primary",
         placement: "direct",
         priority: 1,
         visible: hasRole(roles, "organizer", "host", "secretary"),
         enabled: true,
         requiresConfirmation: true,
-        confirmMessage: "Publish this meeting? Invitations will be sent to all participants.",
+        confirmMessage: "Schedule this approved meeting using its saved date and time?",
         color: "#6366f1",
       },
       {
@@ -241,8 +241,78 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
     ];
   }
 
-  // ── Scheduled / Published / Ready to Start ───────────────────────────────
-  if (status === "Scheduled" || status === "Published" || status === "Ready to Start") {
+  // ── Scheduled: publish before participants can start or join ─────────────
+  if (status === "Scheduled") {
+    const canManage = hasRole(roles, "organizer", "host", "secretary");
+    return [
+      {
+        id: "publish_meeting",
+        label: "Publish Meeting",
+        icon: Upload,
+        tone: "primary",
+        placement: "direct",
+        priority: 1,
+        visible: canManage,
+        enabled: true,
+        requiresConfirmation: true,
+        confirmMessage: "Publish this scheduled meeting? This will change its status to Published.",
+        color: "#6366f1",
+      },
+      {
+        id: "manage_participants",
+        label: "Manage Participants",
+        icon: Users,
+        tone: "neutral",
+        placement: "more",
+        priority: 3,
+        visible: canManage,
+        enabled: true,
+        color: "#3b82f6",
+      },
+      {
+        id: "manage_rsvp",
+        label: "Manage RSVP",
+        icon: Users,
+        tone: "neutral",
+        placement: "more",
+        priority: 4,
+        visible: canManage,
+        enabled: true,
+        color: "#8b5cf6",
+      },
+      {
+        id: "reschedule_meeting",
+        label: "Reschedule",
+        icon: Clock,
+        tone: "warning",
+        placement: "more",
+        priority: 5,
+        visible: hasRole(roles, "organizer", "host"),
+        enabled: true,
+        requiresReason: true,
+        reasonLabel: "Reason for rescheduling",
+        color: "#f59e0b",
+      },
+      {
+        id: "cancel",
+        label: "Cancel Meeting",
+        icon: XCircle,
+        tone: "danger",
+        placement: "more",
+        priority: 9,
+        visible: hasRole(roles, "organizer", "host"),
+        enabled: true,
+        requiresConfirmation: true,
+        confirmMessage: "Cancel this meeting? All participants will be notified.",
+        requiresReason: true,
+        reasonLabel: "Reason for cancellation",
+        color: "#ef4444",
+      },
+    ];
+  }
+
+  // ── Published / Ready to Start ───────────────────────────────────────────
+  if (status === "Published" || status === "Ready to Start") {
     const isHost = hasRole(roles, "host", "organizer");
     const isParticipant = hasRole(roles, "participant", "secretary");
     return [

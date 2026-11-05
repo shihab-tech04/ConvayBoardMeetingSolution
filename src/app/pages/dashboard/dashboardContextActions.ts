@@ -47,6 +47,7 @@ export function resolveDashboardMeetingDestination(
       return { kind: "route", path: "/meetings/meeting-overview", label: "Review meeting approval" };
     case "continue_setup":
     case "submit_for_approval":
+    case "schedule_meeting":
     case "publish":
     case "publish_meeting":
     case "edit":
