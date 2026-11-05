@@ -16,6 +16,7 @@ import type {
   GovernanceBody, QuorumRule,
 } from "../../data/boardMeetingData";
 import type { BmsUser } from "../../data/bmsUsers";
+import { meetingAccessBlockers } from "../../pages/return-register/meetingAccess";
 
 // ── Props ──────────────────────────────────────────────────────────────────────
 
@@ -266,8 +267,6 @@ export function MeetingReviewPanel({
   // ── Scheduling blockers ────────────────────────────────────────────────────
   const blockers = useMemo((): Blocker[] => {
     const out: Blocker[] = [];
-    const mode = v(values, "mode");
-
     if (!v(values, "meeting_title"))  out.push({ label: "Meeting title is required",               step: 0 });
     if (!v(values, "committee"))      out.push({ label: "Governance body is required",              step: 0 });
     if (!v(values, "meeting_date"))   out.push({ label: "Meeting date is required",                 step: 0 });
@@ -315,10 +314,7 @@ export function MeetingReviewPanel({
     if (agendaEntries.length > 0 && agendaStats.allApproved && !agendaStats.allMeetingReady)
       out.push({ label: "All selected agendas must be Meeting Ready before scheduling", step: 2 });
 
-    if (mode === "Physical" && !v(values, "venue"))
-      out.push({ label: "Physical meeting requires a venue",                     step: 3 });
-    if ((mode === "Virtual" || mode === "Hybrid") && !v(values, "virtual_link"))
-      out.push({ label: `${mode} meeting requires a virtual meeting link`,       step: 3 });
+    meetingAccessBlockers(values).forEach(label => out.push({ label, step: 3 }));
 
     if (!quorumStats.configured)
       out.push({ label: "Quorum rules must be configured",                       step: 3 });
