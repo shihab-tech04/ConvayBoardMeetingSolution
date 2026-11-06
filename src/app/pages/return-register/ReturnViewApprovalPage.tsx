@@ -7,6 +7,8 @@ import { ROW_VIEW, MEETING_FULL_ACTIONS } from "../../data/modulePageConfigs";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { useMeetingRegistry } from "../../data/boardMeetingData";
 import { MeetingContextualModals } from "../meetings/MeetingContextualModals";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { toast } from "sonner";
 
 export function ReturnViewApprovalPage() {
   const navigate = useNavigate();
@@ -38,8 +40,19 @@ export function ReturnViewApprovalPage() {
     setCtxAction(null);
   }, []);
 
-  const handleMeetingUpdate = useCallback((id: string, values: Record<string, unknown>) => {
-    registry.update(id, values as never);
+  const handleMeetingUpdate = useCallback(async (id: string, values: Record<string, unknown>) => {
+    const saved = await convayAuth.rescheduleMeeting(id, {
+      meeting_date: String(values.meeting_date ?? ""),
+      start_time: String(values.start_time ?? ""),
+      end_time: String(values.end_time ?? ""),
+      reason: String(values.reschedule_reason ?? ""),
+    });
+    try {
+      await registry.refresh?.();
+    } catch {
+      toast.warning("The meeting was rescheduled, but the register could not refresh. Reload the page to see the saved schedule.");
+    }
+    return saved;
   }, [registry]);
 
   const rows: TableRow[] = registry.items.map(m => ({

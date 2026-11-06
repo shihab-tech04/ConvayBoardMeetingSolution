@@ -4,7 +4,7 @@
  * Consumed by OnlineReturnRegisterPage via cfg.onCustomAction.
  * Each modal reads from its own registry; none require navigation.
  */
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import {
   Users, UserPlus, UserCheck, RefreshCw, AlertTriangle,
   Calendar, Clock, BarChart2, ListChecks, FileText, Package, Upload,
@@ -530,37 +530,82 @@ export function CreateAvailabilityPollModal({ meeting, onClose }: { meeting: Tab
 
 // ─── 8. Reschedule Meeting ────────────────────────────────────────────────────
 
-export function RescheduleMeetingModal({ meeting, onClose, onUpdate }: { meeting: TableRow; onClose: () => void; onUpdate: (id: string, values: Record<string, unknown>) => void }) {
+export function RescheduleMeetingModal({ meeting, onClose, onUpdate }: { meeting: TableRow; onClose: () => void; onUpdate: (id: string, values: Record<string, unknown>) => Promise<Record<string, unknown>> }) {
   const [date, setDate] = useState(String(meeting.meeting_date ?? ""));
-  const [start, setStart] = useState(String(meeting.start_time ?? ""));
-  const [end, setEnd] = useState(String(meeting.end_time ?? ""));
+  const [start, setStart] = useState(String(meeting.start_time ?? "").slice(0, 5));
+  const [end, setEnd] = useState(String(meeting.end_time ?? "").slice(0, 5));
   const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const savingRef = useRef(false);
 
-  const handleSave = useCallback(() => {
-    if (!date) { toast.error("New date is required."); return; }
-    const id = String(meeting.id ?? meeting.meeting_id ?? "");
-    onUpdate(id, { meeting_date: date, start_time: start, end_time: end });
-    toast.success("Meeting rescheduled.");
-    onClose();
-  }, [date, start, end, meeting, onUpdate, onClose]);
+  const handleSave = useCallback(async () => {
+    if (savingRef.current) return;
+    const cleanReason = reason.trim();
+    if (!date || !start || !end) {
+      setError("New date, start time and end time are required.");
+      return;
+    }
+    if (start >= end) {
+      setError("End time must be later than start time.");
+      return;
+    }
+    if (cleanReason.length < 5) {
+      setError("Please provide a reason of at least 5 characters.");
+      return;
+    }
+    if (date === String(meeting.meeting_date ?? "") &&
+        start === String(meeting.start_time ?? "").slice(0, 5) &&
+        end === String(meeting.end_time ?? "").slice(0, 5)) {
+      setError("Choose a new date or time before rescheduling.");
+      return;
+    }
+    const id = String(meeting.meeting_id ?? meeting.id ?? "").trim();
+    if (!id) {
+      setError("A meeting ID is required.");
+      return;
+    }
+
+    savingRef.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      await onUpdate(id, {
+        meeting_date: date,
+        start_time: start,
+        end_time: end,
+        reschedule_reason: cleanReason,
+      });
+      toast.success("Meeting rescheduled.");
+      onClose();
+    } catch (saveError) {
+      const message = saveError instanceof Error ? saveError.message : "The meeting could not be rescheduled.";
+      setError(message);
+      toast.error(message);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }, [date, start, end, reason, meeting, onUpdate, onClose]);
 
   return (
-    <AppModal open onClose={onClose} title="Reschedule Meeting" icon={<Clock size={16} />} size="sm"
+    <AppModal open onClose={saving ? () => undefined : onClose} title="Reschedule Meeting" icon={<Clock size={16} />} size="sm"
       footer={
         <>
-          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
-          <PrimaryButton onClick={handleSave}>Reschedule</PrimaryButton>
+          <SecondaryButton onClick={onClose} disabled={saving}>Cancel</SecondaryButton>
+          <PrimaryButton onClick={() => void handleSave()} disabled={saving}>{saving ? "Saving…" : "Reschedule"}</PrimaryButton>
         </>
       }>
       <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-        <Field label="New Date *"><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+        <Field label="New Date *"><Input aria-label="New Date" type="date" required disabled={saving} value={date} onChange={e => setDate(e.target.value)} /></Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-          <Field label="Start Time"><Input type="time" value={start} onChange={e => setStart(e.target.value)} /></Field>
-          <Field label="End Time"><Input type="time" value={end} onChange={e => setEnd(e.target.value)} /></Field>
+          <Field label="Start Time *"><Input aria-label="Start Time" type="time" required disabled={saving} value={start} onChange={e => setStart(e.target.value)} /></Field>
+          <Field label="End Time *"><Input aria-label="End Time" type="time" required disabled={saving} value={end} onChange={e => setEnd(e.target.value)} /></Field>
         </div>
-        <Field label="Reason for Rescheduling">
-          <Textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Optional — provide reason for audit trail" rows={2} />
+        <Field label="Reason for Rescheduling *">
+          <Textarea aria-label="Reason for Rescheduling" required disabled={saving} minLength={5} value={reason} onChange={e => setReason(e.target.value)} placeholder="Enter the reason for the audit trail" rows={2} />
         </Field>
+        {error && <p role="alert" style={{ color: "var(--color-danger, #dc2626)", fontSize: "0.813rem", margin: 0 }}>{error}</p>}
       </div>
     </AppModal>
   );
@@ -1092,7 +1137,7 @@ interface MeetingContextualModalsProps {
   meeting: TableRow | null;
   actionId: string | null;
   onClose: () => void;
-  onMeetingUpdate: (id: string, values: Record<string, unknown>) => void;
+  onMeetingUpdate: (id: string, values: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 export function MeetingContextualModals({ meeting, actionId, onClose, onMeetingUpdate }: MeetingContextualModalsProps) {
