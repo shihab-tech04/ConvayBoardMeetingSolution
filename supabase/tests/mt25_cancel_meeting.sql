@@ -285,4 +285,4 @@ end
 $test$;
 
 rollback;
-select 'PASS: MT-25 cancellation state matrix, server persistence, audit, duplicate, reason, leadership and permission checks' as mt25_cancel_meeting_result;
+select 'PASS: MT-25 state matrix, server persistence, audit, duplicate/input/permission checks and leadership predicate' as mt25_cancel_meeting_result;
