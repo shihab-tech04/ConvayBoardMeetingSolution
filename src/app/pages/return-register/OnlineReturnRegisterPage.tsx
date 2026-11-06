@@ -310,8 +310,9 @@ export function OnlineReturnRegisterPage() {
       return;
     }
     if (actionId === "cancel") {
-      const saved = await registry.update(mid, { approval_status: "Cancelled" } as never);
-      if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting cancelled.");
+      // Cancellation must use GenPage's existing confirmation + reason modal.
+      // Never allow a direct, unconfirmed status update through this callback.
+      toast.error("Cancel the meeting using the confirmation in Meeting Details.");
       return;
     }
     if (actionId === "archive") {
@@ -739,6 +740,26 @@ export function OnlineReturnRegisterPage() {
       }
       return revised.approval_status === "Revision Requested" &&
         revised.revision_instructions === instructions.trim();
+    },
+
+    cancelPermission: "mtg_cancel",
+    onCancelRecord: async (id, reason) => {
+      const meeting = registry.items.find(m => m.id === id || m.meeting_id === id);
+      const currentStatus = String(meeting?.approval_status ?? "").trim();
+      if (!["Scheduled", "Published", "Ready to Start"].includes(currentStatus)) {
+        throw new Error("This meeting is no longer cancellable. Refresh to view its latest status.");
+      }
+      const confirmed = await registry.update(id, {
+        approval_status: "Cancelled",
+        cancellation_reason: reason.trim(),
+      } as never);
+      if (confirmed !== true) return false;
+      try {
+        await registry.refresh?.();
+      } catch {
+        toast.warning("Cancellation was saved, but the meeting register could not refresh. Reload to view the latest status.");
+      }
+      return true;
     },
 
     // ── Save Draft: upserts a meeting record with status "Draft" ─────────────────

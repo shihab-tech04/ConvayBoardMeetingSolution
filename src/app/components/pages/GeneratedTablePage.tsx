@@ -304,6 +304,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const revisionInFlight = useRef(false);
   const [cancelRow, setCancelRow] = useState<TableRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [cancelSaving, setCancelSaving] = useState(false);
+  const cancelInFlight = useRef(false);
   const [cancelError, setCancelError] = useState("");
   const [postponeRow, setPostponeRow] = useState<TableRow | null>(null);
   const [postponeReason, setPostponeReason] = useState("");
@@ -781,6 +783,46 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
     }
   }, [revisionRow, revisionInstructions, cfg, revisionBlockedReason, requestRevisionStatusField]);
 
+  const handleCancelSubmit = useCallback(async () => {
+    if (cancelInFlight.current || !cancelRow) return;
+    const reason = cancelReason.trim();
+    if (reason.length < 5) {
+      setCancelError("Please provide a reason (at least 5 characters)");
+      return;
+    }
+    const id = String(cancelRow.id ?? cancelRow.meeting_id ?? "").trim();
+    if (!id) {
+      setCancelError("This meeting has no ID. Refresh and try again.");
+      return;
+    }
+    if (!cfg.onCancelRecord || !cfg.cancelPermission) {
+      setCancelError("Meeting cancellation is not connected to a verified SQL operation.");
+      return;
+    }
+    if (!hasAccess(cfg.cancelPermission, readAccessSnapshot())) {
+      setCancelError("You do not have permission to cancel this meeting.");
+      return;
+    }
+    cancelInFlight.current = true;
+    setCancelSaving(true);
+    setCancelError("");
+    try {
+      const saved = await cfg.onCancelRecord(id, reason);
+      if (saved !== true) throw new Error("Cancellation was not confirmed by Supabase.");
+      setRows(prev => prev.map(row => String(row.id ?? "") === id
+        ? { ...row, approval_status: "Cancelled", status: "Cancelled", cancellation_reason: reason }
+        : row));
+      setCancelRow(null);
+      setCancelReason("");
+      toast.success("Meeting cancelled.");
+    } catch (error) {
+      setCancelError(error instanceof Error ? error.message : "Unable to cancel meeting. Please retry.");
+    } finally {
+      cancelInFlight.current = false;
+      setCancelSaving(false);
+    }
+  }, [cancelRow, cancelReason, cfg]);
+
   const handleDrawerEdit = useCallback(() => {
     if (!drawer) return;
     setDrawer(null);
@@ -1010,7 +1052,9 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
               const revisionDisabledReason = usesSharedRevisionFlow ? revisionBlockedReason : null;
               const handleClick = () => {
                 // These action IDs always use GenPage's internal modal state
-                if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id) || usesSharedApprovalFlow || usesSharedRejectionFlow || usesSharedRevisionFlow) {
+                if (["edit", "continue_setup", "create_next_meeting", "post_meeting_review"].includes(action.id) ||
+                    (action.id === "cancel" && Boolean(cfg.onCancelRecord)) ||
+                    usesSharedApprovalFlow || usesSharedRejectionFlow || usesSharedRevisionFlow) {
                   handleActionClick(action.id, drawer!);
                 } else if (cfg.onCustomAction) {
                   cfg.onCustomAction(action.id, drawer!);
@@ -1238,22 +1282,14 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         open={cancelRow !== null}
         title={`Cancel ${entityName}`}
         size="sm"
-        onClose={() => setCancelRow(null)}
+        onClose={() => { if (!cancelSaving) setCancelRow(null); }}
         footer={
           <>
-            <SecondaryButton style={{ marginRight: "auto" }} onClick={() => setCancelRow(null)}>
+            <SecondaryButton style={{ marginRight: "auto" }} disabled={cancelSaving} onClick={() => setCancelRow(null)}>
               Close
             </SecondaryButton>
-            <SecondaryButton onClick={() => {
-              if (cancelReason.trim().length < 5) {
-                setCancelError("Please provide a reason (at least 5 characters)");
-                return;
-              }
-              setRows(prev => prev.map(r => r === cancelRow ? { ...r, approval_status: "Cancelled", status: "Cancelled" } : r));
-              setCancelRow(null);
-              toast.success(`${entityName} cancelled.`);
-            }} style={{ background: "var(--color-error, #ef4444)", color: "#fff", border: "none" }}>
-              Confirm Cancellation
+            <SecondaryButton disabled={cancelSaving} onClick={() => { void handleCancelSubmit(); }} style={{ background: "var(--color-error, #ef4444)", color: "#fff", border: "none" }}>
+              {cancelSaving ? "Cancelling..." : "Confirm Cancellation"}
             </SecondaryButton>
           </>
         }
@@ -1266,6 +1302,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
             id="cancel-reason"
             label="Cancellation Reason *"
             value={cancelReason}
+            disabled={cancelSaving}
             onChange={v => { setCancelReason(v); if (v.trim().length >= 5) setCancelError(""); }}
             rows={3}
             error={cancelError}
