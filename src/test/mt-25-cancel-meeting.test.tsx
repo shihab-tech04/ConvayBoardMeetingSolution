@@ -176,11 +176,11 @@ describe("MT-25 controlled cancellation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm Cancellation" }));
     expect(save).toHaveBeenCalledOnce();
     expect(save).toHaveBeenCalledWith("MTG-MT25", "Meeting date changed.");
-    expect(screen.getByRole("dialog", { name: "Cancel Meetings" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Cancel Meeting" })).toBeInTheDocument();
     expect(state.toast.success).not.toHaveBeenCalled();
 
     confirmWrite(true);
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Cancel Meetings" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Cancel Meeting" })).not.toBeInTheDocument());
     expect(state.toast.success).toHaveBeenCalledWith("Meeting cancelled.");
   });
 
