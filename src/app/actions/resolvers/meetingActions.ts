@@ -30,12 +30,17 @@ function deriveMeetingRoles(record: Record<string, unknown>, ctx: ActionContext)
     roles.push("host");
   }
 
-  // Secretary — match by user_id first, then display name, then designation fallback
-  if ((str(record.secretary_user_id) && str(record.secretary_user_id) === userId) ||
-      (!str(record.secretary_user_id) && str(record.secretary) === name) ||
-      (designation.includes("meeting secretary") || designation.includes("board secretary") || designation.includes("company secretary"))) {
-    if (!roles.includes("secretary")) roles.push("secretary");
-  }
+  // Secretary — an explicit assignment takes precedence over a broad job title.
+  const secretaryId = str(record.secretary_user_id).trim();
+  const secretaryName = str(record.secretary).trim();
+  const hasSecretaryDesignation = designation.includes("meeting secretary") ||
+    designation.includes("board secretary") || designation.includes("company secretary");
+  const isAssignedSecretary = secretaryId
+    ? secretaryId === userId
+    : secretaryName
+      ? secretaryName === name.trim()
+      : hasSecretaryDesignation;
+  if (isAssignedSecretary && !roles.includes("secretary")) roles.push("secretary");
 
   // Organizer — user_id, name, or employee-id on created_by
   if ((str(record.organizer_user_id) && str(record.organizer_user_id) === userId) ||
@@ -44,13 +49,23 @@ function deriveMeetingRoles(record: Record<string, unknown>, ctx: ActionContext)
     roles.push("organizer");
   }
 
-  // Participant — from merged relationship list (includes both legacy participants and participant links)
+  // Participant — prefer canonical user IDs; only use a legacy display-name row
+  // when it does not conflict with a user-linked invitation for the same name.
   const participants = ctx.relationships?.participants ?? [];
   const meetingId = str(record.meeting_id || record.id);
-  if (participants.some(p =>
-    p.meeting_id === meetingId &&
-    ((p.user_id && p.user_id === userId) || (!p.user_id && p.person_name === name))
-  )) {
+  const meetingParticipants = participants.filter(p => p.meeting_id === meetingId);
+  const normalizedName = name.trim().toLocaleLowerCase("en-US");
+  const hasCanonicalParticipantLink = Boolean(userId) && meetingParticipants.some(p =>
+    str(p.user_id).trim() === userId
+  );
+  const hasConflictingCanonicalName = Boolean(normalizedName) && meetingParticipants.some(p =>
+    Boolean(str(p.user_id).trim()) && str(p.user_id).trim() !== userId &&
+    str(p.person_name).trim().toLocaleLowerCase("en-US") === normalizedName
+  );
+  const hasLegacyParticipantName = Boolean(normalizedName) && meetingParticipants.some(p =>
+    !str(p.user_id).trim() && str(p.person_name).trim().toLocaleLowerCase("en-US") === normalizedName
+  );
+  if (hasCanonicalParticipantLink || (hasLegacyParticipantName && !hasConflictingCanonicalName)) {
     roles.push("participant");
   }
 
@@ -333,7 +348,11 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
         enabled: window,
         disabledReason: window
           ? undefined
-          : `The meeting begins at ${startLabel}. Join will be available 15 minutes before start.`,
+          : startWindow === "too-early"
+            ? `The meeting begins at ${startLabel}. Join will be available 15 minutes before start.`
+            : startWindow === "closed"
+              ? `The join window for ${startLabel} ended 2 hours after the scheduled time.`
+              : "A valid saved meeting date, time, and time zone are required before joining.",
         color: "#3b82f6",
       },
       {
