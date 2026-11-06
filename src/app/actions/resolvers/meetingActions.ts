@@ -25,20 +25,20 @@ function deriveMeetingRoles(record: Record<string, unknown>, ctx: ActionContext)
 
   // Host / Chairperson — match by user_id first, then display name
   if ((str(record.chairperson_user_id) && str(record.chairperson_user_id) === userId) ||
-      str(record.chairperson) === name) {
+      (!str(record.chairperson_user_id) && str(record.chairperson) === name)) {
     roles.push("host");
   }
 
   // Secretary — match by user_id first, then display name, then designation fallback
   if ((str(record.secretary_user_id) && str(record.secretary_user_id) === userId) ||
-      str(record.secretary) === name ||
+      (!str(record.secretary_user_id) && str(record.secretary) === name) ||
       (designation.includes("meeting secretary") || designation.includes("board secretary") || designation.includes("company secretary"))) {
     if (!roles.includes("secretary")) roles.push("secretary");
   }
 
   // Organizer — user_id, name, or employee-id on created_by
   if ((str(record.organizer_user_id) && str(record.organizer_user_id) === userId) ||
-      str(record.organizer) === name ||
+      (!str(record.organizer_user_id) && str(record.organizer) === name) ||
       str(record.created_by) === empId) {
     roles.push("organizer");
   }
@@ -48,7 +48,7 @@ function deriveMeetingRoles(record: Record<string, unknown>, ctx: ActionContext)
   const meetingId = str(record.meeting_id || record.id);
   if (participants.some(p =>
     p.meeting_id === meetingId &&
-    ((p.user_id && p.user_id === userId) || p.person_name === name)
+    ((p.user_id && p.user_id === userId) || (!p.user_id && p.person_name === name))
   )) {
     roles.push("participant");
   }
@@ -95,7 +95,7 @@ function meetingStartLabel(record: Record<string, unknown>): string {
 // ── Main resolver ─────────────────────────────────────────────────────────────
 
 export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
-  const status = str(ctx.record.approval_status || ctx.record.status);
+  const status = str(ctx.record.approval_status || ctx.record.status).trim();
   const roles = deriveMeetingRoles(ctx.record, ctx);
   const now = ctx.now;
   const window = withinEntryWindow(ctx.record, now);
@@ -409,7 +409,7 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
         tone: "primary",
         placement: "direct",
         priority: 1,
-        visible: !isHost,
+        visible: !isHost && hasRole(roles, "participant", "secretary"),
         enabled: true,
         color: "#3b82f6",
       },
@@ -460,7 +460,7 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
         tone: "primary",
         placement: "direct",
         priority: 1,
-        visible: !isHost,
+        visible: !isHost && hasRole(roles, "participant", "secretary"),
         enabled: true,
         color: "#3b82f6",
       },
@@ -489,7 +489,7 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
         tone: "primary",
         placement: "direct",
         priority: 1,
-        visible: !isHost,
+        visible: !isHost && hasRole(roles, "participant", "secretary"),
         enabled: true,
         color: "#3b82f6",
       },
@@ -656,53 +656,46 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
     ];
   }
 
-  // ── Fallback: unknown status ──────────────────────────────────────────────
-  return [
-    {
-      id: "view",
-      label: "View Details",
-      icon: Eye,
-      tone: "neutral",
-      placement: "direct",
-      priority: 1,
-      visible: true,
-      enabled: true,
-      color: "#6b7280",
-    },
-    {
-      id: "edit",
-      label: "Edit",
-      icon: Pencil,
-      tone: "neutral",
-      placement: "more",
-      priority: 2,
-      visible: hasRole(roles, "organizer", "host", "secretary", "approver"),
-      enabled: true,
-      color: "#3b82f6",
-    },
-    {
-      id: "cancel",
-      label: "Cancel",
-      icon: XCircle,
-      tone: "danger",
-      placement: "more",
-      priority: 9,
-      visible: hasRole(roles, "organizer", "host"),
-      enabled: true,
-      requiresConfirmation: true,
-      confirmMessage: "Cancel this meeting?",
-      color: "#ef4444",
-    },
-    {
-      id: "resolve_readiness",
-      label: "Resolve Readiness Issues",
-      icon: AlertTriangle,
-      tone: "warning",
-      placement: "more",
-      priority: 5,
-      visible: hasRole(roles, "organizer", "host", "secretary"),
-      enabled: true,
-      color: "#f59e0b",
-    },
-  ];
+  // Requested changes remain editable by their owning meeting leadership; a
+  // rejected meeting or an unrecognized state must never inherit destructive
+  // actions from an open-ended fallback.
+  if (status === "Revision Requested") {
+    return [
+      {
+        id: "edit",
+        label: "Edit Meeting",
+        icon: Pencil,
+        tone: "neutral",
+        placement: "direct",
+        priority: 1,
+        visible: hasRole(roles, "organizer", "host", "secretary"),
+        enabled: true,
+        color: "#3b82f6",
+      },
+      {
+        id: "view_record",
+        label: "View Meeting Record",
+        icon: FileText,
+        tone: "neutral",
+        placement: "more",
+        priority: 2,
+        visible: true,
+        enabled: true,
+        color: "#6b7280",
+      },
+    ];
+  }
+
+  // ── Fallback: read-only for Rejected, Postponed or unknown states ─────────
+  return [{
+    id: "view_record",
+    label: "View Meeting Record",
+    icon: FileText,
+    tone: "neutral",
+    placement: "direct",
+    priority: 1,
+    visible: true,
+    enabled: true,
+    color: "#6b7280",
+  }];
 }

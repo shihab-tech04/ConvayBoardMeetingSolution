@@ -119,6 +119,10 @@ export interface PageCfg {
   requestRevisionPermission?: string;
   /** Status field shown by this page after a revision request; defaults to approval_status. */
   requestRevisionStatusField?: string;
+  /** Persist a validated cancellation reason before the UI reports success. */
+  onCancelRecord?: (id: string, reason: string) => boolean | Promise<boolean>;
+  /** SQL-backed permission required to cancel a record. */
+  cancelPermission?: string;
   /** Override the primary submit button label on the last wizard step (default "Save"). */
   lastStepSubmitLabel?: string;
   /** When set, shows a "Save Draft" secondary button on every wizard step.
