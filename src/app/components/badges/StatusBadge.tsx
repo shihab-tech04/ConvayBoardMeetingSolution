@@ -16,7 +16,7 @@ const WARNING_STATUSES = new Set([
   "adjourned", "under review", "misfiled", "out of jurisdiction",
   "under preparation", "pending approval", "revision requested",
   "scheduled", "invitation sent", "paused", "awaiting minutes", "awaiting closure",
-  "postponed", "implementing", "partially implemented", "deferred",
+  "postponed", "rescheduled", "implementing", "partially implemented", "deferred",
   "assigned", "acknowledged", "open",
 ]);
 const SECONDARY_STATUSES = new Set(["waived", "archived", "superseded"]);
@@ -37,7 +37,7 @@ const STATUS_LABELS: Record<string, string> = {
   "pending approval": "Pending Approval", "revision requested": "Revision Requested",
   "published": "Published", "scheduled": "Scheduled", "invitation sent": "Invitation Sent",
   "paused": "Paused", "awaiting minutes": "Awaiting Minutes", "awaiting closure": "Awaiting Closure",
-  "postponed": "Postponed", "archived": "Archived", "signed": "Signed",
+  "postponed": "Postponed", "rescheduled": "Rescheduled", "archived": "Archived", "signed": "Signed",
   "implementing": "Implementing", "partially implemented": "Partially Implemented",
   "implemented": "Implemented", "superseded": "Superseded", "assigned": "Assigned",
   "acknowledged": "Acknowledged", "blocked": "Blocked", "deferred": "Deferred",

@@ -99,6 +99,7 @@ const direct: Record<string, string> = {
   "meetings/all-meetings": "mtg_view",
   "meetings/meeting-overview": "mtg_view",
   "meetings/meeting-calendar": "mtg_view",
+  "meetings/quick-meeting": "mtg_create",
   "agenda-documents/agenda-management": "agd_view",
   "agenda-documents/document-library": "doc_view",
   "agenda-documents/board-packs": "agd_view",
@@ -148,6 +149,7 @@ const direct: Record<string, string> = {
 export function permissionForPath(path: string): string | null {
   const clean = path.replace(/^\/+|\/+$/g, "");
   if (direct[clean]) return direct[clean];
+  if (/^meetings\/quick-meeting\/[^/]+$/.test(clean)) return "mtg_create";
   if (/^meetings\/[^/]+\/(live|record)$/.test(clean))
     return clean.endsWith("/live") ? "mtg_join" : "mtg_view";
   if (/^agenda-documents\/document-library\/[^/]+\/editor$/.test(clean))

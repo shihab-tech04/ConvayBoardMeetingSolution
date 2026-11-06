@@ -3,8 +3,10 @@
  * Uses the project's public publishable key; never stores a service-role key.
  * Auth credentials and password verification are handled by Supabase Auth.
  */
-const SUPABASE_URL = "https://cnrueblhgvdonplirlhv.supabase.co";
-const API_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_6ojMU_R8I-sLQQFR64RTQw_p8qZasMm";
+export const CONVAY_SUPABASE_URL = "https://cnrueblhgvdonplirlhv.supabase.co";
+export const CONVAY_SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_6ojMU_R8I-sLQQFR64RTQw_p8qZasMm";
+const SUPABASE_URL = CONVAY_SUPABASE_URL;
+const API_KEY = CONVAY_SUPABASE_PUBLISHABLE_KEY;
 const SESSION_KEY = "convay.supabase.session.v1";
 
 export interface ConvayProfile {
@@ -330,6 +332,52 @@ export const convayAuth = {
       throw new Error("Supabase did not confirm the meeting publication.");
     }
     return published;
+  },
+
+  /** Reschedule a meeting through the permission-checked, audited SQL operation. */
+  async rescheduleMeeting(
+    recordId: string,
+    schedule: { meeting_date: string; start_time: string; end_time: string; reason: string },
+  ): Promise<Record<string, unknown>> {
+    const id = recordId.trim();
+    const reason = schedule.reason.trim();
+    if (!id) throw new Error("A meeting ID is required");
+    if (!schedule.meeting_date || !schedule.start_time || !schedule.end_time) {
+      throw new Error("A new date, start time and end time are required");
+    }
+    if (schedule.start_time >= schedule.end_time) {
+      throw new Error("Meeting end time must be later than start time");
+    }
+    if (reason.length < 5) {
+      throw new Error("Please provide a rescheduling reason (at least 5 characters)");
+    }
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_reschedule_meeting", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_record_id: id,
+        p_new_meeting_date: schedule.meeting_date,
+        p_new_start_time: schedule.start_time,
+        p_new_end_time: schedule.end_time,
+        p_reschedule_reason: reason,
+      }),
+    });
+    const rescheduled = await res.json() as Record<string, unknown>;
+    if (
+      rescheduled.id !== id ||
+      rescheduled.approval_status !== "Rescheduled" ||
+      rescheduled.status !== "Rescheduled" ||
+      rescheduled.meeting_date !== schedule.meeting_date ||
+      String(rescheduled.start_time ?? "").slice(0, 5) !== schedule.start_time ||
+      String(rescheduled.end_time ?? "").slice(0, 5) !== schedule.end_time ||
+      rescheduled.reschedule_reason !== reason ||
+      typeof rescheduled.rescheduled_by !== "string" ||
+      typeof rescheduled.rescheduled_at !== "string" ||
+      !Array.isArray(rescheduled.reschedule_history)
+    ) {
+      throw new Error("Supabase did not confirm the meeting reschedule.");
+    }
+    return rescheduled;
   },
 
   /** Return a pending meeting for revision through the narrowly scoped SQL operation. */

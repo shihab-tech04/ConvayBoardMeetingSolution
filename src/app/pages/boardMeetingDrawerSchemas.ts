@@ -27,6 +27,9 @@ export const MEETING_DRAWER_COLS: ColDef[] = [
     { key: "rejection_reason", label: "Rejection Reason" },
     { key: "rejected_by", label: "Rejected By" },
     { key: "rejected_at", label: "Rejected At" },
+    { key: "reschedule_reason", label: "Rescheduling Reason" },
+    { key: "rescheduled_by", label: "Rescheduled By" },
+    { key: "rescheduled_at", label: "Rescheduled At" },
   ]),
   dg("Leadership", [
     { key: "chairperson",  label: "Chairperson" },

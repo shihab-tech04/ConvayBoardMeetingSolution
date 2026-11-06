@@ -336,8 +336,19 @@ export function OnlineReturnRegisterPage() {
     setCtxAction(null);
   }, []);
 
-  const handleMeetingUpdate = useCallback((id: string, values: Record<string, unknown>) => {
-    registry.update(id, values as never);
+  const handleMeetingUpdate = useCallback(async (id: string, values: Record<string, unknown>) => {
+    const saved = await convayAuth.rescheduleMeeting(id, {
+      meeting_date: String(values.meeting_date ?? ""),
+      start_time: String(values.start_time ?? ""),
+      end_time: String(values.end_time ?? ""),
+      reason: String(values.reschedule_reason ?? ""),
+    });
+    try {
+      await registry.refresh?.();
+    } catch {
+      toast.warning("The meeting was rescheduled, but the register could not refresh. Reload the page to see the saved schedule.");
+    }
+    return saved;
   }, [registry]);
 
   // ── Dynamic form options ───────────────────────────────────────────────────
@@ -746,7 +757,7 @@ export function OnlineReturnRegisterPage() {
     onCancelRecord: async (id, reason) => {
       const meeting = registry.items.find(m => m.id === id || m.meeting_id === id);
       const currentStatus = String(meeting?.approval_status ?? "").trim();
-      if (!["Scheduled", "Published", "Ready to Start"].includes(currentStatus)) {
+      if (!["Scheduled", "Rescheduled", "Published", "Ready to Start"].includes(currentStatus)) {
         throw new Error("This meeting is no longer cancellable. Refresh to view its latest status.");
       }
       const confirmed = await registry.update(id, {

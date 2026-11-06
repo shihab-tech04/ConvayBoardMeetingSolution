@@ -97,9 +97,12 @@ describe("MT-21 meeting actions by lifecycle state", () => {
     expect(revision).not.toContain("cancel");
     expect(revision).not.toContain("approve");
 
-    for (const status of ["Rejected", "Postponed", "Unknown Status"]) {
+    for (const status of ["Rejected", "Unknown Status"]) {
       expect(ids(context(status))).toEqual(["view_record"]);
     }
+    expect(ids(context("Postponed"))).toContain("reschedule_meeting");
+    expect(ids(context("Postponed", "viewer"))).toEqual(["view_record"]);
+    expect(ids(context("Rescheduled"))).toContain("publish_meeting");
   });
 
   it("requires the SQL permission as well as lifecycle role for dangerous actions", () => {

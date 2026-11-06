@@ -26,7 +26,22 @@ interface Props {
   onMicChange: (on: boolean) => void;
   onCamChange: (on: boolean) => void;
   onSharingChange: (on: boolean) => void;
-  onPresence: (connected: boolean) => void;
+  onPresence: (connected: boolean, identity?: string) => void;
+  requestAdmission?: (meetingId: string) => Promise<Response | {
+    serverUrl?: string;
+    participantToken?: string;
+    error?: string;
+  }>;
+  onParticipants?: (participants: Array<{ identity: string; name: string; isLocal: boolean }>) => void;
+  initialMicDeviceId?: string;
+  initialCameraDeviceId?: string;
+}
+
+function savedMeetingAdmission(meetingId: string) {
+  return convayAuth.authenticatedRequest("/functions/v1/convay-livekit", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ meetingId }),
+  });
 }
 
 function MemberTile({ member, local, refresh }: { member: any; local: boolean; refresh: number }) {
@@ -73,15 +88,18 @@ function MemberTile({ member, local, refresh }: { member: any; local: boolean; r
   </article>;
 }
 
-export function LiveMeetingMedia({ meetingId, micOn, camOn, sharing, onMicChange, onCamChange, onSharingChange, onPresence }: Props) {
+export function LiveMeetingMedia({
+  meetingId, micOn, camOn, sharing, onMicChange, onCamChange, onSharingChange,
+  onPresence, requestAdmission, onParticipants, initialMicDeviceId, initialCameraDeviceId,
+}: Props) {
   const [room, setRoom] = useState<any | null>(null);
   const [status, setStatus] = useState("Connecting");
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const callbacks = useRef({ onPresence, onMicChange, onCamChange, onSharingChange });
-  callbacks.current = { onPresence, onMicChange, onCamChange, onSharingChange };
+  const callbacks = useRef({ onPresence, onMicChange, onCamChange, onSharingChange, requestAdmission, onParticipants });
+  callbacks.current = { onPresence, onMicChange, onCamChange, onSharingChange, requestAdmission, onParticipants };
 
   useEffect(() => {
     let ended = false;
@@ -89,21 +107,35 @@ export function LiveMeetingMedia({ meetingId, micOn, camOn, sharing, onMicChange
     let connected = false;
     setStatus("Connecting");
     setError("");
-    const render = () => setRefresh(n => n + 1);
+    const render = () => {
+      setRefresh(n => n + 1);
+      const members = nextRoom ? [nextRoom.localParticipant, ...nextRoom.remoteParticipants.values()] : [];
+      callbacks.current.onParticipants?.(members.map((member: any) => ({
+        identity: String(member.identity ?? ""),
+        name: String(member.name || member.identity || "Participant"),
+        isLocal: nextRoom.localParticipant === member,
+      })));
+    };
     void (async () => {
       try {
         const sdk = await getSdk();
         if (ended) return;
-        const response = await convayAuth.authenticatedRequest("/functions/v1/convay-livekit", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ meetingId }),
-        });
-        const access = await response.json().catch(() => ({})) as {
+        const admission = await (callbacks.current.requestAdmission ?? savedMeetingAdmission)(meetingId);
+        let responseStatus = 200;
+        let responseOk = true;
+        let access: {
           serverUrl?: string;
           participantToken?: string;
           error?: unknown;
         };
-        if (!response.ok) {
+        if (admission instanceof Response) {
+          responseStatus = admission.status;
+          responseOk = admission.ok;
+          access = await admission.json().catch(() => ({})) as typeof access;
+        } else {
+          access = admission;
+        }
+        if (!responseOk || access.error) {
           const serverError = typeof access.error === "string" ? access.error.trim() : "";
           const statusMessage: Record<number, string> = {
             401: "Sign in to Convay to join this meeting.",
@@ -112,7 +144,7 @@ export function LiveMeetingMedia({ meetingId, micOn, camOn, sharing, onMicChange
             502: "Convay could not verify your meeting access. Try again or contact the organizer.",
             503: "The online meeting service is not yet configured.",
           };
-          throw new Error(serverError || statusMessage[response.status] || "Unable to connect to the online meeting.");
+          throw new Error(serverError || statusMessage[responseStatus] || "Unable to connect to the online meeting.");
         }
         if (typeof access.serverUrl !== "string" || !access.serverUrl
           || typeof access.participantToken !== "string" || !access.participantToken) {
@@ -132,14 +164,14 @@ export function LiveMeetingMedia({ meetingId, micOn, camOn, sharing, onMicChange
         nextRoom.on(sdk.RoomEvent.Reconnected, () => { setStatus("Connected"); render(); });
         nextRoom.on(sdk.RoomEvent.Disconnected, () => {
           setStatus("Disconnected");
-          if (connected) { connected = false; callbacks.current.onPresence(false); }
+          if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom?.localParticipant?.identity); }
         });
         await nextRoom.connect(access.serverUrl, access.participantToken);
         if (ended) { void nextRoom.disconnect(); return; }
         connected = true;
         setRoom(nextRoom);
         setStatus("Connected");
-        callbacks.current.onPresence(true);
+        callbacks.current.onPresence(true, nextRoom.localParticipant.identity);
         render();
       } catch (cause) {
         if (!ended) { setError(cause instanceof Error ? cause.message : "Unable to connect"); setStatus("Disconnected"); }
@@ -149,7 +181,7 @@ export function LiveMeetingMedia({ meetingId, micOn, camOn, sharing, onMicChange
     return () => {
       ended = true;
       if (nextRoom) void nextRoom.disconnect();
-      if (connected) { connected = false; callbacks.current.onPresence(false); }
+      if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom.localParticipant?.identity); }
     };
   }, [meetingId, attempt]);
 
@@ -175,6 +207,19 @@ export function LiveMeetingMedia({ meetingId, micOn, camOn, sharing, onMicChange
     });
   }, [room, sharing]);
   useEffect(() => {
+    if (!room) return;
+    if (initialMicDeviceId) {
+      void room.switchActiveDevice("audioinput", initialMicDeviceId).catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : "Microphone selection failed");
+      });
+    }
+    if (initialCameraDeviceId) {
+      void room.switchActiveDevice("videoinput", initialCameraDeviceId).catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : "Camera selection failed");
+      });
+    }
+  }, [room, initialMicDeviceId, initialCameraDeviceId]);
+  useEffect(() => {
     if (!room || !navigator.mediaDevices?.enumerateDevices) return;
     let active = true;
     const enumerate = () => { void navigator.mediaDevices.enumerateDevices().then(list => {
@@ -195,8 +240,8 @@ export function LiveMeetingMedia({ meetingId, micOn, camOn, sharing, onMicChange
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, fontSize: 12, color: "#cbd5e1" }}>
       <span role="status">{status}</span><span>{status === "Connected" ? members.length : 0} online</span>
       {room && <>
-        <select aria-label="Microphone device" defaultValue="" onChange={e => { void selectDevice("audioinput", e.target.value); }}><option value="">Microphone</option>{devices.filter(d => d.kind === "audioinput").map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || "Microphone device"}</option>)}</select>
-        <select aria-label="Camera device" defaultValue="" onChange={e => { void selectDevice("videoinput", e.target.value); }}><option value="">Camera</option>{devices.filter(d => d.kind === "videoinput").map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || "Camera device"}</option>)}</select>
+        <select aria-label="Microphone device" defaultValue={initialMicDeviceId ?? ""} onChange={e => { void selectDevice("audioinput", e.target.value); }}><option value="">Microphone</option>{devices.filter(d => d.kind === "audioinput").map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || "Microphone device"}</option>)}</select>
+        <select aria-label="Camera device" defaultValue={initialCameraDeviceId ?? ""} onChange={e => { void selectDevice("videoinput", e.target.value); }}><option value="">Camera</option>{devices.filter(d => d.kind === "videoinput").map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || "Camera device"}</option>)}</select>
       </>}
       {status === "Disconnected" && <button type="button" onClick={() => { setRoom(null); setAttempt(n => n + 1); }}>Rejoin</button>}
     </div>

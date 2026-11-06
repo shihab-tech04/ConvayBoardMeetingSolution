@@ -6,6 +6,7 @@ import {
   AlertTriangle, BarChart2,
 } from "lucide-react";
 import type { ResolvedAction, ActionContext, MeetingRole } from "../types";
+import { meetingStartWindowState } from "../../utils/meetingStartWindow";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -29,12 +30,17 @@ function deriveMeetingRoles(record: Record<string, unknown>, ctx: ActionContext)
     roles.push("host");
   }
 
-  // Secretary — match by user_id first, then display name, then designation fallback
-  if ((str(record.secretary_user_id) && str(record.secretary_user_id) === userId) ||
-      (!str(record.secretary_user_id) && str(record.secretary) === name) ||
-      (designation.includes("meeting secretary") || designation.includes("board secretary") || designation.includes("company secretary"))) {
-    if (!roles.includes("secretary")) roles.push("secretary");
-  }
+  // Secretary — an explicit assignment takes precedence over a broad job title.
+  const secretaryId = str(record.secretary_user_id).trim();
+  const secretaryName = str(record.secretary).trim();
+  const hasSecretaryDesignation = designation.includes("meeting secretary") ||
+    designation.includes("board secretary") || designation.includes("company secretary");
+  const isAssignedSecretary = secretaryId
+    ? secretaryId === userId
+    : secretaryName
+      ? secretaryName === name.trim()
+      : hasSecretaryDesignation;
+  if (isAssignedSecretary && !roles.includes("secretary")) roles.push("secretary");
 
   // Organizer — user_id, name, or employee-id on created_by
   if ((str(record.organizer_user_id) && str(record.organizer_user_id) === userId) ||
@@ -43,13 +49,23 @@ function deriveMeetingRoles(record: Record<string, unknown>, ctx: ActionContext)
     roles.push("organizer");
   }
 
-  // Participant — from merged relationship list (includes both legacy participants and participant links)
+  // Participant — prefer canonical user IDs; only use a legacy display-name row
+  // when it does not conflict with a user-linked invitation for the same name.
   const participants = ctx.relationships?.participants ?? [];
   const meetingId = str(record.meeting_id || record.id);
-  if (participants.some(p =>
-    p.meeting_id === meetingId &&
-    ((p.user_id && p.user_id === userId) || (!p.user_id && p.person_name === name))
-  )) {
+  const meetingParticipants = participants.filter(p => p.meeting_id === meetingId);
+  const normalizedName = name.trim().toLocaleLowerCase("en-US");
+  const hasCanonicalParticipantLink = Boolean(userId) && meetingParticipants.some(p =>
+    str(p.user_id).trim() === userId
+  );
+  const hasConflictingCanonicalName = Boolean(normalizedName) && meetingParticipants.some(p =>
+    Boolean(str(p.user_id).trim()) && str(p.user_id).trim() !== userId &&
+    str(p.person_name).trim().toLocaleLowerCase("en-US") === normalizedName
+  );
+  const hasLegacyParticipantName = Boolean(normalizedName) && meetingParticipants.some(p =>
+    !str(p.user_id).trim() && str(p.person_name).trim().toLocaleLowerCase("en-US") === normalizedName
+  );
+  if (hasCanonicalParticipantLink || (hasLegacyParticipantName && !hasConflictingCanonicalName)) {
     roles.push("participant");
   }
 
@@ -71,20 +87,6 @@ function hasRole(roles: MeetingRole[], ...check: MeetingRole[]): boolean {
   return check.some(r => roles.includes(r));
 }
 
-/** True when the meeting date+time is within the start window (≤15 min before, ≤2 hours after). */
-function withinEntryWindow(record: Record<string, unknown>, now: Date): boolean {
-  const dateStr = str(record.meeting_date);
-  const timeStr = str(record.start_time) || "00:00";
-  if (!dateStr) return false;
-  try {
-    const meeting = new Date(`${dateStr}T${timeStr}`);
-    const diffMin = (meeting.getTime() - now.getTime()) / 60_000;
-    return diffMin <= 15 && diffMin >= -120;
-  } catch {
-    return false;
-  }
-}
-
 function meetingStartLabel(record: Record<string, unknown>): string {
   const dateStr = str(record.meeting_date);
   const timeStr = str(record.start_time);
@@ -98,7 +100,8 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
   const status = str(ctx.record.approval_status || ctx.record.status).trim();
   const roles = deriveMeetingRoles(ctx.record, ctx);
   const now = ctx.now;
-  const window = withinEntryWindow(ctx.record, now);
+  const startWindow = meetingStartWindowState(ctx.record, now);
+  const window = startWindow === "available";
   const startLabel = meetingStartLabel(ctx.record);
 
   // ── Draft ─────────────────────────────────────────────────────────────────
@@ -242,7 +245,7 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
   }
 
   // ── Scheduled: publish before participants can start or join ─────────────
-  if (status === "Scheduled") {
+  if (status === "Scheduled" || status === "Rescheduled") {
     const canManage = hasRole(roles, "organizer", "host", "secretary");
     return [
       {
@@ -327,7 +330,11 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
         enabled: window,
         disabledReason: window
           ? undefined
-          : `Meeting is scheduled for ${startLabel}. You can start it up to 15 minutes before.`,
+          : startWindow === "too-early"
+            ? `Meeting is scheduled for ${startLabel}. You can start it up to 15 minutes before.`
+            : startWindow === "closed"
+              ? `The start window for ${startLabel} ended 2 hours after the scheduled time.`
+              : "A valid scheduled date, time, and time zone are required before the meeting can start.",
         color: "#22c55e",
       },
       {
@@ -341,7 +348,11 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
         enabled: window,
         disabledReason: window
           ? undefined
-          : `The meeting begins at ${startLabel}. Join will be available 15 minutes before start.`,
+          : startWindow === "too-early"
+            ? `The meeting begins at ${startLabel}. Join will be available 15 minutes before start.`
+            : startWindow === "closed"
+              ? `The join window for ${startLabel} ended 2 hours after the scheduled time.`
+              : "A valid saved meeting date, time, and time zone are required before joining.",
         color: "#3b82f6",
       },
       {
@@ -686,7 +697,37 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
     ];
   }
 
-  // ── Fallback: read-only for Rejected, Postponed or unknown states ─────────
+  // ── Postponed: assigned meeting leadership can restore a new schedule ─────
+  if (status === "Postponed") {
+    return [
+      {
+        id: "reschedule_meeting",
+        label: "Reschedule Meeting",
+        icon: Clock,
+        tone: "warning",
+        placement: "direct",
+        priority: 1,
+        visible: hasRole(roles, "organizer", "host"),
+        enabled: true,
+        requiresReason: true,
+        reasonLabel: "New date and reason",
+        color: "#f59e0b",
+      },
+      {
+        id: "view_record",
+        label: "View Meeting Record",
+        icon: FileText,
+        tone: "neutral",
+        placement: "more",
+        priority: 2,
+        visible: true,
+        enabled: true,
+        color: "#6b7280",
+      },
+    ];
+  }
+
+  // ── Fallback: read-only for Rejected or unknown states ─────────────────────
   return [{
     id: "view_record",
     label: "View Meeting Record",
