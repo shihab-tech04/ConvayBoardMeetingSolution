@@ -3,8 +3,10 @@
  * Uses the project's public publishable key; never stores a service-role key.
  * Auth credentials and password verification are handled by Supabase Auth.
  */
-const SUPABASE_URL = "https://cnrueblhgvdonplirlhv.supabase.co";
-const API_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_6ojMU_R8I-sLQQFR64RTQw_p8qZasMm";
+export const CONVAY_SUPABASE_URL = "https://cnrueblhgvdonplirlhv.supabase.co";
+export const CONVAY_SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_6ojMU_R8I-sLQQFR64RTQw_p8qZasMm";
+const SUPABASE_URL = CONVAY_SUPABASE_URL;
+const API_KEY = CONVAY_SUPABASE_PUBLISHABLE_KEY;
 const SESSION_KEY = "convay.supabase.session.v1";
 
 export interface ConvayProfile {

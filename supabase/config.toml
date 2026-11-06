@@ -1,0 +1,7 @@
+[functions.convay-livekit]
+verify_jwt = true
+
+[functions.convay-quick-meeting]
+# This endpoint handles both authenticated hosts and anonymous capability-link guests.
+# The function validates host JWTs itself and validates guest links on every action.
+verify_jwt = false
