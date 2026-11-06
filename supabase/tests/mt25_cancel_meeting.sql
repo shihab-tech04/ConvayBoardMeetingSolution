@@ -224,6 +224,7 @@ begin
     raise exception 'An existing second active principal is required for the leadership check';
   end if;
   v_unassigned_id := 'MT25-LEADERSHIP-DENIED-' || gen_random_uuid()::text;
+  perform set_config('request.jwt.claim.sub', v_unassigned::text, true);
   insert into public.convay_entity_records(entity_key, record_id, payload, created_by, updated_by)
   values (
     'bms.meetings',
@@ -237,7 +238,7 @@ begin
       'organizer_user_id', v_unassigned::text
     ),
     v_unassigned,
-    v_leader
+    v_unassigned
   );
 
   perform set_config('request.jwt.claim.sub', v_leader::text, true);
