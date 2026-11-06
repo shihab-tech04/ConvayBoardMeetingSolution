@@ -6,6 +6,7 @@ import {
   AlertTriangle, BarChart2,
 } from "lucide-react";
 import type { ResolvedAction, ActionContext, MeetingRole } from "../types";
+import { meetingStartWindowState } from "../../utils/meetingStartWindow";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -71,20 +72,6 @@ function hasRole(roles: MeetingRole[], ...check: MeetingRole[]): boolean {
   return check.some(r => roles.includes(r));
 }
 
-/** True when the meeting date+time is within the start window (≤15 min before, ≤2 hours after). */
-function withinEntryWindow(record: Record<string, unknown>, now: Date): boolean {
-  const dateStr = str(record.meeting_date);
-  const timeStr = str(record.start_time) || "00:00";
-  if (!dateStr) return false;
-  try {
-    const meeting = new Date(`${dateStr}T${timeStr}`);
-    const diffMin = (meeting.getTime() - now.getTime()) / 60_000;
-    return diffMin <= 15 && diffMin >= -120;
-  } catch {
-    return false;
-  }
-}
-
 function meetingStartLabel(record: Record<string, unknown>): string {
   const dateStr = str(record.meeting_date);
   const timeStr = str(record.start_time);
@@ -98,7 +85,8 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
   const status = str(ctx.record.approval_status || ctx.record.status).trim();
   const roles = deriveMeetingRoles(ctx.record, ctx);
   const now = ctx.now;
-  const window = withinEntryWindow(ctx.record, now);
+  const startWindow = meetingStartWindowState(ctx.record, now);
+  const window = startWindow === "available";
   const startLabel = meetingStartLabel(ctx.record);
 
   // ── Draft ─────────────────────────────────────────────────────────────────
@@ -327,7 +315,11 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
         enabled: window,
         disabledReason: window
           ? undefined
-          : `Meeting is scheduled for ${startLabel}. You can start it up to 15 minutes before.`,
+          : startWindow === "too-early"
+            ? `Meeting is scheduled for ${startLabel}. You can start it up to 15 minutes before.`
+            : startWindow === "closed"
+              ? `The start window for ${startLabel} ended 2 hours after the scheduled time.`
+              : "A valid scheduled date, time, and time zone are required before the meeting can start.",
         color: "#22c55e",
       },
       {
