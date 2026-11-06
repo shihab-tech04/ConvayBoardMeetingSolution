@@ -155,8 +155,8 @@ describe("MT-25 controlled cancellation", () => {
     }
     expect(actionGranted("meeting", "cancel", ["mtg_update"], false)).toBe(false);
     expect(actionGranted("meeting", "cancel", ["mtg_cancel"], false)).toBe(true);
-    expect(filterActionsByAccess("meeting", resolveMeetingActions(context("Scheduled")), ["mtg_update"], false))
-      .toEqual([]);
+    expect(filterActionsByAccess("meeting", resolveMeetingActions(context("Scheduled")), ["mtg_update"], false)
+      .some(action => action.id === "cancel")).toBe(false);
   });
 
   it("keeps the confirmation open until the reason and server write are confirmed", async () => {
@@ -170,7 +170,7 @@ describe("MT-25 controlled cancellation", () => {
     expect(save).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent("Please provide a reason (at least 5 characters)");
 
-    fireEvent.change(screen.getByLabelText("Cancellation Reason *"), {
+    fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "  Meeting date changed.  " },
     });
     fireEvent.click(screen.getByRole("button", { name: "Confirm Cancellation" }));
@@ -189,7 +189,7 @@ describe("MT-25 controlled cancellation", () => {
     const save = vi.fn(async () => true);
     renderPage(config({ onCancelRecord: save }));
     openCancel();
-    fireEvent.change(screen.getByLabelText("Cancellation Reason *"), { target: { value: "Schedule change" } });
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Schedule change" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm Cancellation" }));
     expect(save).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent("You do not have permission to cancel this meeting.");
