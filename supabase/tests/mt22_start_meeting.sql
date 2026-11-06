@@ -55,7 +55,7 @@ begin
     'bms.meetings', v_meeting_id,
     jsonb_build_object(
       'id',v_meeting_id,'meeting_id',v_meeting_id,
-      'approval_status','Published','status','Published',
+      'approval_status','Approved','status','Approved',
       'meeting_date',to_char(v_schedule at time zone 'Asia/Dhaka','YYYY-MM-DD'),
       'start_time',to_char(v_schedule at time zone 'Asia/Dhaka','HH24:MI'),
       'time_zone','Asia/Dhaka (GMT+6)',
@@ -64,6 +64,8 @@ begin
     ),
     v_leader,v_leader
   );
+  perform public.convay_schedule_meeting(v_meeting_id);
+  perform public.convay_publish_meeting(v_meeting_id);
 
   if public.convay_apply_entity_batch(jsonb_build_array(
     jsonb_build_object('entity_key','bms.meetings','action','update','record_id',v_meeting_id,
@@ -148,10 +150,12 @@ begin
   v_schedule := clock_timestamp() + interval '1 hour';
   insert into public.convay_entity_records(entity_key,record_id,payload,created_by,updated_by)
   values ('bms.meetings',v_early_id,
-    jsonb_build_object('id',v_early_id,'meeting_id',v_early_id,'approval_status','Published',
+    jsonb_build_object('id',v_early_id,'meeting_id',v_early_id,'approval_status','Approved',
       'meeting_date',to_char(v_schedule at time zone 'UTC','YYYY-MM-DD'),
       'start_time',to_char(v_schedule at time zone 'UTC','HH24:MI'),'time_zone','UTC',
       'chairperson_user_id',v_leader::text,'organizer_user_id',v_leader::text),v_leader,v_leader);
+  perform public.convay_schedule_meeting(v_early_id);
+  perform public.convay_publish_meeting(v_early_id);
   v_expected_error := false;
   begin
     perform public.convay_apply_entity_batch(jsonb_build_array(
@@ -170,10 +174,12 @@ begin
   v_schedule := clock_timestamp() - interval '3 hours';
   insert into public.convay_entity_records(entity_key,record_id,payload,created_by,updated_by)
   values ('bms.meetings',v_late_id,
-    jsonb_build_object('id',v_late_id,'meeting_id',v_late_id,'approval_status','Published',
+    jsonb_build_object('id',v_late_id,'meeting_id',v_late_id,'approval_status','Approved',
       'meeting_date',to_char(v_schedule at time zone 'UTC','YYYY-MM-DD'),
       'start_time',to_char(v_schedule at time zone 'UTC','HH24:MI'),'time_zone','UTC',
       'chairperson_user_id',v_leader::text,'organizer_user_id',v_leader::text),v_leader,v_leader);
+  perform public.convay_schedule_meeting(v_late_id);
+  perform public.convay_publish_meeting(v_late_id);
   v_expected_error := false;
   begin
     perform public.convay_apply_entity_batch(jsonb_build_array(
@@ -190,13 +196,22 @@ begin
   end if;
 
   -- An authorized Super Admin cannot start a meeting assigned to somebody else.
+  -- Create it under that other real principal so creator fallback cannot grant start.
   v_schedule := clock_timestamp() + interval '5 minutes';
+  perform set_config('request.jwt.claim.sub',v_other_leader::text,true);
   insert into public.convay_entity_records(entity_key,record_id,payload,created_by,updated_by)
   values ('bms.meetings',v_denied_leader_id,
-    jsonb_build_object('id',v_denied_leader_id,'meeting_id',v_denied_leader_id,'approval_status','Published',
+    jsonb_build_object('id',v_denied_leader_id,'meeting_id',v_denied_leader_id,'approval_status','Draft',
       'meeting_date',to_char(v_schedule at time zone 'UTC','YYYY-MM-DD'),
       'start_time',to_char(v_schedule at time zone 'UTC','HH24:MI'),'time_zone','UTC',
-      'chairperson_user_id',v_other_leader::text,'organizer_user_id',v_other_leader::text),null,null);
+      'chairperson_user_id',v_other_leader::text,'organizer_user_id',v_other_leader::text),v_other_leader,v_other_leader);
+  perform set_config('request.jwt.claim.sub',v_leader::text,true);
+  perform public.convay_apply_entity_batch(jsonb_build_array(
+    jsonb_build_object('entity_key','bms.meetings','action','update','record_id',v_denied_leader_id,
+      'payload',jsonb_build_object('approval_status','Approved'))
+  ));
+  perform public.convay_schedule_meeting(v_denied_leader_id);
+  perform public.convay_publish_meeting(v_denied_leader_id);
   v_expected_error := false;
   begin
     perform public.convay_apply_entity_batch(jsonb_build_array(
@@ -225,11 +240,13 @@ begin
     v_schedule := clock_timestamp() + interval '5 minutes';
     insert into public.convay_entity_records(entity_key,record_id,payload,created_by,updated_by)
     values ('bms.meetings',v_denied_permission_id,
-      jsonb_build_object('id',v_denied_permission_id,'meeting_id',v_denied_permission_id,'approval_status','Published',
+      jsonb_build_object('id',v_denied_permission_id,'meeting_id',v_denied_permission_id,'approval_status','Approved',
         'meeting_date',to_char(v_schedule at time zone 'UTC','YYYY-MM-DD'),
         'start_time',to_char(v_schedule at time zone 'UTC','HH24:MI'),'time_zone','UTC',
         'chairperson_user_id',v_permission_denied_user::text,'organizer_user_id',v_permission_denied_user::text),
       v_leader,v_leader);
+    perform public.convay_schedule_meeting(v_denied_permission_id);
+    perform public.convay_publish_meeting(v_denied_permission_id);
     perform set_config('request.jwt.claim.sub',v_permission_denied_user::text,true);
     v_expected_error := false;
     begin
@@ -248,10 +265,12 @@ begin
   v_schedule := clock_timestamp() + interval '5 minutes';
   insert into public.convay_entity_records(entity_key,record_id,payload,created_by,updated_by)
   values ('bms.meetings',v_incomplete_id,
-    jsonb_build_object('id',v_incomplete_id,'meeting_id',v_incomplete_id,'approval_status','Published',
+    jsonb_build_object('id',v_incomplete_id,'meeting_id',v_incomplete_id,'approval_status','Approved',
       'meeting_date',to_char(v_schedule at time zone 'UTC','YYYY-MM-DD'),
       'start_time',to_char(v_schedule at time zone 'UTC','HH24:MI'),'time_zone','UTC',
       'chairperson_user_id',v_leader::text,'organizer_user_id',v_leader::text),v_leader,v_leader);
+  perform public.convay_schedule_meeting(v_incomplete_id);
+  perform public.convay_publish_meeting(v_incomplete_id);
   v_expected_error := false;
   begin
     perform public.convay_apply_entity_batch(jsonb_build_array(
