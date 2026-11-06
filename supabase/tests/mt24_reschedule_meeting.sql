@@ -5,7 +5,7 @@ begin;
 do $test$
 declare
   v_leader uuid;
-  v_unassigned uuid := gen_random_uuid();
+  v_unassigned uuid;
   v_meeting_id text := 'MT24-RESCHEDULE-' || gen_random_uuid()::text;
   v_denied_id text := 'MT24-LEADERSHIP-DENIED-' || gen_random_uuid()::text;
   v_payload jsonb;
@@ -19,6 +19,16 @@ begin
   if v_leader is null then
     raise exception 'An active Super Admin acceptance principal is required';
   end if;
+  select user_id into v_unassigned
+  from public.user_profiles
+  where account_status = 'active'
+    and account_role <> 'super_admin'
+    and user_id <> v_leader
+  order by user_id
+  limit 1;
+  if v_unassigned is null then
+    raise exception 'An existing non-Super-Admin acceptance principal is required';
+  end if;
 
   perform set_config('request.jwt.claim.sub', v_leader::text, true);
   if not convay_private.has_permission('mtg_postpone') then
@@ -31,8 +41,8 @@ begin
     jsonb_build_object(
       'id', v_meeting_id,
       'meeting_id', v_meeting_id,
-      'approval_status', 'Published',
-      'status', 'Published',
+      'approval_status', 'Scheduled',
+      'status', 'Scheduled',
       'meeting_date', (current_date + 7)::text,
       'start_time', '10:00',
       'end_time', '11:00',
@@ -70,7 +80,7 @@ begin
   select payload into v_payload
   from public.convay_entity_records
   where entity_key = 'bms.meetings' and record_id = v_meeting_id;
-  if v_payload->>'approval_status' <> 'Published'
+  if v_payload->>'approval_status' <> 'Scheduled'
      or v_payload->>'meeting_date' <> (current_date + 7)::text then
     raise exception 'A rejected request changed the original meeting';
   end if;
@@ -115,7 +125,7 @@ begin
       and record_id = v_meeting_id
       and operation = 'UPDATE'
       and actor_id = v_leader
-      and previous_payload->>'approval_status' = 'Published'
+      and previous_payload->>'approval_status' = 'Scheduled'
       and new_payload->>'approval_status' = 'Rescheduled'
       and new_payload->>'reschedule_reason' = 'Chairperson availability changed.'
   ) then
@@ -138,14 +148,15 @@ begin
     raise exception 'A duplicate reschedule was accepted';
   end if;
 
+  perform set_config('request.jwt.claim.sub', v_unassigned::text, true);
   insert into public.convay_entity_records(entity_key, record_id, payload, created_by, updated_by)
   values (
     'bms.meetings', v_denied_id,
     jsonb_build_object(
       'id', v_denied_id,
       'meeting_id', v_denied_id,
-      'approval_status', 'Scheduled',
-      'status', 'Scheduled',
+      'approval_status', 'Draft',
+      'status', 'Draft',
       'meeting_date', (current_date + 7)::text,
       'start_time', '10:00',
       'end_time', '11:00',
@@ -153,8 +164,16 @@ begin
       'chairperson_user_id', v_unassigned::text,
       'organizer_user_id', v_unassigned::text
     ),
-    v_leader, v_leader
+    v_unassigned, v_leader
   );
+
+  perform set_config('request.jwt.claim.sub', v_leader::text, true);
+  update public.convay_entity_records
+  set payload = jsonb_set(
+    jsonb_set(payload, '{approval_status}', to_jsonb('Scheduled'::text), true),
+    '{status}', to_jsonb('Scheduled'::text), true
+  )
+  where entity_key = 'bms.meetings' and record_id = v_denied_id;
 
   v_expected_error := false;
   begin
