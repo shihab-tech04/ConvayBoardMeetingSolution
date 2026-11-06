@@ -12,6 +12,13 @@ export function useBreadcrumbs() {
     return fallback || _subId || _mainId;
   }
 
+  // While access permissions are loading (or no sections are permitted),
+  // the visible navigation can be empty. Do not infer permission or read .id
+  // from a missing item; the breadcrumb will populate on the next render.
+  if (!activeMainItem) {
+    return { breadcrumbs: [] as string[], activeMainItem, getNavLabel };
+  }
+
   // Avoid "Home → Home" duplication when on the Home section
   const breadcrumbs: string[] = activeMainItem.id === "home"
     ? ["Home"]
