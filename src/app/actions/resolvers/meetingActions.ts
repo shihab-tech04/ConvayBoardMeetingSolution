@@ -245,7 +245,7 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
   }
 
   // ── Scheduled: publish before participants can start or join ─────────────
-  if (status === "Scheduled") {
+  if (status === "Scheduled" || status === "Rescheduled") {
     const canManage = hasRole(roles, "organizer", "host", "secretary");
     return [
       {
@@ -697,7 +697,37 @@ export function resolveMeetingActions(ctx: ActionContext): ResolvedAction[] {
     ];
   }
 
-  // ── Fallback: read-only for Rejected, Postponed or unknown states ─────────
+  // ── Postponed: assigned meeting leadership can restore a new schedule ─────
+  if (status === "Postponed") {
+    return [
+      {
+        id: "reschedule_meeting",
+        label: "Reschedule Meeting",
+        icon: Clock,
+        tone: "warning",
+        placement: "direct",
+        priority: 1,
+        visible: hasRole(roles, "organizer", "host"),
+        enabled: true,
+        requiresReason: true,
+        reasonLabel: "New date and reason",
+        color: "#f59e0b",
+      },
+      {
+        id: "view_record",
+        label: "View Meeting Record",
+        icon: FileText,
+        tone: "neutral",
+        placement: "more",
+        priority: 2,
+        visible: true,
+        enabled: true,
+        color: "#6b7280",
+      },
+    ];
+  }
+
+  // ── Fallback: read-only for Rejected or unknown states ─────────────────────
   return [{
     id: "view_record",
     label: "View Meeting Record",
