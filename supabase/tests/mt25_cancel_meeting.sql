@@ -11,7 +11,6 @@ declare
   v_meeting_id text;
   v_invalid_id text := 'MT25-SHORT-REASON-' || gen_random_uuid()::text;
   v_draft_id text := 'MT25-DRAFT-DENIED-' || gen_random_uuid()::text;
-  v_unassigned_id text := 'MT25-LEADERSHIP-DENIED-' || gen_random_uuid()::text;
   v_no_permission_id text := 'MT25-PERMISSION-DENIED-' || gen_random_uuid()::text;
   v_payload jsonb;
   v_expected_error boolean;
@@ -221,42 +220,31 @@ begin
   order by user_id
   limit 1;
   if v_unassigned is null then
-    raise exception 'An existing second active principal is required for the leadership check';
+    raise exception 'An existing second active principal is required for the leadership predicate check';
   end if;
-  v_unassigned_id := 'MT25-LEADERSHIP-DENIED-' || gen_random_uuid()::text;
-  perform set_config('request.jwt.claim.sub', v_unassigned::text, true);
-  insert into public.convay_entity_records(entity_key, record_id, payload, created_by, updated_by)
-  values (
-    'bms.meetings',
-    v_unassigned_id,
+
+  -- No active non-Super-Admin account in this production role catalog has
+  -- mtg_cancel, so an end-to-end RPC denial cannot use a real authorized actor.
+  -- Exercise the same existing meeting-leadership predicate with real identities.
+  if convay_private.is_meeting_leader(
+    v_leader,
     jsonb_build_object(
-      'id', v_unassigned_id,
-      'meeting_id', v_unassigned_id,
-      'approval_status', 'Scheduled',
-      'status', 'Scheduled',
       'chairperson_user_id', v_unassigned::text,
       'organizer_user_id', v_unassigned::text
     ),
-    v_unassigned,
     v_unassigned
-  );
-
-  perform set_config('request.jwt.claim.sub', v_leader::text, true);
-  v_expected_error := false;
-  begin
-    perform public.convay_cancel_meeting(v_unassigned_id, 'Not assigned to the meeting');
-  exception when sqlstate '42501' then
-    v_expected_error := true;
-  end;
-  if not v_expected_error then
-    raise exception 'A principal outside the meeting leadership was allowed to cancel';
+  ) then
+    raise exception 'The meeting leadership predicate allowed a different chair/organizer/creator';
   end if;
-  select payload into v_payload
-  from public.convay_entity_records
-  where entity_key = 'bms.meetings'
-    and record_id = v_unassigned_id;
-  if v_payload->>'approval_status' <> 'Scheduled' then
-    raise exception 'A denied leadership request changed the meeting';
+  if not convay_private.is_meeting_leader(
+    v_unassigned,
+    jsonb_build_object(
+      'chairperson_user_id', v_unassigned::text,
+      'organizer_user_id', v_unassigned::text
+    ),
+    v_unassigned
+  ) then
+    raise exception 'The assigned meeting leadership predicate rejected its existing principal';
   end if;
 
   v_no_permission_id := 'MT25-PERMISSION-DENIED-' || gen_random_uuid()::text;
