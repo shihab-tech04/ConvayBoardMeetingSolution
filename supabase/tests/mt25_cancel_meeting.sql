@@ -7,6 +7,7 @@ declare
   v_candidate uuid;
   v_no_permission uuid;
   v_status text;
+  v_new_date date := current_date + 14;
   v_meeting_id text;
   v_invalid_id text := 'MT25-SHORT-REASON-' || gen_random_uuid()::text;
   v_draft_id text := 'MT25-DRAFT-DENIED-' || gen_random_uuid()::text;
@@ -59,14 +60,38 @@ begin
       jsonb_build_object(
         'id', v_meeting_id,
         'meeting_id', v_meeting_id,
-        'approval_status', v_status,
-        'status', v_status,
+        'approval_status', 'Scheduled',
+        'status', 'Scheduled',
+        'meeting_date', (current_date + 7)::text,
+        'start_time', '10:00',
+        'end_time', '11:00',
+        'time_zone', 'Asia/Dhaka (GMT+6)',
         'chairperson_user_id', v_leader::text,
         'organizer_user_id', v_leader::text
       ),
       v_leader,
       v_leader
     );
+
+    if v_status = 'Rescheduled' then
+      perform public.convay_reschedule_meeting(
+        v_meeting_id,
+        v_new_date,
+        time '11:30',
+        time '12:30',
+        'MT-25 fixture schedule change.'
+      );
+    elsif v_status = 'Published' then
+      perform public.convay_publish_meeting(v_meeting_id);
+    elsif v_status = 'Ready to Start' then
+      update public.convay_entity_records
+      set payload = payload || jsonb_build_object(
+        'approval_status', 'Ready to Start',
+        'status', 'Ready to Start'
+      )
+      where entity_key = 'bms.meetings'
+        and record_id = v_meeting_id;
+    end if;
 
     v_payload := public.convay_cancel_meeting(v_meeting_id, 'Owner requested cancellation.');
     if v_payload->>'id' <> v_meeting_id
