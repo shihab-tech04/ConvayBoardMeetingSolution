@@ -760,17 +760,15 @@ export function OnlineReturnRegisterPage() {
       if (!["Scheduled", "Rescheduled", "Published", "Ready to Start"].includes(currentStatus)) {
         throw new Error("This meeting is no longer cancellable. Refresh to view its latest status.");
       }
-      const confirmed = await registry.update(id, {
-        approval_status: "Cancelled",
-        cancellation_reason: reason.trim(),
-      } as never);
-      if (confirmed !== true) return false;
+      const cancelled = await convayAuth.cancelMeeting(id, reason);
       try {
         await registry.refresh?.();
       } catch {
         toast.warning("Cancellation was saved, but the meeting register could not refresh. Reload to view the latest status.");
       }
-      return true;
+      return cancelled.approval_status === "Cancelled" &&
+        cancelled.status === "Cancelled" &&
+        cancelled.cancellation_reason === reason.trim();
     },
 
     // ── Save Draft: upserts a meeting record with status "Draft" ─────────────────

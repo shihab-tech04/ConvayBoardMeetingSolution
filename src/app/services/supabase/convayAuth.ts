@@ -332,6 +332,37 @@ export const convayAuth = {
     return published;
   },
 
+  /** Cancel a meeting through the permission-checked, audited SQL operation. */
+  async cancelMeeting(recordId: string, cancellationReason: string): Promise<Record<string, unknown>> {
+    const id = recordId.trim();
+    const reason = cancellationReason.trim();
+    if (!id) throw new Error("A meeting ID is required");
+    if (reason.length < 5) {
+      throw new Error("Please provide a cancellation reason (at least 5 characters)");
+    }
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_cancel_meeting", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_record_id: id,
+        p_cancellation_reason: reason,
+      }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to cancel the meeting."));
+    const cancelled = await res.json() as Record<string, unknown>;
+    if (
+      cancelled.id !== id ||
+      cancelled.approval_status !== "Cancelled" ||
+      cancelled.status !== "Cancelled" ||
+      cancelled.cancellation_reason !== reason ||
+      typeof cancelled.cancelled_by !== "string" ||
+      typeof cancelled.cancelled_at !== "string"
+    ) {
+      throw new Error("Supabase did not confirm the meeting cancellation.");
+    }
+    return cancelled;
+  },
+
   /** Reschedule a meeting through the permission-checked, audited SQL operation. */
   async rescheduleMeeting(
     recordId: string,
