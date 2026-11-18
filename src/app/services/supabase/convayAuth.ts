@@ -57,13 +57,17 @@ function readSession(): StoredSession | null {
     return result;
   } catch { return null; }
 }
+// Invalidate any asynchronous refresh whenever an account/session is replaced or cleared.
+let sessionEpoch = 0;
 function saveSession(session: StoredSession, persistent?: boolean): void {
+  sessionEpoch += 1;
   const useLocal = persistent ?? localStorage.getItem(SESSION_KEY) !== null;
   sessionStorage.removeItem(SESSION_KEY);
   localStorage.removeItem(SESSION_KEY);
   (useLocal ? localStorage : sessionStorage).setItem(SESSION_KEY, JSON.stringify(session));
 }
 function eraseSession(): void {
+  sessionEpoch += 1;
   if (typeof window === "undefined") return;
   sessionStorage.removeItem(SESSION_KEY);
   localStorage.removeItem(SESSION_KEY);
@@ -84,28 +88,54 @@ function toSession(tokens: Tokens): StoredSession {
     expiresAt: Date.now() + Math.max(0, tokens.expires_in - 30) * 1000,
   };
 }
-async function refresh(existing: StoredSession): Promise<StoredSession | null> {
+function isCurrentRefreshSource(existing: StoredSession, epoch: number): boolean {
+  const stored = readSession();
+  return sessionEpoch === epoch && stored?.userId === existing.userId
+    && stored.refreshToken === existing.refreshToken;
+}
+async function refresh(existing: StoredSession, epoch: number): Promise<StoredSession | null> {
   try {
     const res = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=refresh_token", {
       method: "POST",
       headers: { apikey: API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: existing.refreshToken }),
     });
+    // A sign-out or account switch may have happened while the network was pending.
+    if (!isCurrentRefreshSource(existing, epoch)) return null;
     if (!res.ok) { eraseSession(); return null; }
     const session = toSession(await res.json() as Tokens);
+    // Do not restore a stale account after parsing the response, and never accept
+    // a refresh that unexpectedly changed the authenticated user identity.
+    if (!isCurrentRefreshSource(existing, epoch)) return null;
+    if (session.userId !== existing.userId) { eraseSession(); return null; }
     saveSession(session);
     return session;
   } catch { return null; }
 }
-let refreshRequest: Promise<StoredSession | null> | null = null;
+interface RefreshInFlight {
+  epoch: number;
+  userId: string;
+  refreshToken: string;
+  promise: Promise<StoredSession | null>;
+}
+let refreshRequest: RefreshInFlight | null = null;
 async function validSession(): Promise<StoredSession | null> {
   const session = readSession();
   if (!session) return null;
   if (session.expiresAt > Date.now() + 15000) return session;
-  if (!refreshRequest) {
-    refreshRequest = refresh(session).finally(() => { refreshRequest = null; });
+  const epoch = sessionEpoch;
+  if (!refreshRequest || refreshRequest.epoch !== epoch ||
+      refreshRequest.userId !== session.userId ||
+      refreshRequest.refreshToken !== session.refreshToken) {
+    const promise = refresh(session, epoch);
+    refreshRequest = {
+      epoch, userId: session.userId, refreshToken: session.refreshToken, promise,
+    };
+    void promise.finally(() => {
+      if (refreshRequest?.promise === promise) refreshRequest = null;
+    });
   }
-  return refreshRequest;
+  return refreshRequest.promise;
 }
 async function selfProfile(session: StoredSession): Promise<ConvayProfile> {
   const query = new URLSearchParams({
