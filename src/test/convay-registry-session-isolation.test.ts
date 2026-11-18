@@ -49,10 +49,10 @@ describe("persistent registry account-session isolation", () => {
     const previous = deferred<{ records: Array<{ payload: RecordShape; revision: number }> }>();
     const next = deferred<{ records: Array<{ payload: RecordShape; revision: number }> }>();
     mock.registry.mockReturnValueOnce(previous.promise).mockReturnValueOnce(next.promise);
-    const oldRead = current().refresh();
+    const oldRead = current().refresh!();
     await flush();
     api.clearEntityRegistryCache();
-    const newRead = current().refresh();
+    const newRead = current().refresh!();
     await flush();
     next.resolve({ records: [{ payload: { id: "new" }, revision: 2 }] });
     await newRead;
@@ -65,7 +65,7 @@ describe("persistent registry account-session isolation", () => {
     const inFlight = deferred<{ revision: number }>();
     mock.registry.mockImplementation((_key: string, action: string) =>
       action === "list" ? Promise.resolve({ records: [] }) : inFlight.promise);
-    await current().refresh();
+    await current().refresh!();
     const mutation = current().add({ id: "previous" });
     await flush();
     expect(mock.registry).toHaveBeenCalledWith("bms.meetings", "create", { id: "previous" }, undefined);
