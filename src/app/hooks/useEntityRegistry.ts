@@ -26,6 +26,9 @@ interface Cache<T extends { id: string }> {
   error: string | null;
 }
 const caches = new Map<string, Cache<EntityRecord>>();
+// Invalidate queued registry operations and pending reads on account changes.
+// A mutation queued by the prior account must not run under a new session.
+let registrySessionEpoch = 0;
 const NO_LEGACY_RECORDS = new Set(["bms.users", "bms.roles.canonical"]);
 const fixtureMode = import.meta.env.MODE === "test";
 
@@ -44,6 +47,7 @@ function signal(eventName: string) {
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(eventName));
 }
 export function clearEntityRegistryCache() {
+  registrySessionEpoch += 1;
   for (const [key, state] of caches) {
     state.items = []; state.versions.clear(); state.loaded = false;
     state.error = null;
@@ -120,6 +124,8 @@ export function createEntityRegistry<T extends { id: string }>(
 
   const load = async (force = false) => {
     const state = store<T>(storageKey);
+    const epoch = registrySessionEpoch;
+    const isCurrent = () => epoch === registrySessionEpoch && caches.get(storageKey) === state;
     if (NO_LEGACY_RECORDS.has(storageKey)) {
       state.loaded = true;
       state.items = [];
@@ -132,12 +138,14 @@ export function createEntityRegistry<T extends { id: string }>(
     const promise = (async () => {
       try {
         const result = await convayAuth.registry<T>(storageKey, "list");
+        if (!isCurrent()) return; // Old account's readback is obsolete.
         state.items = result.records.map(x => x.payload);
         state.versions = new Map(result.records.map(x => [x.payload.id, x.revision]));
         state.loaded = true;
         state.error = null;
         signal(eventName);
       } catch (error) {
+        if (!isCurrent()) return; // Do not show a prior account's error.
         state.error = error instanceof Error ? error.message : "Records could not be loaded";
         state.loaded = false;
         signal(eventName);
@@ -145,11 +153,13 @@ export function createEntityRegistry<T extends { id: string }>(
       }
     })();
     state.pending = promise;
-    try { await promise; } finally { state.pending = null; }
+    try { await promise; } finally { if (state.pending === promise) state.pending = null; }
   };
 
   function mutate(action: "create" | "update" | "delete", item: T | { id: string }, patch?: Partial<T>) {
     const state = store<T>(storageKey);
+    const epoch = registrySessionEpoch;
+    const isCurrent = () => epoch === registrySessionEpoch && caches.get(storageKey) === state;
     if (NO_LEGACY_RECORDS.has(storageKey)) {
       toast.error("Use the authorized User, Role or Permission Management screen.");
       return Promise.resolve(false);
@@ -157,7 +167,10 @@ export function createEntityRegistry<T extends { id: string }>(
     // Never update local state before the server acknowledges the write.
     // A single queue prevents overlapping writes from silently losing revisions.
     const queued = state.queue.then(async () => {
+      // The queued operation may start after sign-out; do not use the next session.
+      if (!isCurrent()) return false;
       if (!state.loaded) await load();
+      if (!isCurrent()) return false;
       const previous = state.items.find(x => x.id === item.id);
       const revision = state.versions.get(item.id);
       if (action === "create" && previous) throw new Error("This record already exists");
@@ -167,6 +180,9 @@ export function createEntityRegistry<T extends { id: string }>(
       const full = action === "update" ? { ...previous!, ...patch, id: item.id } :
         action === "create" ? item as T : { id: item.id } as T;
       const result = await convayAuth.registry<T>(storageKey, action, full, revision);
+      // An already-sent network request can finish, but must never update the
+      // following account's cached records or report an accepted UI mutation.
+      if (!isCurrent()) return false;
       if (action === "delete") {
         state.items = state.items.filter(x => x.id !== item.id);
         state.versions.delete(item.id);
@@ -177,8 +193,10 @@ export function createEntityRegistry<T extends { id: string }>(
       }
       state.error = null;
       signal(eventName);
+      return true;
     });
-    const operation = queued.then(() => true).catch(error => {
+    const operation = queued.catch(error => {
+      if (!isCurrent()) return false;
       state.error = error instanceof Error ? error.message : "Unable to save changes";
       toast.error(state.error);
       signal(eventName);
