@@ -9,7 +9,7 @@ export interface VerifiedIntegrationFilter {
 
 export function filterVerifiedIntegrations<T extends {
   category: string;
-  status: IntegrationConnectionStatus;
+  status: IntegrationConnectionStatus | "Unverified";
   name: string;
   description: string;
 }>(items: readonly T[], { category, status, search }: VerifiedIntegrationFilter): T[] {

@@ -20,6 +20,14 @@ describe("NI-14/NI-15 shared connection status search and filters", () => {
   it("search is case insensitive", () => expect(run("All", "All", "  onLine  ")).toEqual(["zoom"]));
   it("search works on description", () => expect(run("All", "All", "outLOOK")).toEqual(["calendar"]));
   it("search works on category", () => expect(run("All", "All", "communicaTION")).toEqual(["smtp-email", "sms"]));
+  it("preserves category and search for unverified catalogue entries without implying connection", () => {
+    const offline = [
+      { name: "SMTP Email", description: "Meeting email", category: "Communication", status: "Unverified" as const },
+      { name: "Zoom", description: "Online meetings", category: "Video Conferencing", status: "Unverified" as const },
+    ];
+    expect(filterVerifiedIntegrations(offline, { category: "Communication", status: "All", search: "SMTP" }).map(x => x.name)).toEqual(["SMTP Email"]);
+    expect(filterVerifiedIntegrations(offline, { category: "All", status: "Connected", search: "" })).toEqual([]);
+  });
   it("does not mutate caller's array", () => {
     const copy = JSON.stringify(cards);
     run("Communication", "Error", "alerts");

@@ -4,7 +4,7 @@
  * resolving the existing status-filter patch and SQL read contract.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { hasAccess, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { useAccessSnapshot } from "../../services/supabase/convayAccess";
 import {
   loadProviderConnectionRead,
 } from "./integrationConnectionRead";
@@ -21,7 +21,8 @@ export function useIntegrationConnectionKpis(catalogueIds: readonly string[]) {
   const [read, setRead] = useState<ConnectionReadState>({ state: "loading" });
   const [revision, setRevision] = useState(0);
   const refresh = useCallback(() => setRevision(v => v + 1), []);
-  const allowed = hasAccess("admin_integrations", snapshot);
+  // NI-14/15 is non-delegable: a granted admin_integrations code is not root authority.
+  const allowed = snapshot.loaded && snapshot.is_super_admin;
 
   useEffect(() => {
     if (!snapshot.loaded) {
@@ -42,5 +43,5 @@ export function useIntegrationConnectionKpis(catalogueIds: readonly string[]) {
   }, [snapshot.loaded, snapshot.error, allowed, stableIds, revision]);
 
   const kpis = useMemo(() => summarizeIntegrationConnectionRead(read), [read]);
-  return { read, kpis, refresh };
+  return { read, kpis, refresh, allowed, accessReady: snapshot.loaded };
 }

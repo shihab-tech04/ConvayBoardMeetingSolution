@@ -16,6 +16,7 @@ import {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type IntegrationStatus = "Connected" | "Disconnected" | "Error" | "Pending Setup";
+type DisplayIntegrationStatus = IntegrationStatus | "Unverified";
 
 interface Integration {
   id: string;
@@ -142,11 +143,12 @@ const INTEGRATIONS: Integration[] = [
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
 
-const STATUS_CONFIG: Record<IntegrationStatus, { color: string; bg: string; border: string; icon: React.ElementType; label: string }> = {
+const STATUS_CONFIG: Record<DisplayIntegrationStatus, { color: string; bg: string; border: string; icon: React.ElementType; label: string }> = {
   Connected:       { color: "#22c55e", bg: "#14532d22", border: "#22c55e44", icon: CheckCircle,    label: "Connected" },
   Disconnected:    { color: "#94a3b8", bg: "#94a3b822", border: "#94a3b844", icon: XCircle,        label: "Disconnected" },
   Error:           { color: "#ef4444", bg: "#7f1d1d22", border: "#ef444444", icon: AlertTriangle,  label: "Error" },
   "Pending Setup": { color: "#f59e0b", bg: "#78350f22", border: "#f59e0b44", icon: Settings,       label: "Pending Setup" },
+  Unverified:      { color: "#64748b", bg: "var(--muted)", border: "var(--border)", icon: AlertTriangle, label: "Unverified" },
 };
 
 const CATEGORIES = ["All", "Communication", "Calendar", "Video Conferencing", "Identity", "Document Storage", "Security", "Enterprise"];
@@ -157,20 +159,24 @@ export function IntegrationsPage() {
   const [activeCategory, setActiveCategory] = useState("All");
   const [activeStatus, setActiveStatus] = useState<"All" | IntegrationStatus>("All");
   const [search, setSearch] = useState("");
-  const { read, refresh } = useIntegrationConnectionKpis(INTEGRATIONS.map(i => i.id));
+  const { read, refresh, allowed, accessReady } = useIntegrationConnectionKpis(INTEGRATIONS.map(i => i.id));
 
-  // NI-14/NI-15: only verified, authorized SQL observations may drive both
-  // the status filter and KPI counts. Never fall back to the demo catalogue.
+  // Catalogue descriptions remain visible only to the verified platform root.
+  // Provider connection status is never inferred from the old illustrative data.
   const verifiedStatuses = read.state === "ready"
     ? new Map(read.records.map(r => [r.id, r.status])) : null;
-  const canonical = verifiedStatuses
+  const canonical = allowed
     ? INTEGRATIONS.map(itg => ({
         ...itg,
-        status: verifiedStatuses.get(itg.id) ?? "Pending Setup",
-        lastSync: undefined, // Old illustrative sync times are not provider evidence.
+        status: verifiedStatuses
+          ? (verifiedStatuses.get(itg.id) ?? "Unverified")
+          : "Unverified" as DisplayIntegrationStatus,
+        lastSync: undefined, // No illustrative sync timestamps or false connection signals.
       })) : [];
   const filtered = filterVerifiedIntegrations(canonical, {
-    category: activeCategory, status: activeStatus, search,
+    category: activeCategory,
+    status: read.state === "ready" ? activeStatus : "All",
+    search,
   });
 
   return (
@@ -184,7 +190,7 @@ export function IntegrationsPage() {
         </p>
 
         {/* NI-15 authoritative KPI strip; preserves existing design tokens */}
-        <VerifiedIntegrationKpis read={read} onRetry={refresh} />
+        {allowed && <VerifiedIntegrationKpis read={read} onRetry={refresh} />}
 
         {/* Category filter tabs */}
         <div style={{ display: "flex", gap: 0, overflowX: "auto" }}>
@@ -237,7 +243,8 @@ export function IntegrationsPage() {
           />
           <select
             aria-label="Filter by connection status"
-            value={activeStatus}
+            disabled={!allowed || read.state !== "ready"}
+            value={read.state === "ready" ? activeStatus : "All"}
             onChange={e => setActiveStatus(e.target.value as "All" | IntegrationStatus)}
             style={{ padding: "0.5rem 0.75rem", borderRadius: 8, border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)", fontSize: "0.85rem" }}
           >
@@ -247,21 +254,30 @@ export function IntegrationsPage() {
           </select>
         </div>
 
-        {/* Cards grid */}
-        {read.state !== "ready" ? (
-          <div role={read.state === "error" ? "alert" : "status"} style={{ padding: "1.25rem", color: "var(--muted-foreground)" }}>
-            {read.state === "loading" ? "Verifying integration connections…" : `Integration connection statuses are unavailable: ${read.error ?? "Unable to verify permissions or provider data."}`}
-            {read.state === "error" && (
-              <button type="button" onClick={refresh} style={{ marginLeft: "0.75rem", color: "var(--primary)", fontWeight: 600 }}>Retry</button>
-            )}
-          </div>
-        ) : filtered.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--muted-foreground)" }}>
-            <Link2 size={40} style={{ margin: "0 auto 1rem", opacity: 0.35, display: "block" }} />
-            <p style={{ fontSize: "0.95rem" }}>No integrations match your search.</p>
+        {/* Cards grid: root can browse the catalogue while provider reads are unavailable. */}
+        {!allowed ? (
+          <div role={accessReady ? "alert" : "status"} style={{ padding: "1.25rem", color: "var(--muted-foreground)" }}>
+            {accessReady ? "Not authorized to view integrations." : "Verifying integration access…"}
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
+          <>
+            {read.state !== "ready" && (
+              <div role={read.state === "error" ? "alert" : "status"} style={{ padding: "1.25rem", color: "var(--muted-foreground)" }}>
+                {read.state === "loading"
+                  ? "Verifying connection statuses… Catalogue entries are available, but their status is unverified."
+                  : "Integration connection statuses are unavailable. Catalogue entries are visible with unverified status."}
+                {read.state === "error" && (
+                  <button type="button" onClick={refresh} style={{ marginLeft: "0.75rem", color: "var(--primary)", fontWeight: 600 }}>Retry</button>
+                )}
+              </div>
+            )}
+            {filtered.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--muted-foreground)" }}>
+                <Link2 size={40} style={{ margin: "0 auto 1rem", opacity: 0.35, display: "block" }} />
+                <p style={{ fontSize: "0.95rem" }}>No integrations match your search.</p>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
             {filtered.map(itg => {
               const s = STATUS_CONFIG[itg.status];
               const Icon = itg.icon;
@@ -325,7 +341,8 @@ export function IntegrationsPage() {
                   )}
 
                   {/* Actions */}
-                  <div style={{ display: "flex", gap: "0.5rem", borderTop: "1px solid var(--border)", paddingTop: "0.75rem", marginTop: "auto" }}>
+                  {itg.status !== "Unverified" && (
+                    <div style={{ display: "flex", gap: "0.5rem", borderTop: "1px solid var(--border)", paddingTop: "0.75rem", marginTop: "auto" }}>
                     {itg.status === "Connected" && (
                       <>
                         <button
@@ -388,11 +405,14 @@ export function IntegrationsPage() {
                     >
                       <ExternalLink size={13} />
                     </button>
-                  </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
-          </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

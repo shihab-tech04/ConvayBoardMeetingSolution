@@ -75,9 +75,14 @@ describe("access snapshot account/session isolation", () => {
       effective_permissions: ["admin_users", "admin_roles", "gov_org_view"],
     };
     for (const path of ["/governance-org/users-assignments", "governance-org/users-assignments",
-      "/administration/roles-permissions/roles", "administration/roles-permissions/roles"]) {
+      "/administration/roles-permissions/roles", "administration/roles-permissions/roles",
+      "/administration/integrations", "administration/integrations"]) {
       expect(mayVisitPath(path, roleAdmin)).toBe(false);
     }
+    // A delegated permission cannot grant non-delegable NI-14/15 root access.
+    const delegated = { ...roleAdmin, effective_permissions: [...roleAdmin.effective_permissions, "admin_integrations"] };
+    expect(mayVisitPath("/administration/integrations", delegated)).toBe(false);
+    expect(mayVisitPath("/administration/integrations", { ...delegated, is_super_admin: true })).toBe(true);
     expect(mayVisitPath("/governance-org/organization-structure", roleAdmin)).toBe(true);
   });
 });
