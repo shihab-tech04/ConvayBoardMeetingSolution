@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type CSSProperties, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   Plus, Eye, CheckCircle, XCircle, RefreshCw, Edit2, Send,
@@ -29,6 +29,9 @@ import { DynamicDetailsDrawer } from "../../components/drawers/DynamicDetailsDra
 import { UnifiedDataTable } from "../../components/tables/UnifiedDataTable";
 import { KpiRow } from "../../components/cards/KpiRow";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { collectAgendaRegisterDescendants } from "./agendaRegisterDescendants";
+import { isAgendaOwnedBy, resolveAgendaOwnerUserId } from "./agendaOwnerIdentity";
+import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
 
 // ── Duration helpers ──────────────────────────────────────────────────────────
 
@@ -239,6 +242,10 @@ export function Register4ListPage() {
     errors: Record<string, string>;
   } | null>(null);
 
+  // Prevent concurrent submit requests and premature close while the SQL write is pending.
+  const submitInFlight = useRef(false);
+  const [submitSaving, setSubmitSaving] = useState(false);
+
   // ── Full preview modal ────────────────────────────────────────────────────
   const [previewParentId, setPreviewParentId] = useState<string | null>(null);
 
@@ -246,6 +253,9 @@ export function Register4ListPage() {
   const activeUsers = bmsUserReg.items.filter(u =>
     u.account_status !== "inactive" && u.account_status !== "deactivated" && u.account_status !== "archived",
   );
+
+  // Ownership must use stable account identifiers, never a non-unique display name.
+  const currentOwnerUserId = resolveAgendaOwnerUserId(bmsUserReg.items, currentUser);
 
   function resolveUserName(userId: string): string {
     if (!userId) return "";
@@ -367,12 +377,17 @@ export function Register4ListPage() {
   // ── Approval dialog ───────────────────────────────────────────────────────
 
   function openApprovalDialog(agendaId: string, action: ApprovalDialogAction) {
-    if (!hasPermission(action) && action !== "submit") {
+    const item = registry.items.find(a => a.id === agendaId);
+    if (!item) return;
+    // Retain the established owner-submit path, but resolve ownership by stable BMS ID.
+    // All persisted updates remain subject to authoritative server/RLS permission checks.
+    const permitted = action === "submit"
+      ? (hasPermission("submit") || isAgendaOwnedBy(item.owner_user_id, currentOwnerUserId))
+      : hasPermission(action);
+    if (!permitted) {
       toast.error(`You don't have permission to ${action.replace(/_/g, " ")} agendas.`);
       return;
     }
-    const item = registry.items.find(a => a.id === agendaId);
-    if (!item) return;
 
     if (action === "submit" && !SUBMITTABLE_STATUSES.has(item.approval_status ?? "")) {
       toast.info(`Cannot submit from "${item.approval_status}" status.`); return;
@@ -403,6 +418,41 @@ export function Register4ListPage() {
 
     const item = registry.items.find(a => a.id === agendaId);
     if (!item) return;
+    if (action === "submit") {
+      if (submitInFlight.current) return;
+      submitInFlight.current = true;
+      setSubmitSaving(true);
+      // History and status are written together and only acknowledged after SQL accepts.
+      const permitted = hasPermission("submit") || isAgendaOwnedBy(item.owner_user_id, currentOwnerUserId);
+      void submitAgendaWithHistory(
+        item, registry, { name: currentUser.name, role: currentUser.designation },
+        note, permitted,
+      ).then(async () => {
+        // Audit is a separate server write: never report it successful before acknowledgement.
+        const existingIds = auditReg.items.map(e => e.id);
+        let auditSaved = false;
+        try {
+          auditSaved = (await auditReg.add({
+            id: generateId("AUD", existingIds),
+            event_id: generateId("EVT", auditReg.items.map(e => e.event_id)),
+            entity_type: "Agenda", entity_id: agendaId, action: "submit",
+            actor: currentUser.name, actor_role: currentUser.designation,
+            timestamp: new Date().toISOString(), ip_address: "",
+            details: `Agenda submitted by ${currentUser.name}${note.trim() ? `: ${note.trim()}` : ""}`,
+            approval_status: "Logged",
+          } as never)) === true;
+        } catch { /* An audit failure cannot undo an already-acknowledged agenda update. */ }
+        if (auditSaved) toast.success("Submitted for approval.");
+        else toast.warning("Agenda submitted, but audit logging could not be verified.");
+        setApprovalDialog(null);
+      }).catch(error => {
+        toast.error(error instanceof Error ? error.message : "Unable to submit agenda.");
+      }).finally(() => {
+        submitInFlight.current = false;
+        setSubmitSaving(false);
+      });
+      return;
+    }
     const prevStatus = item.approval_status ?? "Draft";
 
     const newStatus: string = {
@@ -416,13 +466,12 @@ export function Register4ListPage() {
       (reason.trim() + (impact.trim() ? ` | Impact: ${impact.trim()}` : "")) || undefined);
     pushAudit(agendaId, action, `${action} by ${currentUser.name}: ${note || reason || "(no note)"}`);
 
-    if (action !== "submit") {
-      cascadeStatusUp(agendaId, newStatus, snapshot, (pid, cascNew, cascPrev) => {
-        registry.update(pid, { approval_status: cascNew } as never);
-        pushRichHistory(pid, cascPrev, cascNew, "auto_cascade", undefined, `Auto-updated from descendant ${action}`);
-        pushAudit(pid, "auto_cascade", `Status recalculated to ${cascNew} after descendant ${action}`);
-      });
-    }
+    // The submit branch returns above; only approval/review transitions reach this point.
+    cascadeStatusUp(agendaId, newStatus, snapshot, (pid, cascNew, cascPrev) => {
+      registry.update(pid, { approval_status: cascNew } as never);
+      pushRichHistory(pid, cascPrev, cascNew, "auto_cascade", undefined, `Auto-updated from descendant ${action}`);
+      pushAudit(pid, "auto_cascade", `Status recalculated to ${cascNew} after descendant ${action}`);
+    });
 
     const messages: Record<ApprovalDialogAction, string> = {
       submit: "Submitted for approval.", approve: "Approved successfully.",
@@ -469,15 +518,15 @@ export function Register4ListPage() {
       .filter(a => a.parent_agenda_id === parentId && (a.agenda_level ?? 2) === 2)
       .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
 
-  // Unique document count across parent + its direct children
+  // Unique document count across parent and every nested agenda level
   function uniqueDocCount(parentId: string): number {
-    const ids = [parentId, ...allItems.filter(a => a.parent_agenda_id === parentId).map(a => a.id)];
-    return new Set(linkReg.items.filter(l => ids.includes(l.agenda_id)).map(l => l.document_id)).size;
+    const ids = new Set([parentId, ...collectAgendaRegisterDescendants(parentId, allItems).map(a => a.id)]);
+    return new Set(linkReg.items.filter(l => ids.has(l.agenda_id)).map(l => l.document_id)).size;
   }
 
   // Build a parent table row
   function buildParentRow(parent: AgendaSubmission): TableRow {
-    const children = directChildren(parent.id);
+    const children = collectAgendaRegisterDescendants(parent.id, allItems);
     const totalMin = children.reduce((s, c) => s + parseDurationMin(c.estimated_duration), 0);
     const docs     = uniqueDocCount(parent.id);
     const childSearchText = children.map(c =>
@@ -513,7 +562,7 @@ export function Register4ListPage() {
   const approvalParentItems = useMemo(() =>
     parentItems.filter(p => {
       if (APPROVAL_QUEUE_STATUSES.has(p.approval_status ?? "")) return true;
-      return directChildren(p.id).some(c => APPROVAL_QUEUE_STATUSES.has(c.approval_status ?? ""));
+      return collectAgendaRegisterDescendants(p.id, allItems).some(c => APPROVAL_QUEUE_STATUSES.has(c.approval_status ?? ""));
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [parentItems, allItems],
@@ -570,7 +619,7 @@ export function Register4ListPage() {
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
 
-  const totalChildCount = allItems.filter(a => a.parent_agenda_id && (a.agenda_level ?? 2) === 2).length;
+  const totalChildCount = parentItems.reduce((total, p) => total + collectAgendaRegisterDescendants(p.id, allItems).length, 0);
   const pendingCount    = parentItems.filter(p => APPROVAL_QUEUE_STATUSES.has(p.approval_status ?? "")).length;
   const approvedCount   = parentItems.filter(p => p.approval_status === "Approved").length;
 
@@ -985,7 +1034,7 @@ export function Register4ListPage() {
   const drawerFooterActions: ReactNode = (() => {
     if (!drawerItem) return null;
     const status   = drawerItem.approval_status ?? "Draft";
-    const isOwner  = drawerItem.owner_user_id === bmsUserReg.items.find(u => u.name === currentUser.name)?.id;
+    const isOwner  = isAgendaOwnedBy(drawerItem.owner_user_id, currentOwnerUserId);
     const canEdit  = (isOwner || hasPermission("edit")) && ["Draft", "Revision Requested", "Reopened"].includes(status);
     const canSubmit = SUBMITTABLE_STATUSES.has(status) && (isOwner || hasPermission("submit"));
 
@@ -1033,7 +1082,7 @@ export function Register4ListPage() {
   const drawerOverflowActions = (() => {
     if (!drawerItem) return undefined;
     const status   = drawerItem.approval_status ?? "Draft";
-    const isOwner  = drawerItem.owner_user_id === bmsUserReg.items.find(u => u.name === currentUser.name)?.id;
+    const isOwner  = isAgendaOwnedBy(drawerItem.owner_user_id, currentOwnerUserId);
     const items: Array<{ label: string; onClick: () => void; danger?: boolean }> = [];
     const id = drawerChildId ?? drawerItem.id;
 
@@ -1298,15 +1347,15 @@ export function Register4ListPage() {
             open
             title={titleMap[ad.action]}
             subtitle={item.agenda_title}
-            onClose={() => setApprovalDialog(null)}
+            onClose={() => { if (!submitSaving) setApprovalDialog(null); }}
             size="md"
             footer={
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center", flex: 1 }}>
                 <span style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginRight: "auto" }}>
                   {currentUser.name} · {currentUser.designation}
                 </span>
-                <Button variant="secondary" size="sm" onClick={() => setApprovalDialog(null)}>Cancel</Button>
-                <Button variant="primary" size="sm" onClick={executeApprovalAction}>{titleMap[ad.action]}</Button>
+                <Button variant="secondary" size="sm" disabled={submitSaving} onClick={() => setApprovalDialog(null)}>Cancel</Button>
+                <Button variant="primary" size="sm" disabled={submitSaving} onClick={executeApprovalAction}>{submitSaving && ad.action === "submit" ? "Submitting…" : titleMap[ad.action]}</Button>
               </div>
             }
           >

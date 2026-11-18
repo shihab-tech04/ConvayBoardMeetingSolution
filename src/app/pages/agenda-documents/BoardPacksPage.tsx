@@ -1,8 +1,11 @@
+import { useMemo } from "react";
 import { Eye, Package, Upload, Download, Pencil, Archive } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS, dg } from "../modulePageUtils";
 import { useBoardPackRegistry } from "../../data/boardMeetingData";
+import { useBoardPackDocumentLinkRegistry } from "../../data/documentWorkspaceData";
+import { activeBoardPackDocumentCount } from "./boardPackActiveDocumentCount";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 
 const DRAWER_COLS = [
@@ -33,7 +36,11 @@ const DRAWER_COLS = [
 
 export function BoardPacksPage() {
   const reg = useBoardPackRegistry();
-  const rows = reg.items;
+  const packLinks = useBoardPackDocumentLinkRegistry();
+  const rows = useMemo(() => reg.items.map(pack => ({
+    ...pack,
+    document_count: activeBoardPackDocumentCount(pack, packLinks.items),
+  })), [reg.items, packLinks.items]);
 
   const kpis: KpiDef[] = [
     { label: "Total Packs",      value: String(rows.length),                                              tone: "primary"  },

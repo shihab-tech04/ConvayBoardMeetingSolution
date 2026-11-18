@@ -21,6 +21,7 @@ import {
 } from "../../data/boardMeetingData";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { normalizeBoardDocument } from "../../utils/normalizeBoardDocument";
+import { normalizeDocumentPage } from "./documentLibraryPageNumber";
 import type { ColDef, FilterDef, RowAction, TableRow } from "../modulePageUtils";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -213,7 +214,6 @@ export function DocumentLibraryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab    = searchParams.get("tab")  ?? "all";
   const q      = searchParams.get("q")    ?? "";
-  const page   = Math.max(1, Number(searchParams.get("page") ?? "1"));
   const viewId = searchParams.get("view") ?? null;
 
   // Applied filters from URL params (f_<key>)
@@ -258,18 +258,23 @@ export function DocumentLibraryPage() {
     [searchFiltered, tab, currentUser, linkedDocIds],
   );
 
-  // Stage 3: paginate
+  // Stage 3: paginate. Invalid URL pages and stale out-of-range pages must not blank a populated table.
+  const page = normalizeDocumentPage(searchParams.get("page"), tabFiltered.length, PER_PAGE);
   const pageRows = useMemo(() => {
     const start = (page - 1) * PER_PAGE;
     return tabFiltered.slice(start, start + PER_PAGE) as TableRow[];
   }, [tabFiltered, page]);
 
-  // Clamp page on data change
+  // Keep the URL canonical for Back/Forward and table-page controls.
   useEffect(() => {
-    if (page <= 1) return;
-    const max = Math.max(1, Math.ceil(tabFiltered.length / PER_PAGE));
-    if (page > max) setSearchParams(p => { const n = new URLSearchParams(p); n.set("page", String(max)); return n; });
-  }, [tabFiltered.length, page]);
+    const raw = searchParams.get("page");
+    if (raw === null || raw === String(page)) return;
+    setSearchParams(p => {
+      const n = new URLSearchParams(p);
+      n.set("page", String(page));
+      return n;
+    }, { replace: true });
+  }, [tabFiltered.length, page, searchParams, setSearchParams]);
 
   // ── Legacy tab URL migration ──
   useEffect(() => {

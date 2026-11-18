@@ -181,7 +181,7 @@ export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   if (!state.loaded) return false;
   if (state.is_super_admin) return true;
   const normalizedPath = "/" + path.replace(/^\/+|\/+$/g, "");
-  if (/^\/(?:administration\/roles-permissions(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(normalizedPath)) return false;
+  if (/^\/(?:administration\/roles-permissions(?:\/|$)|administration\/integrations(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(normalizedPath)) return false;
   const required = permissionForPath(path);
   return !!required && hasAccess(required, state);
 }

@@ -3,10 +3,13 @@
  * Supports page-anchored, region-anchored, and general PDF comments.
  * Comment click navigates back to the correct page.
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { MessageSquare, Check, RotateCcw, ChevronRight } from "lucide-react";
 import { useDocumentCommentRegistry } from "../../../data/documentWorkspaceData";
 import { useAuditEventRegistry } from "../../../data/boardMeetingData";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { toast } from "sonner";
+import { matchesPdfCommentFilter, savePdfCommentWithAudit } from "./pdfCommentActions";
 
 interface Props {
   docId: string;
@@ -17,47 +20,81 @@ interface Props {
 export function PdfCommentsPanel({ docId, currentPage, onNavigateToPage }: Props) {
   const reg     = useDocumentCommentRegistry();
   const auditReg = useAuditEventRegistry();
+  const currentUser = useCurrentUser();
   const [body,   setBody]   = useState("");
   const [filter, setFilter] = useState<"all" | "open" | "mine">("open");
+  const [posting, setPosting] = useState(false);
+  const [updatingThreadId, setUpdatingThreadId] = useState<string | null>(null);
+  const postInFlight = useRef(false);
+  const updateInFlight = useRef(false);
 
   const threads = useMemo(() => {
     return reg.items
       .filter(t => {
-        if (t.document_id !== docId) return false;
-        if (filter === "open" && t.status === "resolved") return false;
-        return true;
+        return matchesPdfCommentFilter(t, docId, filter, currentUser.name);
       })
       .sort((a, b) => {
         const pa = a.anchor_data?.page ?? 999;
         const pb = b.anchor_data?.page ?? 999;
         return pa !== pb ? pa - pb : new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
       });
-  }, [reg.items, docId, filter]);
+  }, [reg.items, docId, filter, currentUser.name]);
 
-  function postComment() {
-    if (!body.trim()) return;
-    const id = `CT-${Date.now()}`;
-    reg.add({
-      id, thread_id: id,
-      document_id: docId,
-      anchor_type: "pdf-region",
-      anchor_data: { page: currentPage },
-      status: "open",
-      created_by: "current_user",
-      created_at: new Date().toISOString(),
-      body: body.trim(),
-      replies: [], mentions: [],
-    });
-    const aid = `AUD-${Date.now()}`;
-    auditReg.add({ id: aid, event_id: aid, entity_type: "Document", entity_id: docId,
-      action: "PDF comment added", actor: "current_user", actor_role: "User",
-      timestamp: new Date().toISOString(), ip_address: "", details: `Page ${currentPage}`,
-      approval_status: "Logged" });
-    setBody("");
+  async function postComment() {
+    const message = body.trim();
+    if (!message || postInFlight.current) return;
+    const author = currentUser.name.trim();
+    if (!author) { toast.error("Comment author is unavailable. Refresh and try again."); return; }
+
+    postInFlight.current = true;
+    setPosting(true);
+    const now = new Date().toISOString();
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `CT-${unique}`;
+    const auditId = `AUD-${unique}`;
+    try {
+      const result = await savePdfCommentWithAudit(
+        () => reg.add({
+          id, thread_id: id,
+          document_id: docId,
+          anchor_type: "pdf-region",
+          anchor_data: { page: currentPage },
+          status: "open",
+          created_by: author,
+          created_at: now,
+          body: message,
+          replies: [], mentions: [],
+        }),
+        () => auditReg.add({
+          id: auditId, event_id: auditId, entity_type: "Document", entity_id: docId,
+          action: "PDF comment added", actor: author,
+          actor_role: currentUser.role || currentUser.designation || "User",
+          timestamp: now, ip_address: "", details: `Page ${currentPage}`,
+          approval_status: "Logged",
+        }),
+      );
+      if (!result.commentSaved) return; // Keep draft; server registry reports the error.
+      setBody("");
+      if (result.auditSaved) toast.success("Comment posted.");
+      else toast.warning("Comment saved, but audit logging could not be verified.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to save comment.");
+    } finally {
+      postInFlight.current = false;
+      setPosting(false);
+    }
   }
 
-  function toggleResolve(threadId: string, current: string) {
-    reg.update(threadId, { status: current === "resolved" ? "reopened" : "resolved" });
+  async function toggleResolve(threadId: string, current: string) {
+    if (updateInFlight.current) return;
+    updateInFlight.current = true;
+    setUpdatingThreadId(threadId);
+    try {
+      await reg.update(threadId, { status: current === "resolved" ? "reopened" : "resolved" });
+    } finally {
+      updateInFlight.current = false;
+      setUpdatingThreadId(null);
+    }
   }
 
   return (
@@ -85,12 +122,13 @@ export function PdfCommentsPanel({ docId, currentPage, onNavigateToPage }: Props
             className="pdf-panel__note-input"
             value={body}
             onChange={e => setBody(e.target.value)}
+            disabled={posting}
             placeholder="Add a comment…"
             rows={2}
             aria-label="New comment body"
-            onKeyDown={e => { if (e.key === "Enter" && e.ctrlKey) postComment(); }}
+            onKeyDown={e => { if (e.key === "Enter" && e.ctrlKey) void postComment(); }}
           />
-          <button type="button" className="btn btn--primary btn--sm" onClick={postComment}>Post</button>
+          <button type="button" className="btn btn--primary btn--sm" onClick={() => void postComment()} disabled={posting || !body.trim()}>{posting ? "Posting…" : "Post"}</button>
         </div>
 
         {threads.length === 0 ? (
@@ -113,7 +151,8 @@ export function PdfCommentsPanel({ docId, currentPage, onNavigateToPage }: Props
                     )}
                     <button type="button"
                       className="pdf-panel__item-resolve"
-                      onClick={() => toggleResolve(t.id, t.status)}
+                      onClick={() => void toggleResolve(t.id, t.status)}
+                      disabled={updatingThreadId !== null}
                       aria-label={t.status === "resolved" ? "Reopen comment" : "Resolve comment"}
                     >
                       {t.status === "resolved"

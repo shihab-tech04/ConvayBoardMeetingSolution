@@ -48,21 +48,10 @@ import { getDocumentRepository } from "../../services/repositories/documentRepos
 import { documentContentStore } from "../../services/repositories/documentContentStore";
 import type { DocumentRepository, DocumentAccessEntry } from "../../services/types/documents";
 import { getDocumentWorkspaceType } from "../../utils/documentFormat";
+import { canRestoreVersion, isLockedVersion } from "./documentVersionLock";
+import { documentAcknowledgementLabel, formatDocumentBytes as formatBytes, formatDocumentDate as formatDate } from "./documentDetailFormatting";
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
-
-function formatBytes(bytes: number | undefined | null): string {
-  if (!bytes) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1048576).toFixed(1)} MB`;
-}
-
-function formatDate(iso: string | undefined | null): string {
-  if (!iso) return "—";
-  try { return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }); }
-  catch { return String(iso); }
-}
 
 function timeAgo(iso: string): string {
   const s = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -164,7 +153,7 @@ function OverviewTab({ doc }: { doc: BoardDocument }) {
     doc.confidentiality ||
     doc.effective_date  ||
     doc.expiry_date     ||
-    String(doc.acknowledgement_required) === "Yes" ||
+    documentAcknowledgementLabel(doc.acknowledgement_required) ||
     doc.tags
   );
 
@@ -205,7 +194,7 @@ function OverviewTab({ doc }: { doc: BoardDocument }) {
             <FieldRow label="Confidentiality"         value={doc.confidentiality} />
             <FieldRow label="Effective Date"           value={formatDate(doc.effective_date)} />
             <FieldRow label="Expiry Date"              value={formatDate(doc.expiry_date)} />
-            <FieldRow label="Acknowledgement Required" value={String(doc.acknowledgement_required) === "Yes" ? "Required" : undefined} />
+            <FieldRow label="Acknowledgement Required" value={documentAcknowledgementLabel(doc.acknowledgement_required)} />
             <FieldRow label="Tags"                     value={doc.tags} span />
           </div>
         </Section>
@@ -572,6 +561,7 @@ function VersionsTab({
   );
 
   const handleRestore = (v: DocumentVersion) => {
+    if (doc.is_locked) { toast.error("This document is locked for approval. Restore is unavailable until it is unlocked."); return; }
     if (!can("doc_manage_versions")) { toast.error("You don't have permission to restore versions."); return; }
     const newNum = nextVersionNumber(versions);
     const newId  = `DV-${Date.now()}`;
@@ -648,6 +638,7 @@ function VersionsTab({
       {versions.map((v, idx) => {
         const isCurrent = idx === 0 || v.version_number === doc.version;
         const isComparing = comparing === v.id;
+        const lockedSnapshot = isLockedVersion(doc, v);
         return (
           <div key={v.id} className="doc-drawer__version-row">
             <div className="doc-drawer__version-header">
@@ -657,6 +648,11 @@ function VersionsTab({
                 <span className="doc-drawer__version-name" style={{ opacity: 0.6 }}>↩ restored</span>
               )}
               {isCurrent && <span className="doc-drawer__role-badge" style={{ marginLeft: "auto" }}>Current</span>}
+              {lockedSnapshot && (
+                <span className="doc-drawer__role-badge" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <Lock size={11} strokeWidth={2} /> Locked for approval
+                </span>
+              )}
               {!isCurrent && v.approval_status && (
                 <span className="doc-drawer__role-badge" style={{ marginLeft: "auto" }}>{v.approval_status}</span>
               )}
@@ -715,7 +711,7 @@ function VersionsTab({
               </div>
             ) : (
               <div className="doc-drawer__version-actions">
-                {!isCurrent && can("doc_manage_versions") && (
+                {canRestoreVersion(doc, isCurrent, can("doc_manage_versions")) && (
                   <Button variant="ghost" size="sm" leadingIcon={RotateCcw} onClick={() => handleRestore(v)}>
                     Restore
                   </Button>
