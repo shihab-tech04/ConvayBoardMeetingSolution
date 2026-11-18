@@ -466,13 +466,12 @@ export function Register4ListPage() {
       (reason.trim() + (impact.trim() ? ` | Impact: ${impact.trim()}` : "")) || undefined);
     pushAudit(agendaId, action, `${action} by ${currentUser.name}: ${note || reason || "(no note)"}`);
 
-    if (action !== "submit") {
-      cascadeStatusUp(agendaId, newStatus, snapshot, (pid, cascNew, cascPrev) => {
-        registry.update(pid, { approval_status: cascNew } as never);
-        pushRichHistory(pid, cascPrev, cascNew, "auto_cascade", undefined, `Auto-updated from descendant ${action}`);
-        pushAudit(pid, "auto_cascade", `Status recalculated to ${cascNew} after descendant ${action}`);
-      });
-    }
+    // The submit branch returns above; only approval/review transitions reach this point.
+    cascadeStatusUp(agendaId, newStatus, snapshot, (pid, cascNew, cascPrev) => {
+      registry.update(pid, { approval_status: cascNew } as never);
+      pushRichHistory(pid, cascPrev, cascNew, "auto_cascade", undefined, `Auto-updated from descendant ${action}`);
+      pushAudit(pid, "auto_cascade", `Status recalculated to ${cascNew} after descendant ${action}`);
+    });
 
     const messages: Record<ApprovalDialogAction, string> = {
       submit: "Submitted for approval.", approve: "Approved successfully.",

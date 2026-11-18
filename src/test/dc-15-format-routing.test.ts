@@ -1,9 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { getDocumentWorkspaceType, isMacroEnabledWorkbook, normalizeDocumentMime } from "../app/utils/documentFormat";
 import type { BoardDocument } from "../app/data/boardMeetingData";
-const file = (overrides: Record<string, unknown> = {}) => ({
-  id: "d1", doc_id: "d1", content_type: "file", approval_status: "Draft", version: "1.0", ...overrides,
-} as BoardDocument);
+const file = (overrides: Partial<BoardDocument> = {}): BoardDocument => ({
+  id: "d1",
+  doc_id: "d1",
+  doc_name: "Test document",
+  doc_number: "DOC-15-001",
+  doc_type: "Board paper",
+  related_meeting: "",
+  related_agenda: "",
+  owner: "Test user",
+  version: "1.0",
+  confidentiality: "Internal",
+  effective_date: "",
+  expiry_date: "",
+  acknowledgement_required: "No",
+  approval_status: "Draft",
+  created_at: "2026-11-18T00:00:00.000Z",
+  content_type: "uploaded",
+  ...overrides,
+});
 
 describe("DC-15 unified file-format routing", () => {
   it("routes PDF MIME with upper casing and charset", () => expect(getDocumentWorkspaceType(file({ mime_type: " Application/PDF; charset=binary " }))).toBe("pdf"));
