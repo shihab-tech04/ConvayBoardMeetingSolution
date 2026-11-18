@@ -4,6 +4,9 @@
  * No new business logic — display only.
  */
 import { useState } from "react";
+import { useIntegrationConnectionKpis } from "./useIntegrationConnectionKpis";
+import { VerifiedIntegrationKpis } from "./VerifiedIntegrationKpis";
+import { filterVerifiedIntegrations } from "./filterVerifiedIntegrations";
 import {
   Link2, Mail, MessageSquare, Calendar, Cloud, Database, Shield,
   CheckCircle, XCircle, RefreshCw, Settings, ExternalLink, AlertTriangle,
@@ -152,22 +155,23 @@ const CATEGORIES = ["All", "Communication", "Calendar", "Video Conferencing", "I
 
 export function IntegrationsPage() {
   const [activeCategory, setActiveCategory] = useState("All");
+  const [activeStatus, setActiveStatus] = useState<"All" | IntegrationStatus>("All");
   const [search, setSearch] = useState("");
+  const { read, refresh } = useIntegrationConnectionKpis(INTEGRATIONS.map(i => i.id));
 
-  const filtered = INTEGRATIONS.filter(itg => {
-    const matchesCategory = activeCategory === "All" || itg.category === activeCategory;
-    const q = search.toLowerCase();
-    const matchesSearch = !q
-      || itg.name.toLowerCase().includes(q)
-      || itg.description.toLowerCase().includes(q)
-      || itg.category.toLowerCase().includes(q);
-    return matchesCategory && matchesSearch;
+  // NI-14/NI-15: only verified, authorized SQL observations may drive both
+  // the status filter and KPI counts. Never fall back to the demo catalogue.
+  const verifiedStatuses = read.state === "ready"
+    ? new Map(read.records.map(r => [r.id, r.status])) : null;
+  const canonical = verifiedStatuses
+    ? INTEGRATIONS.map(itg => ({
+        ...itg,
+        status: verifiedStatuses.get(itg.id) ?? "Pending Setup",
+        lastSync: undefined, // Old illustrative sync times are not provider evidence.
+      })) : [];
+  const filtered = filterVerifiedIntegrations(canonical, {
+    category: activeCategory, status: activeStatus, search,
   });
-
-  const connected    = INTEGRATIONS.filter(i => i.status === "Connected").length;
-  const errors       = INTEGRATIONS.filter(i => i.status === "Error").length;
-  const pending      = INTEGRATIONS.filter(i => i.status === "Pending Setup").length;
-  const disconnected = INTEGRATIONS.filter(i => i.status === "Disconnected").length;
 
   return (
     <div style={{ minHeight: "100vh", background: "var(--background)", color: "var(--foreground)" }}>
@@ -179,21 +183,8 @@ export function IntegrationsPage() {
           Connect your Board Meeting System with external platforms, calendars, communication tools, and enterprise systems.
         </p>
 
-        {/* KPI strip */}
-        <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem", flexWrap: "wrap" }}>
-          {[
-            { label: "Total Integrations", value: INTEGRATIONS.length, color: "var(--foreground)" },
-            { label: "Connected",           value: connected,           color: "#22c55e" },
-            { label: "Errors",              value: errors,              color: "#ef4444" },
-            { label: "Pending Setup",       value: pending,             color: "#f59e0b" },
-            { label: "Disconnected",        value: disconnected,        color: "#94a3b8" },
-          ].map(kpi => (
-            <div key={kpi.label} style={{ padding: "0.5rem 1rem", borderRadius: 8, background: "var(--muted)", border: "1px solid var(--border)", display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 120 }}>
-              <span style={{ fontSize: "1.35rem", fontWeight: 700, color: kpi.color, lineHeight: 1 }}>{kpi.value}</span>
-              <span style={{ fontSize: "0.72rem", color: "var(--muted-foreground)", marginTop: "0.2rem" }}>{kpi.label}</span>
-            </div>
-          ))}
-        </div>
+        {/* NI-15 authoritative KPI strip; preserves existing design tokens */}
+        <VerifiedIntegrationKpis read={read} onRetry={refresh} />
 
         {/* Category filter tabs */}
         <div style={{ display: "flex", gap: 0, overflowX: "auto" }}>
@@ -223,14 +214,17 @@ export function IntegrationsPage() {
       {/* ── Search + grid ────────────────────────────────────────────────────── */}
       <div style={{ padding: "1.5rem 2rem" }}>
         {/* Search */}
-        <div style={{ marginBottom: "1.25rem", maxWidth: 400 }}>
+        <div style={{ marginBottom: "1.25rem", display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
           <input
             type="text"
+            aria-label="Search integrations"
             placeholder="Search integrations…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             style={{
               width: "100%",
+              maxWidth: 400,
+              flex: "1 1 240px",
               padding: "0.5rem 0.75rem",
               borderRadius: 8,
               border: "1px solid var(--border)",
@@ -241,10 +235,27 @@ export function IntegrationsPage() {
               boxSizing: "border-box",
             }}
           />
+          <select
+            aria-label="Filter by connection status"
+            value={activeStatus}
+            onChange={e => setActiveStatus(e.target.value as "All" | IntegrationStatus)}
+            style={{ padding: "0.5rem 0.75rem", borderRadius: 8, border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)", fontSize: "0.85rem" }}
+          >
+            {["All", "Connected", "Disconnected", "Error", "Pending Setup"].map(status => (
+              <option key={status} value={status}>{status === "All" ? "All statuses" : status}</option>
+            ))}
+          </select>
         </div>
 
         {/* Cards grid */}
-        {filtered.length === 0 ? (
+        {read.state !== "ready" ? (
+          <div role={read.state === "error" ? "alert" : "status"} style={{ padding: "1.25rem", color: "var(--muted-foreground)" }}>
+            {read.state === "loading" ? "Verifying integration connections…" : `Integration connection statuses are unavailable: ${read.error ?? "Unable to verify permissions or provider data."}`}
+            {read.state === "error" && (
+              <button type="button" onClick={refresh} style={{ marginLeft: "0.75rem", color: "var(--primary)", fontWeight: 600 }}>Retry</button>
+            )}
+          </div>
+        ) : filtered.length === 0 ? (
           <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--muted-foreground)" }}>
             <Link2 size={40} style={{ margin: "0 auto 1rem", opacity: 0.35, display: "block" }} />
             <p style={{ fontSize: "0.95rem" }}>No integrations match your search.</p>

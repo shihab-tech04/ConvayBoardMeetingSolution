@@ -2,15 +2,10 @@
  * PDF text search panel.
  * Searches the text content of the loaded PDF using pdfjs-dist's getTextContent.
  */
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { Search, X, ChevronUp, ChevronDown } from "lucide-react";
-
-interface SearchResult {
-  pageNum: number;
-  text: string;
-  excerpt: string;
-}
+import { searchPdfText, type PdfTextSearchResult } from "./pdfTextSearch";
 
 interface Props {
   pdfDoc: PDFDocumentProxy | null;
@@ -21,44 +16,52 @@ interface Props {
 
 export function PdfSearchPanel({ pdfDoc, hasTextLayer, onNavigate, onClose }: Props) {
   const [query,   setQuery]   = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [results, setResults] = useState<PdfTextSearchResult[]>([]);
   const [current, setCurrent] = useState(-1);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const requestVersion = useRef(0);
+
+  // A newly loaded document or an unmounted panel invalidates old PDF.js work.
+  useEffect(() => {
+    requestVersion.current += 1;
+    setResults([]);
+    setCurrent(-1);
+    setSearching(false);
+    setSearchError("");
+    return () => { requestVersion.current += 1; };
+  }, [pdfDoc]);
+
+  function clearSearch(nextQuery: string) {
+    requestVersion.current += 1;
+    setQuery(nextQuery);
+    setResults([]);
+    setCurrent(-1);
+    setSearching(false);
+    setSearchError("");
+  }
 
   const runSearch = useCallback(async (q: string) => {
-    if (!q.trim() || !pdfDoc || !hasTextLayer) {
-      setResults([]);
-      setCurrent(-1);
-      return;
-    }
+    const version = ++requestVersion.current;
+    setResults([]);
+    setCurrent(-1);
+    setSearchError("");
+    if (!q.trim() || !pdfDoc) { setSearching(false); return; }
     setSearching(true);
-    const found: SearchResult[] = [];
-    const lower = q.toLowerCase();
-
-    for (let p = 1; p <= pdfDoc.numPages; p++) {
-      const page    = await pdfDoc.getPage(p);
-      const content = await page.getTextContent();
-      const text    = (content.items.filter((item) => "str" in item) as { str: string }[])
-        .map(item => item.str)
-        .join(" ");
-
-      const idx = text.toLowerCase().indexOf(lower);
-      if (idx !== -1) {
-        const start = Math.max(0, idx - 30);
-        const end   = Math.min(text.length, idx + q.length + 30);
-        found.push({
-          pageNum: p,
-          text,
-          excerpt: `…${text.slice(start, end)}…`,
-        });
-      }
+    try {
+      // Do not use hasTextLayer as an eligibility gate: it describes only page 1.
+      const found = await searchPdfText(pdfDoc, q, () => requestVersion.current === version);
+      if (requestVersion.current !== version) return;
+      setResults(found);
+      setCurrent(found.length > 0 ? 0 : -1);
+      if (found.length > 0) onNavigate(found[0].pageNum);
+    } catch (error) {
+      if (requestVersion.current !== version) return;
+      setSearchError(error instanceof Error ? error.message : "Unable to search this PDF.");
+    } finally {
+      if (requestVersion.current === version) setSearching(false);
     }
-
-    setResults(found);
-    setCurrent(found.length > 0 ? 0 : -1);
-    if (found.length > 0) onNavigate(found[0].pageNum);
-    setSearching(false);
-  }, [pdfDoc, hasTextLayer, onNavigate]);
+  }, [pdfDoc, onNavigate]);
 
   function goPrev() {
     if (results.length === 0) return;
@@ -84,13 +87,13 @@ export function PdfSearchPanel({ pdfDoc, hasTextLayer, onNavigate, onClose }: Pr
           placeholder="Search in PDF…"
           value={query}
           aria-label="Search text"
-          onChange={e => setQuery(e.target.value)}
+          onChange={e => clearSearch(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter") void runSearch(query); }}
           autoFocus
         />
         {query && (
           <button type="button" className="pdf-search-panel__clear"
-            onClick={() => { setQuery(""); setResults([]); setCurrent(-1); }}
+            onClick={() => clearSearch("")}
             aria-label="Clear search">
             <X size={12} strokeWidth={2.5} />
           </button>
@@ -99,14 +102,14 @@ export function PdfSearchPanel({ pdfDoc, hasTextLayer, onNavigate, onClose }: Pr
           onClick={() => void runSearch(query)} disabled={!query.trim()}>
           Search
         </button>
-        <button type="button" className="pdf-search-panel__close" onClick={onClose} aria-label="Close search">
+        <button type="button" className="pdf-search-panel__close" onClick={() => { requestVersion.current += 1; onClose(); }} aria-label="Close search">
           <X size={14} strokeWidth={2} />
         </button>
       </div>
 
-      {!hasTextLayer && (
+      {!hasTextLayer && !query && (
         <p className="pdf-search-panel__no-text" role="status">
-          No searchable text was found in this PDF.
+          The first page has no selectable text. Search can still check other pages.
         </p>
       )}
 
@@ -116,7 +119,11 @@ export function PdfSearchPanel({ pdfDoc, hasTextLayer, onNavigate, onClose }: Pr
         </p>
       )}
 
-      {!searching && query && results.length === 0 && hasTextLayer && (
+      {searchError && !searching && (
+        <p className="pdf-search-panel__status" role="alert">{searchError}</p>
+      )}
+
+      {!searching && query && results.length === 0 && !searchError && (
         <p className="pdf-search-panel__status" role="status" aria-live="polite">
           No results for &ldquo;{query}&rdquo;.
         </p>

@@ -43,6 +43,7 @@ import {
 } from "../../data/documentWorkspaceData";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
 import { getEditorProvider, type EditorCapabilities } from "../../components/documents/editor/DocumentEditorProvider";
+import { runScopedEditorLoad } from "./editorLoadRecovery";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -109,10 +110,13 @@ async function loadDocumentContent(doc: BoardDocument): Promise<{
           banner: "This document was converted for in-app editing. The original file is preserved.",
         };
       } catch {
-        return { content: null, isHtml: false, banner: "Document conversion failed. Starting with a blank editor." };
+        // Do not expose a writable blank editor when conversion or its save fails.
+        // The source file is preserved and the user can safely retry the import.
+        throw new Error("Document conversion failed; source preserved");
       }
     }
-    return { content: null, isHtml: false, banner: null };
+    // A missing source Office file is a load error, not a new blank document.
+    throw new Error("Original Office document could not be found");
   }
 
   return { content: null, isHtml: false, banner: null };
@@ -639,6 +643,8 @@ function DocumentEditorShell({ doc, onClose }: { doc: BoardDocument; onClose: ()
   const [leftPanel,    setLeftPanel]    = useState<LeftPanel>(null);
   const [rightPanel,   setRightPanel]   = useState<RightPanel>(null);
   const [loading,      setLoading]      = useState(true);
+  const [loadFailed,   setLoadFailed]   = useState(false);
+  const [loadAttempt,  setLoadAttempt]  = useState(0);
   const [convertBanner,setConvertBanner] = useState<string | null>(null);
   const [title,        setTitle]        = useState(doc.doc_name);
   const [online]       = useState(navigator.onLine);
@@ -648,10 +654,11 @@ function DocumentEditorShell({ doc, onClose }: { doc: BoardDocument; onClose: ()
   const isLocked   = !!doc.is_locked;
 
   // Editable only if: capability + editing mode + NOT locked (non-rich-text already routed away)
-  const isEditable = caps.editing && mode === "editing" && !isLocked;
+  const isEditable = caps.editing && mode === "editing" && !isLocked && !loadFailed;
 
   const autosaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
+  const loadPendingRef = useRef(true);
 
   // Locked state overrides save state
   useEffect(() => {
@@ -674,7 +681,7 @@ function DocumentEditorShell({ doc, onClose }: { doc: BoardDocument; onClose: ()
     ],
     editable: isEditable,
     onUpdate: ({ editor: ed }) => {
-      if (!isEditable) return;
+      if (!isEditable || loadPendingRef.current) return;
       setSaveState("saving");
       if (autosaveRef.current) clearTimeout(autosaveRef.current);
       autosaveRef.current = setTimeout(async () => {
@@ -709,25 +716,44 @@ function DocumentEditorShell({ doc, onClose }: { doc: BoardDocument; onClose: ()
   }, [editor, isEditable]);
 
   // ── Load content ──
+  // A failed read must never silently turn the previously saved document into an editable blank file.
+  // Scope each attempt to the current document and retry generation so late results are ignored.
   useEffect(() => {
-    loadDocumentContent(doc).then(({ content, isHtml, banner }) => {
-      if (banner) setConvertBanner(banner);
-      const ed = editorRef.current;
-      if (content && ed) {
+    let current = true;
+    loadPendingRef.current = true;
+    setLoading(true);
+    setLoadFailed(false);
+    setConvertBanner(null);
+    void runScopedEditorLoad(
+      () => loadDocumentContent(doc),
+      () => current,
+      ({ content, isHtml, banner }) => {
+        const ed = editorRef.current;
+        if (!ed) throw new Error("Document editor is unavailable");
         if (isHtml) {
-          ed.commands.setContent(content);
-        } else {
+          ed.commands.setContent(content ?? "");
+        } else if (content) {
           try { ed.commands.setContent(JSON.parse(content)); }
           catch { ed.commands.setContent(content); }
+        } else {
+          ed.commands.setContent("");
         }
-      }
-      setLoading(false);
-    });
+        if (banner) setConvertBanner(banner);
+        setSaveState("saved");
+      },
+      () => {
+        setLoadFailed(true);
+        setSaveState("error");
+      },
+      () => { loadPendingRef.current = false; setLoading(false); },
+    );
+    return () => { current = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docId]);
+  }, [docId, loadAttempt]);
 
   // ── Save Version ──
   const handleSaveVersion = useCallback(async () => {
+    if (loading || loadFailed) return;
     const num    = parseFloat(doc.version ?? "1.0") + 0.1;
     const newVer = num.toFixed(1);
     const verId  = `DV-${Date.now()}`;
@@ -765,7 +791,7 @@ function DocumentEditorShell({ doc, onClose }: { doc: BoardDocument; onClose: ()
     });
 
     toast.success(`Version v${newVer} saved.`);
-  }, [doc, docId, title, versionReg, docRegistry, auditReg, editor]);
+  }, [doc, docId, title, versionReg, docRegistry, auditReg, editor, loading, loadFailed]);
 
   // ── Save title on blur ──
   const handleTitleBlur = useCallback(() => {
@@ -804,7 +830,7 @@ function DocumentEditorShell({ doc, onClose }: { doc: BoardDocument; onClose: ()
             onChange={e => setTitle(e.target.value)}
             onBlur={handleTitleBlur}
             aria-label="Document title"
-            disabled={isLocked}
+            disabled={isLocked || loading || loadFailed}
           />
           <span className="doc-editor__head-ver">v{doc.version}</span>
         </div>
@@ -846,7 +872,7 @@ function DocumentEditorShell({ doc, onClose }: { doc: BoardDocument; onClose: ()
             <Activity size={15} strokeWidth={2} />
           </button>
           <div className="doc-editor__head-divider" />
-          {caps.editing && !isLocked && (
+          {caps.editing && !isLocked && !loading && !loadFailed && (
             <>
               <button
                 type="button"
@@ -904,13 +930,24 @@ function DocumentEditorShell({ doc, onClose }: { doc: BoardDocument; onClose: ()
 
         {/* Main editing area */}
         <div className="doc-editor__main">
-          {isEditable && <EditorToolbar editor={editor} disabled={!isEditable} />}
+          {isEditable && !loading && <EditorToolbar editor={editor} disabled={!isEditable} />}
 
           <div className="doc-editor__canvas-wrap">
             {loading ? (
               <div className="doc-editor__loading">
                 <Loader2 size={22} className="spin-icon" strokeWidth={1.75} />
                 <span>Loading document…</span>
+              </div>
+            ) : loadFailed ? (
+              <div className="doc-editor__loading" role="alert">
+                <AlertCircle size={20} strokeWidth={1.75} />
+                <span>Document content could not be loaded. Editing is disabled to protect saved content.</span>
+                <Button variant="secondary" size="sm" onClick={() => {
+                  // Re-enable/recreate the editor before the next effect begins loading.
+                  setLoading(true);
+                  setLoadFailed(false);
+                  setLoadAttempt(n => n + 1);
+                }}>Retry</Button>
               </div>
             ) : (
               <div className="doc-editor__canvas">

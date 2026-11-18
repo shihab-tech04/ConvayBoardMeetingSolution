@@ -32,6 +32,7 @@ import { PdfAnnotationLayer } from "./PdfAnnotationLayer";
 import { PdfThumbnailRail } from "./PdfThumbnailRail";
 import { PdfSearchPanel } from "./PdfSearchPanel";
 import { PdfCommentsPanel } from "./PdfCommentsPanel";
+import { requestPdfPage } from "./pdfPageRequest";
 import type { PdfAnnotation } from "./pdfAnnotationTypes";
 import type { DocumentSource } from "../documentSource";
 import { resolveDocumentFile } from "../documentSource";
@@ -292,7 +293,25 @@ export function PdfViewerCore({
 
   useEffect(() => {
     if (!pdfDoc) return;
-    void pdfDoc.getPage(pageNum).then(setCurrentPage);
+    // Discard the previous canvas immediately; late PDF.js completions must not
+    // show an earlier page under the current navigation number.
+    let current = true;
+    setCurrentPage(null);
+    void requestPdfPage({
+      getPage: number => pdfDoc.getPage(number),
+      pageNumber: pageNum,
+      totalPages: pdfDoc.numPages,
+      isCurrent: () => current,
+      onSuccess: page => {
+        setCurrentPage(page);
+        setErrorMsg(null);
+      },
+      onFailure: error => {
+        setErrorMsg(error instanceof Error ? error.message : "Unable to load PDF page.");
+        setLoadState("error");
+      },
+    });
+    return () => { current = false; };
   }, [pdfDoc, pageNum]);
 
   // ── Annotations ─────────────────────────────────────────────────────────────
@@ -598,6 +617,12 @@ export function PdfViewerCore({
         <div className="doc-workspace__state" role="status">
           <Loader2 size={28} className="spin-icon" strokeWidth={1.5} />
           <span>Loading PDF…</span>
+        </div>
+      )}
+      {loadState === "ready" && !currentPage && (
+        <div className="doc-workspace__state" role="status">
+          <Loader2 size={28} className="spin-icon" strokeWidth={1.5} />
+          <span>Loading page…</span>
         </div>
       )}
       {loadState === "ready" && currentPage && (

@@ -1,8 +1,9 @@
 /**
  * Sheet tab bar — matches the spec's sheet management requirements.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Plus, X, Check } from "lucide-react";
+import { normalizeWorksheetRename, shouldActivateWorksheetTab } from "./worksheetTabKeyboard";
 
 export interface SheetTab {
   id: string;
@@ -28,18 +29,21 @@ export function SpreadsheetSheetTabs({
   const [editName,    setEditName]    = useState("");
   const [contextId,   setContextId]   = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const renameSettledRef = useRef(false);
 
   function startEdit(sheet: SheetTab) {
     if (!canEdit) return;
+    renameSettledRef.current = false;
     setEditingId(sheet.id);
     setEditName(sheet.name);
     setContextId(null);
   }
 
   function commitEdit() {
-    if (editingId && editName.trim()) {
-      onRename(editingId, editName.trim());
-    }
+    if (renameSettledRef.current) return;
+    renameSettledRef.current = true;
+    const name = normalizeWorksheetRename(editName);
+    if (editingId && name) onRename(editingId, name);
     setEditingId(null);
   }
 
@@ -66,7 +70,12 @@ export function SpreadsheetSheetTabs({
             role="tab"
             aria-selected={isActive}
             tabIndex={isActive ? 0 : -1}
-            onKeyDown={e => { if (e.key === "Enter" || e.key === " ") onActivate(sheet.id); }}
+            onKeyDown={e => {
+              if (shouldActivateWorksheetTab(e.key, e.target === e.currentTarget)) {
+                e.preventDefault();
+                onActivate(sheet.id);
+              }
+            }}
           >
             {editingId === sheet.id ? (
               <input
@@ -74,10 +83,16 @@ export function SpreadsheetSheetTabs({
                 value={editName}
                 autoFocus
                 onChange={e => setEditName(e.target.value)}
-                onBlur={commitEdit}
+                onBlur={() => { if (!renameSettledRef.current) commitEdit(); }}
                 onKeyDown={e => {
-                  if (e.key === "Enter") commitEdit();
-                  if (e.key === "Escape") setEditingId(null);
+                  // Rename input Enter/Escape must not activate the parent worksheet tab.
+                  e.stopPropagation();
+                  if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    renameSettledRef.current = true;
+                    setEditingId(null);
+                  }
                 }}
                 aria-label="Rename sheet"
               />
