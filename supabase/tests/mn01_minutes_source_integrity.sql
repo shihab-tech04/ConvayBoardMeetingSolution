@@ -69,6 +69,36 @@ begin
     raise exception 'MN-01 canonical minutes readback failed';
   end if;
 
+  -- A minute-backed meeting cannot replace its source title after creation.
+  v_denied_write := false;
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.meetings','record_id',v_mid,'action','update',
+      'payload',jsonb_build_object('meeting_title','Changed after minutes')
+    )));
+  exception when sqlstate '42501' then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Linked meeting title was mutated'; end if;
+  if not exists (
+    select 1 from public.convay_entity_records
+    where entity_key='bms.meetings' and record_id=v_mid
+      and payload->>'meeting_title'='Synthetic board meeting'
+  ) then raise exception 'Denied source update changed the meeting'; end if;
+
+  -- Supplying a forged organization on minutes must fail even when this
+  -- single-organization source meeting has no explicit organization field.
+  v_denied_write := false;
+  v_invalid_id := 'MN01-ORG-'||replace(gen_random_uuid()::text,'-','');
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.minutes','action','create','payload',
+      v_payload || jsonb_build_object('id',v_invalid_id,
+        'minutes_id',v_invalid_id,'organization_id','forged-organization')
+    )));
+  exception when sqlstate '42501' then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Forged minutes organization was accepted'; end if;
+
   -- Both a forged title and a missing meeting must fail when bypassing the UI.
   foreach v_status in array array['forged-title','missing-source','wrong-date'] loop
     v_denied_write := false;
