@@ -53,6 +53,32 @@ begin
     return old;
   end if;
 
+  -- Once minutes exist, the source meeting's canonical identity, title,
+  -- date and scope cannot be rewritten. The row lock taken by minutes CREATE
+  -- serializes with this UPDATE, so concurrent changes cannot bypass it.
+  if tg_op = 'UPDATE' and old.entity_key = 'bms.meetings' then
+    if new.entity_key is distinct from old.entity_key then
+      raise exception 'Meeting entity identity cannot change'
+        using errcode='42501';
+    end if;
+    if (
+      new.record_id is distinct from old.record_id
+      or new.payload->'meeting_id' is distinct from old.payload->'meeting_id'
+      or new.payload->'meeting_title' is distinct from old.payload->'meeting_title'
+      or new.payload->'meeting_date' is distinct from old.payload->'meeting_date'
+      or new.payload->'tenant_id' is distinct from old.payload->'tenant_id'
+      or new.payload->'organization_id' is distinct from old.payload->'organization_id'
+    ) and exists (
+      select 1 from public.convay_entity_records r
+      where r.entity_key = 'bms.minutes'
+        and r.payload->>'meeting_id' in (old.record_id, old.payload->>'meeting_id')
+    ) then
+      raise exception 'Linked minutes protect meeting identity, date and scope'
+        using errcode='42501';
+    end if;
+    return new;
+  end if;
+
   if tg_op = 'UPDATE' and old.entity_key = 'bms.minutes'
      and new.entity_key is distinct from old.entity_key then
     raise exception 'Minutes entity identity cannot change' using errcode='42501';
@@ -106,6 +132,15 @@ begin
   if nullif(btrim(coalesce(new.payload->>'tenant_id','')), '') is not null
      and new.payload->>'tenant_id' is distinct from v_source_scope then
     raise exception 'Client-supplied minutes tenant does not match the source'
+      using errcode='42501';
+  end if;
+
+  -- Supplied organization metadata must agree with the source's
+  -- organization field, not merely with a coalesced tenant fallback.
+  if nullif(btrim(coalesce(new.payload->>'organization_id','')), '') is not null
+     and new.payload->>'organization_id' is distinct from
+         v_meeting.payload->>'organization_id' then
+    raise exception 'Client-supplied minutes organization does not match source'
       using errcode='42501';
   end if;
 
@@ -231,7 +266,7 @@ execute function convay_private.enforce_minutes_source_integrity();
 drop trigger if exists convay_a0_minutes_before_update on public.convay_entity_records;
 create trigger convay_a0_minutes_before_update
 before update on public.convay_entity_records
-for each row when (new.entity_key = 'bms.minutes' or old.entity_key = 'bms.minutes')
+for each row when (new.entity_key in ('bms.minutes','bms.meetings') or old.entity_key in ('bms.minutes','bms.meetings'))
 execute function convay_private.enforce_minutes_source_integrity();
 
 drop trigger if exists convay_a0_minutes_before_delete on public.convay_entity_records;
