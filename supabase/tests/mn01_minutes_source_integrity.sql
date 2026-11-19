@@ -1,6 +1,19 @@
 -- MN-01 rollback-only test. Execute ONLY on an isolated restored test database.
 -- This test deliberately creates synthetic registry rows; never run on production.
 begin;
+-- Test runner only: discover the active Root fixture while still using the
+-- trusted isolated restore role. public.user_profiles SELECT RLS requires
+-- auth.uid(), so switching to authenticated first hides every profile.
+-- Never execute this role/claim impersonation harness on production.
+select set_config(
+  'request.jwt.claim.sub',
+  coalesce((
+    select user_id::text from public.user_profiles
+    where account_status='active' and account_role='super_admin'
+    order by user_id limit 1
+  ), ''),
+  true
+);
 set local role authenticated;
 
 do $test$
