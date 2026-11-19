@@ -1,3 +1,4 @@
+import { LIVE_MEETINGS_RELEASED } from "../../services/liveMeetingReleaseGate";
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 
 import { toast } from "sonner";
@@ -416,7 +417,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   }, [access.loaded, access.error]);
 
   const meeting = meetings.find(m => m.meeting_id === meetingId);
-  const isOnlineMeeting = meeting?.mode === "Virtual" || meeting?.mode === "Hybrid";
+  const isOnlineMeeting = LIVE_MEETINGS_RELEASED && (meeting?.mode === "Virtual" || meeting?.mode === "Hybrid");
 
   // Build participant list from registry — no synthetic defaults
   const baseParticipants: VirtualParticipant[] = (() => {
@@ -1504,7 +1505,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // ── Pre-join screen ────────────────────────────────────────────────────────
   if (phase === "prejoin") {
     // Block uninvited users only when canonical participant links exist for this meeting
-    if (meetingLinks.length > 0 && !myLink && !access.is_super_admin) {
+    if (meetingLinks.length > 0 && !myLink && (!LIVE_MEETINGS_RELEASED || !access.is_super_admin)) {
       return (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "1rem", padding: "2rem", textAlign: "center", background: "#0f172a", color: "#f1f5f9" }}>
           <AlertCircle size={48} style={{ color: "#ef4444" }} />
@@ -2506,14 +2507,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* ── BOTTOM DOCK ──────────────────────────────────────────────────── */}
           <div style={{ height: 64, background: "#1e293b", borderTop: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0 1rem", flexShrink: 0 }}>
-            {isOnlineMeeting && <>
+            {(!LIVE_MEETINGS_RELEASED || isOnlineMeeting) && <>
             <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
               {myMicOn ? <Mic size={18} /> : <MicOff size={18} />}
             </DockButton>
             <DockButton active={myCamOn} danger={!myCamOn} label={myCamOn  ? "Stop Video"  : "Start Video"}  onClick={() => setMyCamOn(v => !v)}>
               {myCamOn ? <Video size={18} /> : <VideoOff size={18} />}
             </DockButton>
-            <DockButton active={isSharing} label={isSharing ? "Stop Share" : "Share Screen"} onClick={() => setIsSharing(v => !v)}>
+            <DockButton active={isSharing} label={isSharing ? "Stop Share" : "Share Screen"} onClick={() => { setIsSharing(v => !v); if (!LIVE_MEETINGS_RELEASED && !isSharing) setViewMode("document"); }}>
               {isSharing ? <MonitorOff size={18} /> : <Monitor size={18} />}
             </DockButton>
             </>}
