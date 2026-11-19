@@ -7,12 +7,16 @@ import { MINUTES_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { useMinutesRegistry, useMeetingRegistry, generateId } from "../../data/boardMeetingData";
 import { MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import { patchFormOptions } from "../../utils/patchFormOptions";
+import { useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { resolveMinutesSource } from "./minutesSourceIntegrity";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
 
 export function MinutesManagementPage() {
   const registry = useMinutesRegistry();
   const meetingReg = useMeetingRegistry();
+  const access = useAccessSnapshot();
+  const canWriteMinutes = access.loaded && (access.is_super_admin || access.effective_permissions.includes("min_create"));
   const dynamicFields = patchFormOptions(MINUTES_FORM_FIELDS, {
     meeting_id: meetingReg.items.map(m => m.meeting_id),
     related_meeting: meetingReg.items.map(m => m.meeting_id + " — " + m.meeting_title),
@@ -67,18 +71,31 @@ export function MinutesManagementPage() {
       { id: "archive",          label: "Archive",          labelKey: "actions.archive",           icon: Archive, color: "#6b7280" },
     ],
     rows: items.map(m => ({ ...m } as TableRow)),
+    dataLoading: Boolean(registry.loading || meetingReg.loading),
+    dataError: registry.error ?? meetingReg.error ?? null,
+    onDataRetry: async () => {
+      await Promise.all([registry.refresh?.(), meetingReg.refresh?.()]);
+    },
     kpis,
-    entryBtn: "Create Minutes",
+    entryBtn: canWriteMinutes ? "Create Minutes" : undefined,
     formFields: dynamicFields,
-    onRowCreate(values) {
+    async onRowCreate(values) {
+      if (!canWriteMinutes) throw new Error("You do not have permission to create minutes.");
+      if (registry.loading || meetingReg.loading || registry.error || meetingReg.error) {
+        throw new Error("Meeting records are not ready. Refresh and try again.");
+      }
+      const meeting = resolveMinutesSource(values.meeting_id, values.meeting_title, meetingReg.items);
+      const minuteTaker = String(values.minute_taker ?? "").trim();
+      if (!minuteTaker) throw new Error("A minute taker is required.");
       const minsId = generateId("MIN", registry.items.map(m => m.minutes_id));
-      registry.add({
+      const saved = await registry.add({
         id:                 minsId,
         minutes_id:         minsId,
-        meeting_id:         String(values.meeting_id         ?? ""),
-        meeting_title:      String(values.meeting_title      ?? ""),
-        minutes_template:   String(values.minutes_template   ?? "Standard"),
-        minute_taker:       String(values.minute_taker       ?? ""),
+        meeting_id:         meeting.meeting_id,
+        meeting_title:      meeting.meeting_title,
+        meeting_date:       meeting.meeting_date,
+        minutes_template:   String(values.minutes_template   ?? "Standard Board Minutes"),
+        minute_taker:       minuteTaker,
         co_authors:         String(values.co_authors         ?? ""),
         quorum_statement:   String(values.quorum_statement   ?? ""),
         discussion_summary: String(values.discussion_summary ?? ""),
@@ -88,6 +105,34 @@ export function MinutesManagementPage() {
         approval_status:    "Draft",
         created_at:         new Date().toISOString(),
       });
+      if (saved !== true) throw new Error("Minutes were not saved. Refresh the register and retry.");
+      return true;
+    },
+    async onRowUpdate(id, values) {
+      if (!canWriteMinutes) throw new Error("You do not have permission to edit minutes.");
+      const original = registry.items.find(item => item.id === id);
+      if (!original) throw new Error("Minutes record not found. Refresh and try again.");
+      if (original.approval_status !== "Draft") {
+        throw new Error("Only draft minutes can be edited. Approved and signed minutes must retain their original record.");
+      }
+      // Never accept a changed meeting link, identity, version or approval state from the form.
+      if (String(values.meeting_id ?? "").trim() !== original.meeting_id ||
+          String(values.meeting_title ?? "").trim() !== original.meeting_title) {
+        throw new Error("The source meeting cannot be changed. Create minutes from the correct meeting instead.");
+      }
+      const minuteTaker = String(values.minute_taker ?? "").trim();
+      if (!minuteTaker) throw new Error("A minute taker is required.");
+      const saved = await registry.update(id, {
+        minutes_template: String(values.minutes_template ?? original.minutes_template),
+        minute_taker: minuteTaker,
+        co_authors: String(values.co_authors ?? ""),
+        quorum_statement: String(values.quorum_statement ?? ""),
+        discussion_summary: String(values.discussion_summary ?? ""),
+        next_meeting_date: String(values.next_meeting_date ?? ""),
+        closing_time: String(values.closing_time ?? ""),
+      });
+      if (saved !== true) throw new Error("Draft changes were not saved. Refresh and retry.");
+      return true;
     },
   };
 
