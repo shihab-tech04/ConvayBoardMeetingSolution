@@ -2,6 +2,7 @@ import { useState, useEffect, Fragment } from "react";
 import { Shield, AlertCircle, Check, Lock, ShieldOff } from "lucide-react";
 import { ExpandableText } from "../shared/SafeText";
 import { AppTextField } from "../forms/AppTextField";
+import { AppSelectField } from "../forms/AppSelectField";
 import { AppTextArea } from "../forms/AppTextArea";
 import { SToggle } from "../forms/SToggle";
 import { StatusBadge } from "../badges/StatusBadge";
@@ -39,7 +40,7 @@ export function CreateEditRoleModal({
   const [description, setDescription]         = useState("");
   const [status, setStatus]                   = useState<"Active" | "Inactive">("Active");
   const [selectedPermIds, setSelectedPermIds] = useState<string[]>([]);
-  // level kept for SystemRole type-safety — never exposed in the UI
+  // Classification is configurable metadata, never a grant of root authority.
   const [level, setLevel]                     = useState("Custom");
 
   useEffect(() => {
@@ -194,6 +195,14 @@ export function CreateEditRoleModal({
                 </div>
 
                 <div className="crm-field">
+                  <AppSelectField id="role-classification" label="Role Classification"
+                    value={level} onChange={setLevel}
+                    options={["Custom", "Admin", "Manager", "Officer", "Viewer",
+                      ...(level && !["Custom", "Admin", "Manager", "Officer", "Viewer"].includes(level) ? [level] : [])]}
+                    helper="Classification does not grant platform Super Admin access." required/>
+                </div>
+
+                <div className="crm-field">
                   <p className="crm-field-label">{"Role Status"}</p>
                   <SToggle
                     id="role-status"
@@ -263,6 +272,10 @@ export function CreateEditRoleModal({
                         mode="block"
                       />
                     </div>
+                  </div>
+                  <div className="crm-review__summary-item">
+                    <span className="crm-review__summary-label">{"Role Classification"}</span>
+                    <span className="crm-review__summary-value">{level}</span>
                   </div>
                   <div className="crm-review__summary-item">
                     <span className="crm-review__summary-label">{"Role Status"}</span>
