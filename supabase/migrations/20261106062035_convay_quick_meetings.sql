@@ -66,10 +66,22 @@ create table public.convay_quick_meeting_attendance (
 create index convay_quick_meeting_attendance_user_idx
   on public.convay_quick_meeting_attendance(user_id, last_joined_at desc) where user_id is not null;
 
+-- Host removals are independent of attendance: a participant may be online
+-- before an asynchronous join confirmation is recorded. The secret-bearing
+-- guest link alone must not allow that removed session to mint a new JWT.
+create table public.convay_quick_meeting_removed_guests (
+  meeting_id uuid not null references public.convay_quick_meetings(id) on delete cascade,
+  livekit_identity text not null check (livekit_identity ~ '^qg-[0-9a-f]{48}$'),
+  removed_by uuid not null references auth.users(id) on delete restrict,
+  removed_at timestamptz not null default now(),
+  primary key (meeting_id, livekit_identity)
+);
+
 alter table public.convay_quick_meetings enable row level security;
 alter table public.convay_quick_meeting_sessions enable row level security;
 alter table public.convay_quick_meeting_links enable row level security;
 alter table public.convay_quick_meeting_attendance enable row level security;
+alter table public.convay_quick_meeting_removed_guests enable row level security;
 
 -- Explicitly deny browser roles at the row-policy layer as a second boundary.
 create policy convay_quick_meetings_browser_deny on public.convay_quick_meetings
@@ -80,12 +92,16 @@ create policy convay_quick_links_browser_deny on public.convay_quick_meeting_lin
   for all to anon, authenticated using (false) with check (false);
 create policy convay_quick_attendance_browser_deny on public.convay_quick_meeting_attendance
   for all to anon, authenticated using (false) with check (false);
+create policy convay_quick_removed_browser_deny on public.convay_quick_meeting_removed_guests
+  for all to anon, authenticated using (false) with check (false);
 
 revoke all on public.convay_quick_meetings, public.convay_quick_meeting_sessions,
-  public.convay_quick_meeting_links, public.convay_quick_meeting_attendance
+  public.convay_quick_meeting_links, public.convay_quick_meeting_attendance,
+  public.convay_quick_meeting_removed_guests
   from public, anon, authenticated;
 grant all on public.convay_quick_meetings, public.convay_quick_meeting_sessions,
-  public.convay_quick_meeting_links, public.convay_quick_meeting_attendance
+  public.convay_quick_meeting_links, public.convay_quick_meeting_attendance,
+  public.convay_quick_meeting_removed_guests
   to service_role;
 
 -- Create the quick meeting, its active session and its first link atomically.
