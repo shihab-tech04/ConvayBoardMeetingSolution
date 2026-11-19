@@ -1,6 +1,7 @@
 -- Disposable MN-01 mutation harness. NOT a production migration.
 -- This is a deliberately minimal relational replica to exercise the exact
 -- new security trigger under PostgreSQL 17; it does not certify production RLS.
+create role anon nologin;
 create role authenticated nologin;
 create schema auth;
 create schema convay_private;
