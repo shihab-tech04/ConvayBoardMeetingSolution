@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-const sql = readFileSync(new URL('../../supabase/migrations/20261119183500_convay_minutes_source_integrity.sql', import.meta.url), 'utf8');
+import { resolve } from 'node:path';
+const sql = readFileSync(resolve(process.cwd(), 'supabase/migrations/20261119183500_convay_minutes_source_integrity.sql'), 'utf8');
 
 describe('MN-01 trusted SQL guards (source contract, not a substitute for SQL E2E)', () => {
   it('checks the existing source meeting using a transaction lock', () => {
