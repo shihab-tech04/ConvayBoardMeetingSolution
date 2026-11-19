@@ -44,6 +44,9 @@ const empty: AccessSnapshot = {
 };
 let current: AccessSnapshot = empty;
 let request: Promise<AccessSnapshot> | null = null;
+// Invalidate every previously started permission read on account/session changes.
+// A completed request must never restore another account's grants after sign-out.
+let sessionEpoch = 0;
 const listeners = new Set<() => void>();
 const subscribe = (fn: () => void) => {
   listeners.add(fn);
@@ -59,15 +62,20 @@ export function useAccessSnapshot(): AccessSnapshot {
 }
 export function readAccessSnapshot(): AccessSnapshot { return current; }
 export function clearAccessSnapshot() {
+  sessionEpoch += 1;
   request = null;
   publish({ ...empty });
 }
 export async function reloadAccessSnapshot(): Promise<AccessSnapshot> {
-  // Shared request across the sidebar, role modal, and permission page.
+  // Deduplicate within a session, but never carry a request across a clear.
   if (request) return request;
-  request = (async () => {
+  const epoch = sessionEpoch;
+  const activeRequest: Promise<AccessSnapshot> = (async () => {
     try {
       const payload = await convayAuth.access<Partial<AccessSnapshot>>("snapshot");
+      if (epoch !== sessionEpoch) {
+        throw new Error("Access verification superseded by a session change");
+      }
       const value: AccessSnapshot = {
         loaded: true, error: null,
         is_super_admin: payload.is_super_admin === true,
@@ -80,12 +88,20 @@ export async function reloadAccessSnapshot(): Promise<AccessSnapshot> {
       publish(value);
       return value;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to verify permissions";
-      publish({ ...empty, error: message });
+      // A stale rejection must not overwrite the newer session's permissions.
+      if (epoch === sessionEpoch) {
+        const message = error instanceof Error ? error.message : "Unable to verify permissions";
+        publish({ ...empty, error: message });
+      }
       throw error;
     }
   })();
-  try { return await request; } finally { request = null; }
+  request = activeRequest;
+  try { return await activeRequest; }
+  finally {
+    // An obsolete request must not clear the next session's in-flight read.
+    if (request === activeRequest) request = null;
+  }
 }
 export const hasAccess = (code: string, state: AccessSnapshot = current) =>
   state.loaded && (state.is_super_admin || state.effective_permissions.includes(code));
@@ -166,7 +182,8 @@ export function permissionForPath(path: string): string | null {
 export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   if (!state.loaded) return false;
   if (state.is_super_admin) return true;
-  if (/^\/(?:administration\/roles-permissions(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(path)) return false;
+  const normalizedPath = "/" + path.replace(/^\/+|\/+$/g, "");
+  if (/^\/(?:administration\/roles-permissions(?:\/|$)|administration\/integrations(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(normalizedPath)) return false;
   const required = permissionForPath(path);
   return !!required && hasAccess(required, state);
 }

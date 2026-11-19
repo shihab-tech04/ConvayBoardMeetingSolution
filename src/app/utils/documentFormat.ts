@@ -49,7 +49,7 @@ const MIME_MAP: Record<string, DocumentWorkspaceType> = {
   "text/plain":                               "rich-text",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":           "spreadsheet",
   "application/vnd.ms-excel":                 "spreadsheet",
-  "application/vnd.ms-excel.sheet.macroEnabled.12": "spreadsheet",
+  "application/vnd.ms-excel.sheet.macroenabled.12": "spreadsheet",
   "application/vnd.oasis.opendocument.spreadsheet": "spreadsheet",
   "text/csv":                                 "spreadsheet",
   "application/csv":                          "spreadsheet",
@@ -69,6 +69,15 @@ const MIME_MAP: Record<string, DocumentWorkspaceType> = {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+const VALID_WORKSPACES = new Set<DocumentWorkspaceType>([
+  "rich-text", "pdf", "spreadsheet", "presentation", "image", "unsupported",
+]);
+
+/** HTTP Content-Type may carry casing, whitespace, or a charset parameter. */
+export function normalizeDocumentMime(mime: string | null | undefined): string {
+  return (mime ?? "").split(";", 1)[0].trim().toLowerCase();
+}
+
 export function getFileExtension(doc: BoardDocument): string {
   return (doc.file_format ?? doc.file_name?.split(".").pop() ?? "")
     .toLowerCase()
@@ -80,11 +89,11 @@ export function getDocumentWorkspaceType(doc: BoardDocument): DocumentWorkspaceT
 
   // Honour explicit workspace_type field if already set
   const explicit = (doc as { workspace_type?: string }).workspace_type as DocumentWorkspaceType | undefined;
-  if (explicit && explicit !== "unsupported") return explicit;
+  if (explicit && explicit !== "unsupported" && VALID_WORKSPACES.has(explicit)) return explicit;
 
   // MIME type takes priority — canonical field is mime_type; file_mime is legacy alias
   const docAny = doc as { mime_type?: string; file_mime?: string };
-  const mime = docAny.mime_type ?? docAny.file_mime;
+  const mime = normalizeDocumentMime(docAny.mime_type ?? docAny.file_mime);
   if (mime && MIME_MAP[mime]) return MIME_MAP[mime];
 
   const ext = getFileExtension(doc);
@@ -107,9 +116,9 @@ export function getOnlyOfficeDocumentType(wsType: DocumentWorkspaceType): OnlyOf
 export function isMacroEnabledWorkbook(doc: BoardDocument): boolean {
   const ext = getFileExtension(doc);
   const docAny = doc as { mime_type?: string; file_mime?: string };
-  const mime = docAny.mime_type ?? docAny.file_mime;
+  const mime = normalizeDocumentMime(docAny.mime_type ?? docAny.file_mime);
   return ext === "xlsm" || ext === "xlsb" ||
-    mime === "application/vnd.ms-excel.sheet.macroEnabled.12";
+    mime === "application/vnd.ms-excel.sheet.macroenabled.12";
 }
 
 /** Human-readable workspace type label. */

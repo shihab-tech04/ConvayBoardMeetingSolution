@@ -8,13 +8,16 @@
  *   rich-text   → calls onRichText (caller owns Tiptap editor)
  *   presentation / image / unsupported → DocumentUnsupportedWorkspace
  */
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { FileText, Presentation, Image, Download } from "lucide-react";
 import type { BoardDocument } from "../../data/boardMeetingData";
 import type { IEditorProvider } from "./editor/DocumentEditorProvider";
 import { getDocumentWorkspaceType, workspaceTypeLabel } from "../../utils/documentFormat";
 import { PdfWorkspace } from "./pdf/PdfWorkspace";
 import { SpreadsheetWorkspace } from "./spreadsheet/SpreadsheetWorkspace";
+import { documentContentStore } from "../../services/repositories/documentContentStore";
+import { retrieveOriginalForDownload } from "./documentOriginalDownload";
 
 interface Props {
   document: BoardDocument;
@@ -32,6 +35,40 @@ function DocumentUnsupportedWorkspace({
 }) {
   const wsType = getDocumentWorkspaceType(doc);
   const label  = workspaceTypeLabel(wsType);
+  const [downloading, setDownloading] = useState(false);
+  const downloadInFlight = useRef(false);
+
+  async function handleDownload() {
+    if (downloadInFlight.current) return;
+    downloadInFlight.current = true;
+    setDownloading(true);
+    try {
+      await retrieveOriginalForDownload(
+        doc.doc_id ?? doc.id,
+        doc.file_name ?? doc.doc_name ?? doc.title ?? "document",
+        id => documentContentStore.getOriginalFile(id),
+        (file, fileName) => {
+          const url = URL.createObjectURL(file);
+          try {
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = fileName;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+          } finally {
+            // Allow the browser to start its download before releasing the object URL.
+            window.setTimeout(() => URL.revokeObjectURL(url), 15_000);
+          }
+        },
+      );
+    } catch {
+      toast.error("Original file is unavailable. Please try again.");
+    } finally {
+      downloadInFlight.current = false;
+      setDownloading(false);
+    }
+  }
 
   const Icon =
     wsType === "presentation" ? Presentation :
@@ -49,15 +86,17 @@ function DocumentUnsupportedWorkspace({
           ? "Images are displayed inline. Open the original file to edit."
           : `${label} files are not supported for in-app editing.`}
       </p>
-      <a
-        href={doc.original_file_ref ?? "#"}
-        download={doc.file_name ?? doc.title}
+      <button
+        type="button"
+        onClick={handleDownload}
+        disabled={downloading}
+        aria-busy={downloading}
         className="btn btn--secondary btn--md"
         aria-label={`Download ${doc.file_name ?? doc.title}`}
       >
         <Download size={14} strokeWidth={2} aria-hidden="true" />
-        Download file
-      </a>
+        {downloading ? "Preparing file…" : "Download file"}
+      </button>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { StatCard } from "../../components/cards/StatCard";
 import { AppModal } from "../../components/modals/AppModal";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import { AppTextField } from "../../components/forms/AppTextField";
+import { AppSelectField } from "../../components/forms/AppSelectField";
 import { AppPasswordField } from "../../components/forms/AppPasswordField";
 import { AppCheckbox } from "../../components/forms/AppCheckbox";
 import { useAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
@@ -15,11 +16,12 @@ import { UnifiedDataTable } from "../../components/tables";
 import { fc, BADGE } from "../modulePageUtils";
 import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
+import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./userBusinessFields";
 
 type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
-interface FormState { name: string; username: string; email: string; password: string; phone: string; }
-const blank: FormState = { name: "", username: "", email: "", password: "", phone: "" };
+interface FormState { name: string; username: string; email: string; password: string; phone: string; employeeId: string; userType: string; }
+const blank: FormState = { name: "", username: "", email: "", password: "", phone: "", employeeId: "", userType: "Internal Employee" };
 const columns: ColDef[] = [
   fc("employeeId", "ID"),
   fc("name", "User"),
@@ -150,7 +152,8 @@ export function SupabaseUserManagementPage() {
     setSelectedId(null);
     setEditId(user.user_id);
     setForm({ name: user.display_name, username: user.username, email: user.email,
-      password: "", phone: user.phone ?? "" });
+      password: "", phone: user.phone ?? "", employeeId: user.employee_id ?? "",
+      userType: user.user_type ?? "Internal Employee" });
     setFormError("");
     setMode("edit");
   };
@@ -158,7 +161,8 @@ export function SupabaseUserManagementPage() {
     setSelectedId(null);
     setEditId(user.user_id);
     setForm({ name: user.display_name, username: user.username, email: user.email,
-      password: "", phone: user.phone ?? "" });
+      password: "", phone: user.phone ?? "", employeeId: user.employee_id ?? "",
+      userType: user.user_type ?? "Internal Employee" });
     setFormError("");
     setMode("password");
   };
@@ -170,6 +174,10 @@ export function SupabaseUserManagementPage() {
     if (mode !== "password" && (!form.name.trim() || !form.email.trim())) {
       setFormError("User name and email are required");
       return;
+    }
+    if (mode !== "password") {
+      const businessError = validateUserBusinessFields(form);
+      if (businessError) { setFormError(businessError); return; }
     }
     if (mode === "password" && form.password.length < 6) {
       setFormError("Password must be at least 6 characters");
@@ -183,12 +191,13 @@ export function SupabaseUserManagementPage() {
           name: form.name.trim(), username: form.username.trim() || undefined,
           email: form.email.trim(),
           phone: form.phone.trim() || undefined,
+          ...userBusinessFields(form),
         });
         toast.success("Invitation sent. The account stays inactive until the user verifies their email and sets a password.");
       } else if (mode === "edit" && editing) {
         await convayAuth.users("update", {
           user_id: editing.user_id, name: form.name.trim(), username: form.username.trim(),
-          phone: form.phone.trim(),
+          phone: form.phone.trim(), ...userBusinessFields(form),
         });
         toast.success("User updated");
       } else if (mode === "password" && editing) {
@@ -329,6 +338,8 @@ export function SupabaseUserManagementPage() {
             {selected.invitation_status && selected.invitation_status !== "accepted" && (
               <p>Email verification: {selected.email_verified_at ? "Verified — the invitee must finish setting a password." : "Pending — access stays inactive until the invitee verifies this address."}</p>
             )}
+            <p>Employee ID: {selected.employee_id || "—"}</p>
+            <p>User Type: {selected.user_type || "Internal Employee"}</p>
             {selected.phone && <p>Phone: {selected.phone}</p>}
           </div>
         </ResponsiveOverlay>
@@ -356,6 +367,10 @@ export function SupabaseUserManagementPage() {
                 onChange={v => setField("email", v)} required placeholder="user@example.com"
                 readOnly={mode === "edit"}
                 helper={mode === "edit" ? "Email changes require a separate verified process." : "The user must verify this address before access is activated."}/>
+              <AppSelectField id="convay-user-type" label="User Type" required value={form.userType}
+                onChange={v => setField("userType", v)} options={[...USER_TYPES]}/>
+              <AppTextField id="convay-employee-id" label="Employee ID (optional)" value={form.employeeId}
+                onChange={v => setField("employeeId", v)} placeholder="Employee ID or reference"/>
               <AppTextField id="convay-user-phone" label="Phone (optional)" value={form.phone}
                 onChange={v => setField("phone", v)} placeholder="Phone number"/>
             </>

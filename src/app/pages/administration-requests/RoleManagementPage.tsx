@@ -35,7 +35,7 @@ const ROLE_MOBILE_MAPPING = {
   status:     "status",
 };
 
-const LEVEL_OPTIONS = ["All", "Super Admin", "Admin", "Manager", "Officer", "Viewer"];
+const LEVEL_OPTIONS = ["All", "Super Admin", "Admin", "Manager", "Officer", "Viewer", "Custom"];
 const PERM_COUNT_OPTIONS = ["All", "0", "1–10", "11–25", "26+"];
 const USER_COUNT_OPTIONS  = ["All", "0", "1–5",  "6–20",  "21+"];
 
