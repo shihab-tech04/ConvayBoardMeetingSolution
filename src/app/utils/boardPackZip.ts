@@ -67,7 +67,10 @@ export function createBoardPackZip(entries: readonly BoardPackZipEntry[]): Uint8
   }
   const used = new Set<string>();
   const items = entries.map(item => {
-    if (!item || !(item.bytes instanceof Uint8Array)) throw new Error("Invalid document content.");
+    if (!item || !ArrayBuffer.isView(item.bytes) ||
+        Object.prototype.toString.call(item.bytes) !== "[object Uint8Array]") {
+      throw new Error("Invalid document content.");
+    }
     if (item.bytes.byteLength > MAX_FILE_BYTES) throw new Error("Document exceeds ZIP size limit.");
     const name = textEncoder.encode(uniqueName(item.name, used));
     if (name.length > 65535) throw new Error("Document name is too long.");
