@@ -13,6 +13,9 @@ import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import {
   useAgendaRegistry,
+  useGovernanceRegistry,
+  MEETING_TYPES,
+  AGENDA_CATEGORIES,
   useDocumentRegistry,
   useAgendaDocumentLinkRegistry,
   generateId,
@@ -29,6 +32,7 @@ import { Button } from "../buttons/Button";
 import { StatusBadge } from "../badges/StatusBadge";
 import { UnifiedDocumentViewer } from "../documents/UnifiedDocumentViewer";
 import { DocumentComposerModal } from "../documents/DocumentComposerModal";
+import { agendaReference, validateCompleteAgenda } from "./agendaCreationFields";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -236,6 +240,9 @@ function DocPickerPanel({ linkedIds, onToggle, onPreview, docReg }: {
 
 interface ParentForm {
   title: string; purpose: string; summary: string;
+  reference: string; committee: string; meeting_type: string;
+  agenda_category: string; submitting_division: string;
+  submitted_by: string; presenter_user_id: string;
   owner_user_id: string; confidentiality: string;
 }
 
@@ -247,6 +254,8 @@ interface ChildForm {
 
 const EMPTY_PARENT: ParentForm = {
   title: "", purpose: "For Information", summary: "", owner_user_id: "", confidentiality: "Internal",
+  reference: "", committee: "", meeting_type: "", agenda_category: "Governance",
+  submitting_division: "", submitted_by: "", presenter_user_id: "",
 };
 
 const EMPTY_CHILD: ChildForm = {
@@ -269,6 +278,7 @@ interface Props {
 
 export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSaved }: Props) {
   const agendaReg   = useAgendaRegistry();
+  const govReg      = useGovernanceRegistry();
   const docReg      = useDocumentRegistry();
   const linkReg     = useAgendaDocumentLinkRegistry();
   const userReg     = useBmsUserRegistry();
@@ -329,6 +339,13 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
     !["inactive", "deactivated", "archived"].includes(u.account_status ?? "")
   );
   const userNameOpts = ["— Select User —", ...activeUsers.map(u => u.name)];
+  const governanceNames = govReg.items
+    .filter(b => !["archived", "inactive", "deactivated"].includes(b.status?.toLowerCase() ?? ""))
+    .map(b => b.body_name);
+  // Existing saved values must remain visible even if the directory changes later.
+  const bodyOpts = ["— Select Governance Body —", ...new Set([
+    ...governanceNames, ...(pf.committee ? [pf.committee] : []),
+  ])];
 
   function uName(id: string) { return activeUsers.find(u => u.id === id)?.name ?? ""; }
   function uId(name: string) {
@@ -350,6 +367,13 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
       const r = existing as unknown as Record<string, string> | undefined;
       setPf({
         title:           existing?.agenda_title ?? "",
+        reference:       existing?.agenda_reference ?? "",
+        committee:       existing?.committee ?? "",
+        meeting_type:    existing?.meeting_type ?? "",
+        agenda_category: existing?.agenda_category ?? "Governance",
+        submitting_division: existing?.submitting_division ?? "",
+        submitted_by:    existing?.submitted_by ?? currentUser.name ?? "",
+        presenter_user_id: r?.presenter_user_id ?? "",
         purpose:         existing?.purpose ?? "For Information",
         summary:         existing?.description ?? "",
         owner_user_id:   existing?.owner_user_id ?? r?.owner_user_id ?? "",
@@ -379,7 +403,7 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
         setChildMode(false);
       }
     } else {
-      setPf({ ...EMPTY_PARENT });
+      setPf({ ...EMPTY_PARENT, submitted_by: currentUser.name ?? "" });
       setParentId(null);
       setStage("parent");
       setCf({ ...EMPTY_CHILD });
@@ -415,11 +439,16 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   // ── Validation ────────────────────────────────────────────────────────────
 
   function validateParentFull(): boolean {
-    const errs: Partial<Record<keyof ParentForm, string>> = {};
-    if (!pf.title.trim())       errs.title         = "Agenda title is required.";
-    if (!pf.purpose)            errs.purpose       = "Purpose is required.";
-    if (!pf.owner_user_id)      errs.owner_user_id  = "Owner is required.";
-    if (!pf.confidentiality)    errs.confidentiality = "Confidentiality is required.";
+    const errs = validateCompleteAgenda(pf);
+    if (pf.presenter_user_id && !activeUsers.some(u => u.id === pf.presenter_user_id)) {
+      errs.presenter_user_id = "Select an active presenter.";
+    }
+    if (pf.owner_user_id && !activeUsers.some(u => u.id === pf.owner_user_id)) {
+      errs.owner_user_id = "Select an active owner.";
+    }
+    if (pf.committee && !governanceNames.includes(pf.committee)) {
+      errs.committee = "Select an active governance body.";
+    }
     setPErr(errs);
     return Object.keys(errs).length === 0;
   }
@@ -444,28 +473,41 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Persist parent ────────────────────────────────────────────────────────
 
-  function persistParent(status = "Draft"): string {
+  function parentMetadata(id: string) {
+    return {
+      agenda_title: pf.title.trim(),
+      agenda_reference: agendaReference(pf.reference, id),
+      committee: pf.committee,
+      meeting_type: pf.meeting_type,
+      agenda_category: pf.agenda_category,
+      submitting_division: pf.submitting_division.trim(),
+      submitted_by: pf.submitted_by.trim(),
+      presenter_user_id: pf.presenter_user_id,
+      description: pf.summary, purpose: pf.purpose,
+      owner_user_id: pf.owner_user_id, confidentiality: pf.confidentiality,
+    };
+  }
+
+  async function persistParent(status = "Draft"): Promise<string | null> {
     const now = new Date().toISOString();
-    if (parentId && agendaReg.items.find(a => a.id === parentId)) {
-      agendaReg.update(parentId, {
-        agenda_title: pf.title.trim(), description: pf.summary, purpose: pf.purpose,
-        owner_user_id: pf.owner_user_id, confidentiality: pf.confidentiality,
-        approval_status: status, updated_at: now,
-      } as never);
-      return parentId;
+    const existing = parentId ? agendaReg.items.find(a => a.id === parentId) : null;
+    const id = existing?.id ?? generateId("AGD", agendaReg.items.map(a => a.agenda_id));
+    const metadata = parentMetadata(id);
+    const saved = existing
+      ? await agendaReg.update(id, { ...metadata, approval_status: existing.approval_status, updated_at: now } as never)
+      : await agendaReg.add({
+          id, agenda_id: id, ...metadata,
+          meeting_id: "", meeting_title: "", proposed_decision: "", priority: "Normal",
+          estimated_duration: "", voting_required: "No", financial_impact: "",
+          submission_date: now.slice(0, 10), approval_status: status,
+          created_at: now, agenda_level: 1, display_order: parentItems.length + 1,
+        } as never);
+    // The production registry writes through SQL asynchronously. Never proceed as if
+    // creation succeeded before server acknowledgement, or on permission/network denial.
+    if (saved !== true) {
+      toast.error("Agenda was not saved. Check permissions or connection and retry.");
+      return null;
     }
-    const id = generateId("AGD", agendaReg.items.map(a => a.agenda_id));
-    agendaReg.add({
-      id, agenda_id: id, agenda_title: pf.title.trim(), agenda_reference: id,
-      description: pf.summary,
-      meeting_id: "", meeting_title: "", committee: "", meeting_type: "",
-      agenda_category: "Governance", submitted_by: currentUser.name, owner_user_id: pf.owner_user_id,
-      submitting_division: "", purpose: pf.purpose, proposed_decision: "", priority: "Normal",
-      confidentiality: pf.confidentiality, estimated_duration: "", voting_required: "No",
-      financial_impact: "", submission_date: now.slice(0, 10),
-      approval_status: status, created_at: now, agenda_level: 1,
-      display_order: parentItems.length + 1,
-    } as never);
     setParentId(id);
     return id;
   }
@@ -607,15 +649,23 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Stage 1 actions ───────────────────────────────────────────────────────
 
-  function handleSaveDraftParent() {
-    if (!validateParentTitle()) return;
-    persistParent("Draft"); setPDirty(false);
+  async function handleSaveDraftParent() {
+    if (saving || !validateParentTitle()) return;
+    setSaving(true);
+    try {
+      if (await persistParent("Draft")) setPDirty(false);
+    } finally { setSaving(false); }
   }
 
-  function handleContinue() {
-    if (!validateParentFull()) return;
-    persistParent("Draft"); setPDirty(false);
-    setStage("builder");
+  async function handleContinue() {
+    if (saving || !validateParentFull()) return;
+    setSaving(true);
+    try {
+      if (await persistParent("Draft")) {
+        setPDirty(false);
+        setStage("builder");
+      }
+    } finally { setSaving(false); }
   }
 
   // ── Child actions ─────────────────────────────────────────────────────────
@@ -649,19 +699,26 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Builder actions ───────────────────────────────────────────────────────
 
-  function handleSaveDraftBuilder() {
-    if (!validateParentTitle()) return;
-    if (parentId) {
-      agendaReg.update(parentId, {
-        agenda_title: pf.title.trim(), description: pf.summary, purpose: pf.purpose,
-        owner_user_id: pf.owner_user_id, confidentiality: pf.confidentiality,
-        updated_at: new Date().toISOString(),
-      } as never);
-    }
-    setPDirty(false); onClose();
+  async function handleSaveDraftBuilder() {
+    if (saving || !validateParentTitle()) return;
+    setSaving(true);
+    try {
+      if (parentId) {
+        const saved = await agendaReg.update(parentId, {
+          ...parentMetadata(parentId), updated_at: new Date().toISOString(),
+        } as never);
+        if (saved !== true) {
+          toast.error("Agenda draft was not saved. Retry after checking your connection.");
+          return;
+        }
+      }
+      setPDirty(false);
+      onClose();
+    } finally { setSaving(false); }
   }
 
-  function handleSaveAgenda() {
+  async function handleSaveAgenda() {
+    if (saving) return;
     if (!parentId || !pf.title.trim()) { setPErr({ title: "Title is required." }); return; }
     if (children.length === 0) {
       toast.error("Add at least one child agenda before saving.");
@@ -677,11 +734,21 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
       );
       return;
     }
-    agendaReg.update(parentId, {
-      agenda_title: pf.title.trim(), description: pf.summary, purpose: pf.purpose,
-      owner_user_id: pf.owner_user_id, confidentiality: pf.confidentiality,
-      updated_at: new Date().toISOString(),
-    } as never);
+    if (!validateParentFull()) {
+      toast.error("Complete all required agenda details before saving.");
+      return;
+    }
+    setSaving(true);
+    let didSave = false;
+    try {
+      didSave = (await agendaReg.update(parentId, {
+        ...parentMetadata(parentId), updated_at: new Date().toISOString(),
+      } as never)) === true;
+    } finally { setSaving(false); }
+    if (!didSave) {
+      toast.error("Agenda was not saved. Check permissions or connection and retry.");
+      return;
+    }
     setPDirty(false);
     const savedStatus = agendaReg.items.find(a => a.id === parentId)?.approval_status ?? "Pending Approval";
     onSaved?.({ agendaId: parentId, status: savedStatus });
@@ -691,6 +758,7 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   // ── Close guard ───────────────────────────────────────────────────────────
 
   function handleClose() {
+    if (saving) return; // Do not dismiss a pending server write as if it had completed.
     if (pDirty || cDirty) { setShowCloseGuard(true); return; }
     onClose();
   }
@@ -702,8 +770,8 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 8 }}>
       <Button variant="ghost" size="sm" onClick={handleClose}>Cancel</Button>
       <div style={{ display: "flex", gap: 8, paddingRight: 52 }}>
-        <Button variant="secondary" size="sm" onClick={handleSaveDraftParent} disabled={!pf.title.trim()}>Save Draft</Button>
-        <Button variant="primary" size="sm" onClick={handleContinue}>Continue to Builder</Button>
+        <Button variant="secondary" size="sm" onClick={handleSaveDraftParent} disabled={saving || !pf.title.trim()}>Save Draft</Button>
+        <Button variant="primary" size="sm" onClick={handleContinue} disabled={saving}>Continue to Builder</Button>
       </div>
     </div>
   );
@@ -722,8 +790,8 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 8 }}>
       <Button variant="ghost" size="sm" onClick={handleClose}>Close</Button>
       <div style={{ display: "flex", gap: 8, paddingRight: 52 }}>
-        <Button variant="secondary" size="sm" onClick={handleSaveDraftBuilder}>Save Draft</Button>
-        <Button variant="primary" size="sm" onClick={handleSaveAgenda}>Save Agenda</Button>
+        <Button variant="secondary" size="sm" onClick={handleSaveDraftBuilder} disabled={saving}>Save Draft</Button>
+        <Button variant="primary" size="sm" onClick={handleSaveAgenda} disabled={saving}>Save Agenda</Button>
       </div>
     </div>
   );
@@ -775,6 +843,37 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
                 />
                 {pErr.title && <p style={{ color: "#ef4444", fontSize: "0.73rem", margin: "3px 0 0" }}>{pErr.title}</p>}
               </div>
+
+              {/* Original AG-02 metadata, within the approved parent-details stage. */}
+              <AppTextField id="afm-reference" label="Agenda Reference" value={pf.reference}
+                helper="Optional — the generated agenda ID is used if left blank."
+                onChange={v => { setPf(p => ({ ...p, reference: v })); setPDirty(true); }} />
+              <div>
+                <AppSelectField id="afm-governance-body" label="Governance Body" required
+                  value={pf.committee || "— Select Governance Body —"} options={bodyOpts}
+                  onChange={v => { setPf(p => ({ ...p, committee: v.startsWith("—") ? "" : v })); setPDirty(true); setPErr(e => ({ ...e, committee: undefined })); }}
+                  error={pErr.committee} />
+              </div>
+              <AppSelectField id="afm-meeting-type" label="Meeting Type" required
+                value={pf.meeting_type || "— Select Meeting Type —"}
+                options={["— Select Meeting Type —", ...MEETING_TYPES]}
+                onChange={v => { setPf(p => ({ ...p, meeting_type: v.startsWith("—") ? "" : v })); setPDirty(true); setPErr(e => ({ ...e, meeting_type: undefined })); }}
+                error={pErr.meeting_type} />
+              <AppSelectField id="afm-agenda-category" label="Category" required
+                value={pf.agenda_category} options={AGENDA_CATEGORIES}
+                onChange={v => { setPf(p => ({ ...p, agenda_category: v })); setPDirty(true); setPErr(e => ({ ...e, agenda_category: undefined })); }}
+                error={pErr.agenda_category} />
+              <AppTextField id="afm-submitting-division" label="Submitting Division" required
+                value={pf.submitting_division} error={pErr.submitting_division}
+                onChange={v => { setPf(p => ({ ...p, submitting_division: v })); setPDirty(true); setPErr(e => ({ ...e, submitting_division: undefined })); }} />
+              <AppTextField id="afm-submitter" label="Submitted By" required readOnly
+                value={pf.submitted_by} error={pErr.submitted_by}
+                helper="Recorded from the authenticated account; not editable here."
+                onChange={() => undefined} />
+              <AppSelectField id="afm-presenter" label="Presenter" required
+                value={uLabel(pf.presenter_user_id)} options={userNameOpts}
+                onChange={v => { setPf(p => ({ ...p, presenter_user_id: uId(v) })); setPDirty(true); setPErr(e => ({ ...e, presenter_user_id: undefined })); }}
+                error={pErr.presenter_user_id} />
 
               {/* Purpose */}
               <div>
@@ -851,6 +950,9 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
                 {savedParent && <StatusBadge value={savedParent.approval_status} />}
                 {pDirty && <span style={{ fontSize: "0.65rem", fontWeight: 700, color: "#f59e0b", display: "flex", alignItems: "center", gap: 3 }}>● unsaved</span>}
               </div>
+              <Button variant="ghost" size="sm" onClick={() => withGuard(() => setStage("parent"))}>
+                Edit Parent Details
+              </Button>
               {children.length > 0 && (
                 <p style={{ fontSize: "0.72rem", color: "var(--color-text-secondary)", margin: "6px 0 0" }}>
                   {children.length} {children.length === 1 ? "child agenda" : "child agendas"}
