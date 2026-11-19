@@ -1,3 +1,4 @@
+import { LIVE_MEETINGS_RELEASED } from "../../services/liveMeetingReleaseGate";
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 
 import { toast } from "sonner";
@@ -42,6 +43,7 @@ import { getAgendaDescription } from "../../utils/agendaDescription";
 import { convayAuth } from "../../services/supabase/convayAuth";
 import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
+import { LiveMeetingMedia } from "./LiveMeetingMedia";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -415,6 +417,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   }, [access.loaded, access.error]);
 
   const meeting = meetings.find(m => m.meeting_id === meetingId);
+  const isOnlineMeeting = LIVE_MEETINGS_RELEASED && (meeting?.mode === "Virtual" || meeting?.mode === "Hybrid");
 
   // Build participant list from registry — no synthetic defaults
   const baseParticipants: VirtualParticipant[] = (() => {
@@ -673,6 +676,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // "prejoin"   → for join actions or after readiness completes
   // "meeting"   → the live workspace
   const determineInitialPhase = (): "readiness" | "prejoin" | "meeting" => {
+    if (isOnlineMeeting && entryAction === "join_meeting") return "prejoin";
     if (ctrlStatus !== "not-started") return "meeting";
     if (entryAction === "start_meeting") return "readiness";
     if (entryAction === "join_meeting")  return "prejoin";
@@ -922,7 +926,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         meeting_id: meetingId, meeting_title: meeting?.meeting_title ?? "",
         participant_id: id, participant_name: pName, designation: "", role: pRole,
         check_in_time: checkInTime, check_out_time: checkOutTime,
-        attendance_mode: "In-Person",
+        attendance_mode: isOnlineMeeting ? "Online" : "In-Person",
         quorum_eligible: (link?.quorum_eligible ?? false) ? "Yes" : "No",
         signed: "No", notes: "", created_at: nowISO(),
       } as never);
@@ -951,7 +955,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, updateAttendanceRec, addAttendanceRec, addQuorumEvent]);
+  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent]);
 
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
@@ -1492,7 +1496,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             }
             return merged;
           });
-          setPhase("meeting");
+          setPhase(isOnlineMeeting ? "prejoin" : "meeting");
         }}
       />
     );
@@ -1501,7 +1505,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // ── Pre-join screen ────────────────────────────────────────────────────────
   if (phase === "prejoin") {
     // Block uninvited users only when canonical participant links exist for this meeting
-    if (meetingLinks.length > 0 && !myLink) {
+    if (meetingLinks.length > 0 && !myLink && (!LIVE_MEETINGS_RELEASED || !access.is_super_admin)) {
       return (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "1rem", padding: "2rem", textAlign: "center", background: "#0f172a", color: "#f1f5f9" }}>
           <AlertCircle size={48} style={{ color: "#ef4444" }} />
@@ -1523,10 +1527,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           setMyMicOn(opts.micOn);
           setMyCamOn(opts.camOn);
           setPhase("meeting");
-          // Create or update canonical attendance record for the current user
-          if (myLink) {
-            setAttendance(currentUser.id, "Present");
-          }
+          // Online attendance only begins after a confirmed media connection.
+          if (!isOnlineMeeting && myLink) setAttendance(currentUser.id, "Present");
         }}
         onBack={() => onClose()}
       />
@@ -1710,7 +1712,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* Video stage */}
           <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
-            {viewMode === "speaker" && (
+            {isOnlineMeeting && (
+              <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
+                <LiveMeetingMedia meetingId={meetingId} micOn={myMicOn} camOn={myCamOn} sharing={isSharing}
+                  onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={setIsSharing}
+                  onPresence={connected => { if (myLink) setAttendance(currentUser.id, connected ? "Present" : "Left"); }} />
+              </div>
+            )}
+            {!isOnlineMeeting && viewMode === "speaker" && (
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
                 <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
                   {activeSpeaker && <ParticipantTile p={activeSpeaker} isActive size="large" />}
@@ -1724,7 +1733,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 </div>
               </div>
             )}
-            {viewMode === "grid" && (
+            {!isOnlineMeeting && viewMode === "grid" && (
               <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", alignContent: "start", overflowY: "auto" }}>
                 {participants.map(p => (
                   <div key={p.id} style={{ cursor: "pointer" }} onClick={() => { setActiveSpeakerId(p.id); setViewMode("speaker"); }}>
@@ -2498,15 +2507,17 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* ── BOTTOM DOCK ──────────────────────────────────────────────────── */}
           <div style={{ height: 64, background: "#1e293b", borderTop: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0 1rem", flexShrink: 0 }}>
+            {(!LIVE_MEETINGS_RELEASED || isOnlineMeeting) && <>
             <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
               {myMicOn ? <Mic size={18} /> : <MicOff size={18} />}
             </DockButton>
             <DockButton active={myCamOn} danger={!myCamOn} label={myCamOn  ? "Stop Video"  : "Start Video"}  onClick={() => setMyCamOn(v => !v)}>
               {myCamOn ? <Video size={18} /> : <VideoOff size={18} />}
             </DockButton>
-            <DockButton active={isSharing} label={isSharing ? "Stop Share" : "Share Screen"} onClick={() => { setIsSharing(v => !v); if (!isSharing) setViewMode("document"); }}>
+            <DockButton active={isSharing} label={isSharing ? "Stop Share" : "Share Screen"} onClick={() => { setIsSharing(v => !v); if (!LIVE_MEETINGS_RELEASED && !isSharing) setViewMode("document"); }}>
               {isSharing ? <MonitorOff size={18} /> : <Monitor size={18} />}
             </DockButton>
+            </>}
 
             <div style={{ width: 1, height: 32, background: "#334155", margin: "0 0.25rem" }} />
 

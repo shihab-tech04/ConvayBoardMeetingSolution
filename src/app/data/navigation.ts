@@ -1,3 +1,4 @@
+import { LIVE_MEETINGS_RELEASED } from "../services/liveMeetingReleaseGate";
 import { readAccessSnapshot, mayVisitPath } from "../services/supabase/convayAccess";
 import {
   LayoutDashboard, BarChart2, FileCheck, ShieldCheck, Briefcase, Settings2,
@@ -8,7 +9,7 @@ import {
   CopyCheck, Network, FolderX, Ban, ListChecks,
   ArrowLeftRight, Receipt, CreditCard, KeyRound, Rows3,
   Notebook, BadgeInfo, Globe, History, FileStack, FolderOpen,
-  CalendarDays, CheckSquare, Home,
+  CalendarDays, CheckSquare, Home, Video,
 } from "lucide-react";
 
 // LucideIcon type for navigation
@@ -103,6 +104,7 @@ export const NAVIGATION: MainNavDef[] = [
     children: [
       { id: "all-meetings", label: "All Meetings", labelKey: "navigation.meetings.allMeetings", icon: Archive },
       { id: "meeting-calendar", label: "Calendar", labelKey: "navigation.meetings.meetingCalendar", icon: CalendarDays },
+      ...(LIVE_MEETINGS_RELEASED ? [{ id: "quick-meeting", label: "Quick Meeting", icon: Video }] : []),
       { id: "meeting-templates", label: "Templates", labelKey: "navigation.meetings.meetingTemplates", icon: FileStack, visibility: "phase2" },
     ],
   },

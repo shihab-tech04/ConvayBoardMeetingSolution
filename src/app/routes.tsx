@@ -1,3 +1,4 @@
+import { LIVE_MEETINGS_RELEASED } from "./services/liveMeetingReleaseGate";
 import { createBrowserRouter, redirect } from "react-router";
 import { useSelector } from "react-redux";
 import type { RootState } from "./store/store";
@@ -8,6 +9,7 @@ import { PlaceholderPage } from "./pages/PlaceholderPage";
 // ─── Static page imports (no lazy — dynamic import() fails in Make proxy) ────
 
 import { LiveMeetingPage }          from "./pages/meetings/LiveMeetingPage";
+import { QuickMeetingGuestPage, QuickMeetingHostPage, QuickMeetingLaunchPage } from "./pages/meetings/QuickMeetingPages";
 import { DashboardPage }            from "./pages/dashboard/DashboardPage";
 import { PSRDashboardPage }         from "./pages/dashboard/PSRDashboardPage";
 import { CombinedDashboardPage }    from "./pages/dashboard/CombinedDashboardPage";
@@ -95,6 +97,11 @@ export function preloadAllRoutes() {}
 export const router = createBrowserRouter([
   // Invitation links are public only for completing a verified Supabase Auth invite.
   { path: "/invite/accept", Component: InvitationAcceptancePage },
+  // Capability-scoped guest routes remain inaccessible until the verified backend release.
+  ...(LIVE_MEETINGS_RELEASED ? [
+    { path: "/quick-meeting", Component: QuickMeetingGuestPage },
+    { path: "/quick-meeting/:shareToken", Component: QuickMeetingGuestPage },
+  ] : []),
   {
     path: "/",
     Component: AppRoot,
@@ -125,6 +132,10 @@ export const router = createBrowserRouter([
       { path: "meetings/all-meetings",      Component: OnlineReturnRegisterPage },
       { path: "meetings/meeting-calendar",  Component: OfflineReturnRegisterPage },
       { path: "meetings/meeting-templates", Component: OnlineArchivePage },
+      ...(LIVE_MEETINGS_RELEASED ? [
+        { path: "meetings/quick-meeting", Component: QuickMeetingLaunchPage },
+        { path: "meetings/quick-meeting/:quickMeetingId", Component: QuickMeetingHostPage },
+      ] : []),
       { path: "meetings/:meetingId/live",   Component: LiveMeetingPage },
       { path: "meetings/:meetingId/record", Component: MeetingRecordRoute },
 
