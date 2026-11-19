@@ -1,0 +1,64 @@
+name: Convay MN-01 — disposable PostgreSQL security tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/convay-mn01-db-isolated.yml'
+      - 'supabase/migrations/20261119183500_convay_minutes_source_integrity.sql'
+      - 'supabase/tests/mn01_minutes_source_integrity.sql'
+      - 'supabase/tests/mn01_isolated_test_bootstrap.sql'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mn01-isolated-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run disposable PostgreSQL 17 container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-mn01-test-db \
+            -e POSTGRES_PASSWORD=temporary-isolated-test-only \
+            -e POSTGRES_DB=convay_mn01 \
+            postgres:17-alpine
+          for attempt in $(seq 1 45); do
+            if docker exec convay-mn01-test-db pg_isready -U postgres -d convay_mn01; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs convay-mn01-test-db
+          exit 1
+      - name: Create isolated authorizations and fixtures
+        run: |
+          docker exec -i convay-mn01-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_mn01 \
+            < supabase/tests/mn01_isolated_test_bootstrap.sql
+      - name: Apply reviewed candidate SQL to disposable database only
+        run: |
+          docker exec -i convay-mn01-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_mn01 \
+            < supabase/migrations/20261119183500_convay_minutes_source_integrity.sql
+      - name: Test authorized and denied direct-RPC writes in rolled-back transaction
+        run: |
+          docker exec -i convay-mn01-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_mn01 \
+            < supabase/tests/mn01_minutes_source_integrity.sql
+      - name: Verify fixture rolled back
+        shell: bash
+        run: |
+          set -euo pipefail
+          result=$(docker exec convay-mn01-test-db psql -X -v ON_ERROR_STOP=1 -At \
+            -U postgres -d convay_mn01 -c \
+            "select case when count(*)=0 then 'ROLLBACK PASS' else 'ROLLBACK FAIL' end from public.convay_entity_records")
+          test "$result" = "ROLLBACK PASS"
+          echo "$result"
+      - name: Destroy disposable test container
+        if: always()
+        run: docker rm -f convay-mn01-test-db || true

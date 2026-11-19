@@ -14,6 +14,13 @@ select set_config(
   ), ''),
   true
 );
+-- Preserve an explicitly denied isolated fixture identity before actor-only
+-- profile RLS is enabled. Never use actual production identities in this test.
+select set_config('mn01.test_denied_user', coalesce((
+    select user_id::text from public.user_profiles
+    where account_status='active' and account_role <> 'super_admin'
+    order by user_id limit 1
+  ), ''), true);
 set local role authenticated;
 
 do $test$
@@ -116,11 +123,12 @@ begin
   if not v_denied_write then raise exception 'Cross-scope minutes were accepted'; end if;
 
   -- A denied principal cannot create minutes for an unrelated meeting, even with a matching title.
-  for v_candidate in select user_id from public.user_profiles where user_id<>v_actor and account_status='active' loop
-    perform set_config('request.jwt.claim.sub',v_candidate::text,true);
-    if not convay_private.has_permission('min_create') then v_denied := v_candidate; exit; end if;
-  end loop;
-  if v_denied is null then raise exception 'A denied test principal is required'; end if;
+  v_denied := nullif(current_setting('mn01.test_denied_user',true),'')::uuid;
+  if v_denied is null then raise exception 'An isolated denied test principal is required'; end if;
+  perform set_config('request.jwt.claim.sub',v_denied::text,true);
+  if convay_private.has_permission('min_create') then
+    raise exception 'The denied test principal unexpectedly has min_create';
+  end if;
   v_denied_write := false;
   v_invalid_id := 'MN01-DENIED-'||replace(gen_random_uuid()::text,'-','');
   begin
