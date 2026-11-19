@@ -8,6 +8,7 @@ on:
       - 'supabase/migrations/20261119183500_convay_minutes_source_integrity.sql'
       - 'supabase/tests/mn01_minutes_source_integrity.sql'
       - 'supabase/tests/mn01_isolated_test_bootstrap.sql'
+      - 'supabase/tests/mn01_ddl_rollback_isolated.sql'
   workflow_dispatch:
 
 permissions:
@@ -59,6 +60,14 @@ jobs:
             "select case when count(*)=0 then 'ROLLBACK PASS' else 'ROLLBACK FAIL' end from public.convay_entity_records")
           test "$result" = "ROLLBACK PASS"
           echo "$result"
+      - name: Verify MN-01 DDL rollback and clean reapplication
+        run: |
+          docker exec -i convay-mn01-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_mn01 \
+            < supabase/tests/mn01_ddl_rollback_isolated.sql
+          docker exec -i convay-mn01-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_mn01 \
+            < supabase/migrations/20261119183500_convay_minutes_source_integrity.sql
+          docker exec -i convay-mn01-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_mn01 \
+            < supabase/tests/mn01_minutes_source_integrity.sql
       - name: Destroy disposable test container
         if: always()
         run: docker rm -f convay-mn01-test-db || true
