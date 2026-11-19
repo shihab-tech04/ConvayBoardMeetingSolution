@@ -347,14 +347,15 @@ export function IntegrationsPage() {
                       <>
                         <button
                           type="button"
-                          onClick={() => {}}
+                          onClick={refresh}
                           style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.35rem", padding: "0.4rem 0.6rem", borderRadius: 7, background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer" }}
                         >
-                          <RefreshCw size={13} /> Sync Now
+                          <RefreshCw size={13} /> Refresh Status
                         </button>
                         <button
                           type="button"
-                          onClick={() => {}}
+                          disabled
+                        title="This provider operation is not configured"
                           style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.35rem", padding: "0.4rem 0.6rem", borderRadius: 7, background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer" }}
                         >
                           <Settings size={13} /> Configure
@@ -364,7 +365,8 @@ export function IntegrationsPage() {
                     {itg.status === "Disconnected" && (
                       <button
                         type="button"
-                        onClick={() => {}}
+                        disabled
+                        title="This provider operation is not configured"
                         style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.35rem", padding: "0.4rem 0.6rem", borderRadius: 7, background: "var(--primary)", border: "none", color: "#fff", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer" }}
                       >
                         <Link2 size={13} /> Connect
@@ -374,14 +376,15 @@ export function IntegrationsPage() {
                       <>
                         <button
                           type="button"
-                          onClick={() => {}}
+                          onClick={refresh}
                           style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.35rem", padding: "0.4rem 0.6rem", borderRadius: 7, background: "#7f1d1d22", border: "1px solid #ef444444", color: "#ef4444", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer" }}
                         >
-                          <RefreshCw size={13} /> Retry
+                          <RefreshCw size={13} /> Refresh Status
                         </button>
                         <button
                           type="button"
-                          onClick={() => {}}
+                          disabled
+                        title="This provider operation is not configured"
                           style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.35rem", padding: "0.4rem 0.6rem", borderRadius: 7, background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer" }}
                         >
                           <Settings size={13} /> Diagnose
@@ -391,7 +394,8 @@ export function IntegrationsPage() {
                     {itg.status === "Pending Setup" && (
                       <button
                         type="button"
-                        onClick={() => {}}
+                        disabled
+                        title="This provider operation is not configured"
                         style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.35rem", padding: "0.4rem 0.6rem", borderRadius: 7, background: "#78350f22", border: "1px solid #f59e0b44", color: "#f59e0b", fontSize: "0.75rem", fontWeight: 600, cursor: "pointer" }}
                       >
                         <Settings size={13} /> Setup Integration
@@ -399,9 +403,10 @@ export function IntegrationsPage() {
                     )}
                     <button
                       type="button"
-                      onClick={() => {}}
+                      disabled
+                      aria-label="Documentation unavailable"
                       style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "0.4rem 0.6rem", borderRadius: 7, background: "var(--muted)", border: "1px solid var(--border)", color: "var(--muted-foreground)", fontSize: "0.75rem", cursor: "pointer" }}
-                      title="View documentation"
+                      title="Provider documentation is not configured"
                     >
                       <ExternalLink size={13} />
                     </button>
