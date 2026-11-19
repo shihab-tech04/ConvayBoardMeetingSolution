@@ -350,6 +350,28 @@ async function recordJoin(
   });
 }
 
+/** A removed guest cannot mint a fresh token for the same link/session identity. */
+async function assertGuestNotRemoved(meetingId: string, identity: string): Promise<void> {
+  const query = new URLSearchParams({
+    select: "livekit_identity",
+    meeting_id: `eq.${meetingId}`,
+    livekit_identity: `eq.${identity}`,
+    limit: "1",
+  });
+  const rows = await serviceJson<Array<{ livekit_identity: string }>>(
+    `/rest/v1/convay_quick_meeting_removed_guests?${query}`,
+  );
+  if (rows.length > 0) throw new HttpError(403, "The host has removed this guest. Ask for a new invitation.");
+}
+
+async function markGuestRemoved(meetingId: string, identity: string, hostId: string): Promise<void> {
+  await serviceJson(`/rest/v1/convay_quick_meeting_removed_guests`, {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ meeting_id: meetingId, livekit_identity: identity, removed_by: hostId }),
+  });
+}
+
 async function isReturningGuest(meetingId: string, identity: string, linkId: string): Promise<boolean> {
   const query = new URLSearchParams({
     select: "participant_kind,share_link_id",
@@ -625,6 +647,9 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
     });
     const attendance = await serviceJson<Array<{ participant_kind: string }>>(`/rest/v1/convay_quick_meeting_attendance?${query}`);
     if (!inRoom && attendance[0]?.participant_kind !== "guest") throw new HttpError(404, "Guest is no longer in this quick meeting.");
+    // Persist removal BEFORE disconnection, including guests not yet confirmed
+    // in attendance. Otherwise a valid share token can mint a new room JWT.
+    await markGuestRemoved(meetingId, identity, host.id);
     if (inRoom) {
       try { await roomService().removeParticipant(meeting.room_name, identity); } catch { /* It may have just disconnected. */ }
       await markLeftAfterPresenceCheck(meeting, identity);
@@ -674,6 +699,7 @@ async function guestAction(body: JsonObject): Promise<JsonObject> {
   if (action === "guest-inspect" || action === "guest-join") {
     const sessionId = cleanSessionId(body.clientSessionId);
     const identity = await opaque("guest", `${link.token_hash}:${sessionId}`);
+    await assertGuestNotRemoved(meeting.id, identity);
     const participants = await allRoomParticipants(meeting);
     const identityAlreadyPresent = await hasRoomIdentity(participants, identity);
     const returningParticipant = await isReturningGuest(meeting.id, identity, link.id);
@@ -701,6 +727,7 @@ async function guestAction(body: JsonObject): Promise<JsonObject> {
     const name = normalizeQuickParticipantName(body.displayName);
     if (!name) throw new HttpError(400, "The guest display name is missing.");
     if (action === "confirm-guest-join") {
+      await assertGuestNotRemoved(meeting.id, identity);
       const participants = await allRoomParticipants(meeting);
       if (!(await hasRoomIdentity(participants, identity))) throw new HttpError(409, "LiveKit has not confirmed your connection yet.");
       await recordJoin(meeting, identity, "guest", null, name, link.id);

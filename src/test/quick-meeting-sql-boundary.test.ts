@@ -12,14 +12,25 @@ describe("Quick Meeting data boundary", () => {
       "convay_quick_meeting_sessions",
       "convay_quick_meeting_links",
       "convay_quick_meeting_attendance",
+      "convay_quick_meeting_removed_guests",
     ]) {
       expect(migration).toMatch(new RegExp(`alter table public\\.${table} enable row level security`, "i"));
       expect(migration).toMatch(new RegExp(`create table public\\.${table}`, "i"));
     }
     expect(migration).toMatch(/revoke all on public\.convay_quick_meetings[\s\S]*?from public, anon, authenticated/i);
     expect(migration).toMatch(/grant all on public\.convay_quick_meetings[\s\S]*?to service_role/i);
-    expect(migration.match(/for all to anon, authenticated using \(false\) with check \(false\)/gi)).toHaveLength(4);
+    expect(migration.match(/for all to anon, authenticated using \(false\) with check \(false\)/gi)).toHaveLength(5);
     expect(migration).not.toMatch(/insert\s+into\s+public\.convay_entity_records/i);
+  });
+
+  it("prevents a removed guest from receiving a fresh token for the same share-link identity", () => {
+    expect(migration).toMatch(/create table public\.convay_quick_meeting_removed_guests/i);
+    expect(migration).toMatch(/primary key \(meeting_id, livekit_identity\)/i);
+    expect(edge).toMatch(/async function assertGuestNotRemoved\(/);
+    expect(edge).toMatch(/if \(rows\.length > 0\) throw new HttpError\(403/);
+    expect(edge).toMatch(/await markGuestRemoved\(meetingId, identity, host\.id\)/);
+    expect(edge).toMatch(/const identity = await opaque\("guest", `\$\{link\.token_hash\}:\$\{sessionId\}`\);\s*await assertGuestNotRemoved/);
+    expect(edge).toMatch(/if \(action === "confirm-guest-join"\) \{\s*await assertGuestNotRemoved/);
   });
 
   it("hashes share secrets and keeps LiveKit administration grants disabled", () => {
