@@ -80,6 +80,13 @@ describe("MN-01 minutes source integrity", () => {
     expect(page).toContain("const saved = await registry.update(id, revisionPatch)");
     expect(page).toContain('if (saved !== true) throw new Error(');
   });
+  it("keeps Additional Notes in both SQL create and SQL edit payloads", () => {
+    const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
+    const sql = readFileSync("supabase/migrations/20261119183500_convay_minutes_source_integrity.sql", "utf8");
+    expect(page).toContain('notes:              String(values.notes ?? "")');
+    expect(page).toContain('notes: String(values.notes ?? "")');
+    expect(sql).toContain("'notes',old.payload->>'notes'");
+  });
   it("requires permission, confirmed SQL create and immutable meeting linkage on edit", () => {
     const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
     expect(page).toContain('access.effective_permissions.includes("min_create")');
