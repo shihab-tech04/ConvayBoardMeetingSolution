@@ -120,7 +120,8 @@ export function UnifiedDocumentViewer({
     content = (
       <UnsupportedViewer
         title={title}
-        documentId={documentId}
+        documentId={source.kind === "stored" ? source.documentId : documentId}
+        versionId={source.kind === "stored" ? source.versionId : undefined}
         downloadName={fileName ?? title}
         onClose={onClose}
       />
@@ -197,10 +198,11 @@ function ImageViewer({ source, title, onClose }: {
 // ── Unsupported / missing-content state ───────────────────────────────────────
 
 function UnsupportedViewer({
-  title, documentId, downloadName, onClose,
+  title, documentId, versionId, downloadName, onClose,
 }: {
   title: string;
   documentId?: string;
+  versionId?: string;
   downloadName?: string;
   onClose: () => void;
 }) {
@@ -208,7 +210,8 @@ function UnsupportedViewer({
     if (!documentId) return;
     try {
       const { documentContentStore } = await import("../../services/repositories/documentContentStore");
-      const file = await documentContentStore.getOriginalFile(documentId);
+      // Never load latest when the viewer was opened for a frozen version.
+      const file = await documentContentStore.getOriginalFile(documentId, versionId);
       if (!file) return;
       const url = URL.createObjectURL(file);
       const a   = document.createElement("a");
