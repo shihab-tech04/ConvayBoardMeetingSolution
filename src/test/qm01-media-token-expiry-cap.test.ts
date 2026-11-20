@@ -24,6 +24,19 @@ describe("QM-01 LiveKit token expiry is bounded by the meeting", () => {
     expect(quickMeetingTokenLifetimeSeconds(future(45_000), now, 15)).toBe(15);
   });
 
+  it("caps a guest JWT to the earlier invitation or meeting expiration", () => {
+    expect(quickMeetingTokenLifetimeSeconds(future(120_000), now, 120, future(12_000))).toBe(12);
+    expect(quickMeetingTokenLifetimeSeconds(future(12_000), now, 120, future(90_000))).toBe(12);
+    expect(quickMeetingTokenLifetimeSeconds(future(120_000), now, 120, future(1_000))).toBe(1);
+  });
+
+  it("fails closed on expired or malformed guest-link deadlines", () => {
+    expect(quickMeetingTokenLifetimeSeconds(future(120_000), now, 120, future(0))).toBeNull();
+    expect(quickMeetingTokenLifetimeSeconds(future(120_000), now, 120, future(-5_000))).toBeNull();
+    expect(quickMeetingTokenLifetimeSeconds(future(120_000), now, 120, "invalid")).toBeNull();
+    expect(quickMeetingTokenLifetimeSeconds(future(120_000), now, 120, "")).toBeNull();
+  });
+
   it("rejects exact-expiry, elapsed and sub-second deadlines instead of minting a zero-TTL token", () => {
     expect(quickMeetingTokenLifetimeSeconds(future(999), now)).toBeNull();
     expect(quickMeetingTokenLifetimeSeconds(future(0), now)).toBeNull();
@@ -50,11 +63,11 @@ describe("QM-01 LiveKit token expiry is bounded by the meeting", () => {
   });
 
   it("uses the capped TTL for both host and guest JWTs and returns the true expiration", () => {
-    expect(edgeSource).toMatch(/const ttl = quickMeetingTokenLifetimeSeconds\(meeting\.expires_at, Date\.now\(\), TOKEN_TTL_SECONDS\)/);
+    expect(edgeSource).toMatch(/const ttl = quickMeetingTokenLifetimeSeconds\(meeting\.expires_at, Date\.now\(\), TOKEN_TTL_SECONDS, linkExpiresAt\)/);
     expect(edgeSource).toMatch(/new AccessToken\(key, secret, \{ identity, name, ttl \}\)/);
     expect(edgeSource).toMatch(/return \{ participantToken: await token\.toJwt\(\), expiresIn: ttl \};/);
     expect(edgeSource).toMatch(/const minted = await issueRoomToken\(identity, host\.name, meeting\);/);
-    expect(edgeSource).toMatch(/const minted = await issueRoomToken\(identity, name, meeting\);/);
+    expect(edgeSource).toMatch(/const minted = await issueRoomToken\(identity, name, meeting, link\.expires_at\);/);
     expect(edgeSource).not.toMatch(/expiresIn: TOKEN_TTL_SECONDS/);
   });
 });
