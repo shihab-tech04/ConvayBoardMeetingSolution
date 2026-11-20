@@ -17,6 +17,8 @@ export interface OnlineMeeting {
 export interface OnlineLink {
   meeting_id?: string;
   user_id?: string;
+  /** Trusted persisted meeting role; never supplied by the token request. */
+  participant_type?: string;
 }
 export interface OnlineSession {
   meeting_id?: string;
