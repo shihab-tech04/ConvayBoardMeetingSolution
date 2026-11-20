@@ -44,6 +44,7 @@ import {
 import { useUserRegistry } from "../../hooks/useUserRegistry";
 import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { documentActionGranted, documentActionSessionUnchanged } from "./documentActionAccess";
+import { matchesExactDocumentLinkReference } from "./documentLinkedRecordReference";
 import {
   resolveUniqueActiveDocumentUserId,
   documentShareGrantReadback,
@@ -141,7 +142,7 @@ function OverviewTab({ doc }: { doc: BoardDocument }) {
   const meetingLabel = useMemo(() => {
     if (!doc.related_meeting) return null;
     const m = meetingReg.items.find(
-      m => m.meeting_id === doc.related_meeting || doc.related_meeting.startsWith(m.meeting_id),
+      m => matchesExactDocumentLinkReference(doc.related_meeting, m.meeting_id),
     );
     return m?.meeting_title ?? doc.related_meeting;
   }, [doc.related_meeting, meetingReg.items]);
@@ -149,7 +150,7 @@ function OverviewTab({ doc }: { doc: BoardDocument }) {
   const agendaLabel = useMemo(() => {
     if (!doc.related_agenda) return null;
     const a = agendaReg.items.find(
-      a => a.agenda_id === doc.related_agenda || doc.related_agenda.startsWith(a.agenda_id),
+      a => matchesExactDocumentLinkReference(doc.related_agenda, a.agenda_id),
     );
     return (a as { agenda_title?: string })?.agenda_title ?? doc.related_agenda;
   }, [doc.related_agenda, agendaReg.items]);
@@ -1462,8 +1463,7 @@ function RelatedRecordsTab({ doc }: { doc: BoardDocument }) {
   const meeting = useMemo(() =>
     doc.related_meeting
       ? meetingReg.items.find(m =>
-          m.meeting_id === doc.related_meeting ||
-          doc.related_meeting.startsWith(m.meeting_id),
+          matchesExactDocumentLinkReference(doc.related_meeting, m.meeting_id),
         ) ?? null
       : null,
     [doc.related_meeting, meetingReg.items],
@@ -1472,8 +1472,7 @@ function RelatedRecordsTab({ doc }: { doc: BoardDocument }) {
   const agenda = useMemo(() =>
     doc.related_agenda
       ? agendaReg.items.find(a =>
-          a.agenda_id === doc.related_agenda ||
-          doc.related_agenda.startsWith(a.agenda_id),
+          matchesExactDocumentLinkReference(doc.related_agenda, a.agenda_id),
         ) ?? null
       : null,
     [doc.related_agenda, agendaReg.items],

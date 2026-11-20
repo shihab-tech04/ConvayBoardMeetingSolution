@@ -23,6 +23,9 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { normalizeBoardDocument } from "../../utils/normalizeBoardDocument";
 import { normalizeDocumentPage } from "./documentLibraryPageNumber";
 import { matchesDocumentGovernanceBody, type GovernanceMeeting } from "./documentLibraryGovernanceFilter";
+import { matchesDocumentWorkflowStatus } from "./documentLibraryWorkflowFilter";
+import { matchesExactDocumentLinkReference } from "../../components/documents/documentLinkedRecordReference";
+import { matchesSelectedDocumentMeeting } from "./documentLibraryMeetingFilter";
 import type { ColDef, FilterDef, RowAction, TableRow } from "../modulePageUtils";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -83,13 +86,10 @@ function matchesFilters(
     const ext = String(row.file_name ?? row.file_format ?? "").toLowerCase().split(".").pop() ?? "";
     if (ext.toUpperCase() !== applied.file_format) return false;
   }
-  if (applied.related_meeting && applied.related_meeting !== "All") {
-    const id = applied.related_meeting.split(" — ")[0];
-    if (!row.related_meeting.startsWith(id)) return false;
-  }
+  if (!matchesSelectedDocumentMeeting(row.related_meeting, applied.related_meeting)) return false;
   if (applied.owner && !String(row.owner).toLowerCase().includes(applied.owner.toLowerCase())) return false;
   if (applied.confidentiality && applied.confidentiality !== "All" && row.confidentiality !== applied.confidentiality) return false;
-  if (applied.workflow_status && applied.workflow_status !== "All" && row.approval_status !== applied.workflow_status) return false;
+  if (!matchesDocumentWorkflowStatus(row, applied.workflow_status ?? "")) return false;
   if (applied.access && applied.access !== "All Accessible" && user) {
     const isOwned = isOwnDocument(row, user);
     if (applied.access === "Owned by Me"   &&  isOwned === false) return false;
@@ -176,8 +176,8 @@ function MeetingCell({
   const mtgId = String(row.related_meeting ?? "");
   const agdId = String(row.related_agenda  ?? "");
 
-  const meeting = mtgId ? meetingItems.find(m => m.meeting_id === mtgId || mtgId.startsWith(m.meeting_id)) : undefined;
-  const agenda  = agdId ? agendaItems.find(a => a.agenda_id  === agdId  || agdId.startsWith(a.agenda_id))  : undefined;
+  const meeting = mtgId ? meetingItems.find(m => matchesExactDocumentLinkReference(mtgId, m.meeting_id)) : undefined;
+  const agenda  = agdId ? agendaItems.find(a => matchesExactDocumentLinkReference(agdId, a.agenda_id)) : undefined;
 
   const mtgLabel = meeting?.meeting_title ?? mtgId ?? "—";
   const agdLabel = agenda?.agenda_title   ?? (agdId || null);
