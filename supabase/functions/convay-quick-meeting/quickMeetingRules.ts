@@ -40,10 +40,17 @@ export function isQuickMeetingActive(meeting: Pick<QuickMeetingAccessRecord, "st
  * Reject sub-second deadlines instead of producing a zero/negative lifetime JWT.
  * This bounds NEW joins; it does not terminate already-connected participants.
  */
-export function quickMeetingTokenLifetimeSeconds(expiresAt: string, now = Date.now(), maximumSeconds = 120): number | null {
-  const deadline = Date.parse(expiresAt);
-  if (!Number.isFinite(deadline) || !Number.isFinite(now) || !Number.isInteger(maximumSeconds) || maximumSeconds < 1) return null;
-  const remainingSeconds = Math.floor((deadline - now) / 1000);
+export function quickMeetingTokenLifetimeSeconds(
+  expiresAt: string,
+  now = Date.now(),
+  maximumSeconds = 120,
+  linkExpiresAt?: string,
+): number | null {
+  const meetingDeadline = Date.parse(expiresAt);
+  const linkDeadline = linkExpiresAt === undefined ? meetingDeadline : Date.parse(linkExpiresAt);
+  if (!Number.isFinite(meetingDeadline) || !Number.isFinite(linkDeadline)
+    || !Number.isFinite(now) || !Number.isInteger(maximumSeconds) || maximumSeconds < 1) return null;
+  const remainingSeconds = Math.floor((Math.min(meetingDeadline, linkDeadline) - now) / 1000);
   return remainingSeconds >= 1 ? Math.min(maximumSeconds, remainingSeconds) : null;
 }
 
