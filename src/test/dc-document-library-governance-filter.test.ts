@@ -33,10 +33,7 @@ describe("DC document library — Governance Body filter", () => {
     expect(matchesDocumentGovernanceBody("MTG-001", "", meetings)).toBe(true);
   });
   it("is actually applied by DocumentLibraryPage, not only a dead helper", () => {
-    const source = readFileSync(
-      new URL("../app/pages/agenda-documents/DocumentLibraryPage.tsx", import.meta.url),
-      "utf8",
-    );
+    const source = readFileSync("src/app/pages/agenda-documents/DocumentLibraryPage.tsx", "utf8");
     expect(source).toContain("matchesDocumentGovernanceBody(row.related_meeting, applied.governance_body, meetings)");
     expect(source).toContain("meetingReg.items)");
   });
