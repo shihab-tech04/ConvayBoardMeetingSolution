@@ -4,7 +4,8 @@ import { toast } from "sonner";
 import { archiveRecordPath } from "./archiveRecordPath";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
+import { fc, BADGE } from "../modulePageUtils";
+import { buildMeetingRegisterFilters } from "../return-register/meetingRegisterReadiness";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useMeetingRegistry } from "../../data/boardMeetingData";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
@@ -17,7 +18,14 @@ export function MeetingArchivePage() {
 
   const archived: TableRow[] = registry.items
     .filter(m => ARCHIVE_STATUSES.includes(String(m.approval_status ?? "")))
-    .map(m => ({ ...m, id: m.id }));
+    .map(m => ({
+      ...m,
+      id: m.id,
+      // The SQL meeting model stores meeting_date, not a separate meeting_year.
+      meeting_year: /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(m.meeting_date)
+        ? m.meeting_date.slice(0, 4)
+        : "",
+    }));
 
   const kpis: KpiDef[] = [
     { label: "Archived Meetings",   value: String(archived.length),                                                                   tone: "primary" },
@@ -44,7 +52,7 @@ export function MeetingArchivePage() {
       status:     "approval_status",
       date:       "meeting_date",
     },
-    filters:  BASE_FILTERS,
+    filters:  buildMeetingRegisterFilters(archived),
     actions:  [
       ...ROW_VIEW,
     ],
