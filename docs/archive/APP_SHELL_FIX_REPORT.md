@@ -55,6 +55,7 @@ Replaced fragile Tailwind responsive classes with semantic CSS classes for expli
 ## 3. Tailwind Classes Removed from App.tsx
 
 ### Before (Fragile):
+{% raw %}
 ```tsx
 <div className="flex h-screen overflow-hidden">
   <a className="fixed z-[10000]" style={{ ... }}>
@@ -69,6 +70,7 @@ Replaced fragile Tailwind responsive classes with semantic CSS classes for expli
   <main className="flex-1 flex overflow-hidden min-w-0 outline-none">
   <main className="flex-1 overflow-y-auto p-5 sm:p-6 outline-none">
 ```
+{% endraw %}
 
 ### After (Semantic):
 ```tsx
