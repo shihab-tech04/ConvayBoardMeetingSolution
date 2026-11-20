@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import type { PageCfg, KpiDef, FilterDef, TableRow } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS, dg } from "../modulePageUtils";
 import { EDIT } from "../../data/modulePageConfigs";
 import { MINUTES_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { useMinutesRegistry, useMeetingRegistry, generateId } from "../../data/boardMeetingData";
@@ -93,10 +93,18 @@ export function MinutesManagementPage() {
       setWorkflowSaving(false);
     }
   }
+  // MN-02: select a real, accessible meeting; carry title and context from
+  // its authoritative register record rather than requiring duplicate typing.
   const dynamicFields = patchFormOptions(MINUTES_FORM_FIELDS, {
-    meeting_id: meetingReg.items.map(m => m.meeting_id),
-    related_meeting: meetingReg.items.map(m => m.meeting_id + " — " + m.meeting_title),
-  });
+    meeting_id: meetingReg.items.map(m => ({
+      value: m.meeting_id,
+      label: `${m.meeting_id} — ${m.meeting_title}`,
+    })),
+  }).map(field => field.key === "meeting_id"
+    ? { ...field, type: "select" as const, helper: "Select a completed meeting from your accessible register." }
+    : field.key === "meeting_title"
+      ? { ...field, required: false, readOnly: true, placeholder: "Automatically taken from the selected meeting" }
+      : field);
 
   const items = registry.items;
 
@@ -139,7 +147,20 @@ export function MinutesManagementPage() {
       { id: "view", label: "View Details", labelKey: "actions.viewDetails", icon: Eye },
     ],
     drawerTitle: "Minutes Details",
-    drawerCols: MINUTES_DRAWER_COLS,
+    // Keep every approved drawer group and append read-only source evidence.
+    drawerCols: [
+      ...MINUTES_DRAWER_COLS,
+      dg("Source Meeting Context", [
+        { key: "meeting_id", label: "Meeting ID" },
+        { key: "meeting_date", label: "Meeting Date" },
+        { key: "source_committee", label: "Governance Body" },
+        { key: "source_meeting_type", label: "Meeting Type" },
+        { key: "source_mode", label: "Meeting Mode" },
+        { key: "source_venue", label: "Venue" },
+        { key: "source_time_zone", label: "Time Zone" },
+        { key: "source_confidentiality", label: "Confidentiality" },
+      ]),
+    ],
     drawerActionsResolver(row) {
       const status = String(row.approval_status ?? "");
       if (isEditableMinutesStatus(status)) return [
@@ -162,7 +183,15 @@ export function MinutesManagementPage() {
       ];
       return [];
     },
-    rows: items.map(m => ({ ...m } as TableRow)),
+    rows: items.map(m => ({
+      ...m,
+      source_committee: m.meeting_context?.committee ?? "",
+      source_meeting_type: m.meeting_context?.meeting_type ?? "",
+      source_mode: m.meeting_context?.mode ?? "",
+      source_venue: m.meeting_context?.venue ?? "",
+      source_time_zone: m.meeting_context?.time_zone ?? "",
+      source_confidentiality: m.meeting_context?.confidentiality ?? "",
+    } as TableRow)),
     dataLoading: Boolean(registry.loading || meetingReg.loading),
     dataError: registry.error ?? meetingReg.error ?? null,
     onDataRetry: async () => {
@@ -234,6 +263,7 @@ export function MinutesManagementPage() {
         meeting_id:         meeting.meeting_id,
         meeting_title:      meeting.meeting_title,
         meeting_date:       meeting.meeting_date,
+        meeting_context:    meeting.meeting_context,
         minutes_template:   String(values.minutes_template   ?? "Standard Board Minutes"),
         minute_taker:       minuteTaker,
         co_authors:         String(values.co_authors         ?? ""),
