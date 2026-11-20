@@ -29,7 +29,7 @@ import { DynamicDetailsDrawer } from "../../components/drawers/DynamicDetailsDra
 import { UnifiedDataTable } from "../../components/tables/UnifiedDataTable";
 import { KpiRow } from "../../components/cards/KpiRow";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { collectAgendaRegisterDescendants } from "./agendaRegisterDescendants";
+import { collectAgendaRegisterDescendants, collectAgendaRegisterAncestors } from "./agendaRegisterDescendants";
 import { buildAgendaPreviewOutline } from "./agendaPreviewOutline";
 import { isAgendaOwnedBy, resolveAgendaOwnerUserId } from "./agendaOwnerIdentity";
 import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
@@ -61,8 +61,8 @@ function formatDate(iso: string | undefined): string {
 // ── Hierarchy helpers ─────────────────────────────────────────────────────────
 
 function getDescendants(id: string, items: AgendaSubmission[]): AgendaSubmission[] {
-  const children = items.filter(a => a.parent_agenda_id === id);
-  return children.flatMap(c => [c, ...getDescendants(c.id, items)]);
+  // Match the canonical register/preview projection; corrupt cycles and duplicate IDs cannot recurse forever.
+  return collectAgendaRegisterDescendants(id, items);
 }
 
 function asRec(a: AgendaSubmission): Record<string, string> {
@@ -94,18 +94,14 @@ function cascadeStatusUp(
   updateFn: (id: string, newStatus: string, prevStatus: string) => void,
 ): void {
   const overrides = new Map<string, string>([[changedId, changedStatus]]);
-  let itemId = changedId;
-  while (true) {
-    const item = allItems.find(a => a.id === itemId);
-    if (!item?.parent_agenda_id) break;
-    const parentId   = item.parent_agenda_id;
-    const parent     = allItems.find(a => a.id === parentId);
-    if (!parent) break;
+  // Validate the entire parent chain before any cascade. A malformed cycle
+  // must not write a partial set of misleading ancestor approval statuses.
+  for (const parent of collectAgendaRegisterAncestors(changedId, allItems)) {
+    const parentId = parent.id;
     const prevStatus = overrides.get(parentId) ?? parent.approval_status ?? "Draft";
-    const newStatus  = computeCascadeStatus(parentId, allItems, overrides);
+    const newStatus = computeCascadeStatus(parentId, allItems, overrides);
     if (newStatus !== prevStatus) updateFn(parentId, newStatus, prevStatus);
     overrides.set(parentId, newStatus);
-    itemId = parentId;
   }
 }
 
