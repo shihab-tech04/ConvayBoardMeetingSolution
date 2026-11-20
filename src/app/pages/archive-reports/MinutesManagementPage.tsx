@@ -79,6 +79,30 @@ export function MinutesManagementPage() {
     kpis,
     entryBtn: canWriteMinutes ? "Create Minutes" : undefined,
     formFields: dynamicFields,
+    // MN-02: use the shared confirmation modal and await an authorized SQL
+    // revision write before reporting success. This is not a local-only status.
+    requestRevisionPermission: "min_approve",
+    async onRequestRevision(id, instructions) {
+      if (!access.loaded || !(access.is_super_admin || access.effective_permissions.includes("min_approve"))) {
+        throw new Error("You do not have permission to request a minutes revision.");
+      }
+      if (registry.loading || registry.error) {
+        throw new Error("Minutes records are not ready. Refresh and retry.");
+      }
+      const original = registry.items.find(item => item.id === id);
+      if (!original) throw new Error("Minutes record not found. Refresh and retry.");
+      if (!["Under Secretary Review", "Under Chairperson Review", "Member Review"].includes(original.approval_status)) {
+        throw new Error("A revision may only be requested during minutes review.");
+      }
+      const reason = instructions.trim();
+      if (reason.length < 10) throw new Error("Provide revision instructions of at least 10 characters.");
+      // The SQL/RLS registry must confirm the transition. Keeping the typed
+      // patch as a variable preserves existing Minutes fields and contracts.
+      const revisionPatch = { approval_status: "Revision Requested", revision_instructions: reason };
+      const saved = await registry.update(id, revisionPatch);
+      if (saved !== true) throw new Error("Revision request was not saved. Refresh and retry.");
+      return true;
+    },
     async onRowCreate(values) {
       if (!canWriteMinutes) throw new Error("You do not have permission to create minutes.");
       if (registry.loading || meetingReg.loading || registry.error || meetingReg.error) {
