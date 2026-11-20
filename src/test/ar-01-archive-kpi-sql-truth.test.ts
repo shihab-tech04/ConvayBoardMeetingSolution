@@ -26,7 +26,8 @@ describe("AR-01 Meeting Archive SQL-backed summary truth", () => {
       expect(page).toContain(field);
     }
     expect(page).toContain("mobileCardMapping:");
-    expect(page).toContain("filters:  BASE_FILTERS");
+    expect(page).toContain("filters:  buildMeetingRegisterFilters(archived)");
+    expect(page).toContain("meeting_year:");
     expect(page).toContain("drawerCols: MEETING_DRAWER_COLS");
     expect(page).toContain('id: "view_record"');
     expect(page).toContain("navigate(archiveRecordPath(row.id ?? row.meeting_id))");
