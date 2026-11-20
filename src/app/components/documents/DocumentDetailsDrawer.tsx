@@ -42,7 +42,13 @@ import {
   type BoardPackDocumentLink,
 } from "../../data/documentWorkspaceData";
 import { useUserRegistry } from "../../hooks/useUserRegistry";
-import { usePermissionRegistry } from "../../hooks/usePermissionRegistry";
+import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { documentActionGranted, documentActionSessionUnchanged } from "./documentActionAccess";
+import {
+  resolveUniqueActiveDocumentUserId,
+  documentShareGrantReadback,
+  documentShareRevokeReadback,
+} from "./documentAccessReadback";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getDocumentRepository } from "../../services/repositories/documentRepository";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
@@ -83,10 +89,12 @@ function newAuditId(): string { return `AUD-${Date.now()}-${Math.random().toStri
 // ── Permission hook ────────────────────────────────────────────────────────────
 
 function useDocPermissions() {
-  const reg = usePermissionRegistry();
+  // Subscribe for instant UI updates. Each action reads the CURRENT SQL-backed
+  // actor snapshot instead of the global catalogue of defined permissions.
+  const access = useAccessSnapshot();
   return useCallback(
-    (permId: string) => reg.flatPermissions.some(p => p.id === permId && p.status === "Active"),
-    [reg.flatPermissions],
+    (permId: string) => documentActionGranted(permId, readAccessSnapshot()),
+    [access],
   );
 }
 
@@ -235,8 +243,11 @@ function AccessTab({
   can: (id: string) => boolean;
 }) {
   const { users } = useUserRegistry();
+  const actorAccess = useAccessSnapshot();
+  const requestEpoch = useRef(0);
   const [entries, setEntries]     = useState<DocumentAccessEntry[]>([]);
   const [loading, setLoading]     = useState(true);
+  const [accessError, setAccessError] = useState<string | null>(null);
   const [showForm, setShowForm]   = useState(false);
   const [selUser, setSelUser]     = useState("");
   const [selRole, setSelRole]     = useState("Viewer");
@@ -245,41 +256,95 @@ function AccessTab({
   const canShare = can("doc_share");
   const docId = doc.doc_id ?? doc.id;
 
-  const reload = useCallback(async () => {
-    if (!repo) return;
+  const reload = useCallback(async (): Promise<DocumentAccessEntry[] | null> => {
+    const requestId = ++requestEpoch.current;
+    const accessAtStart = readAccessSnapshot();
+    if (!repo) return null;
     setLoading(true);
-    try { setEntries(await repo.listAccess(docId)); }
-    catch { setEntries([]); }
-    finally { setLoading(false); }
-  }, [repo, docId]);
+    setEntries([]);
+    setAccessError(null);
+    if (!documentActionGranted("doc_view", accessAtStart)) {
+      setLoading(false);
+      setAccessError("You do not have permission to view this document's access list.");
+      return null;
+    }
+    try {
+      const latest = await repo.listAccess(docId);
+      if (requestId !== requestEpoch.current ||
+          readAccessSnapshot() !== accessAtStart) return null;
+      if (!Array.isArray(latest)) throw new Error("Invalid access-list response.");
+      setEntries(latest);
+      return latest;
+    } catch {
+      if (requestId === requestEpoch.current &&
+          readAccessSnapshot() === accessAtStart) {
+        setEntries([]);
+        setAccessError("Unable to load document access. Retry this request.");
+      }
+      return null;
+    } finally {
+      if (requestId === requestEpoch.current &&
+          readAccessSnapshot() === accessAtStart) setLoading(false);
+    }
+  }, [repo, docId, actorAccess]);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => {
+    void reload();
+    return () => { requestEpoch.current += 1; };
+  }, [reload]);
 
   const handleAdd = async () => {
     if (!repo || !selUser) { toast.error("Select a user to add."); return; }
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_share", readAccessSnapshot())) {
+      toast.error("You do not have permission to share this document.");
+      return;
+    }
     setSaving(true);
     try {
-      await repo.grantAccess({
+      const subjectId = resolveUniqueActiveDocumentUserId(users, selUser);
+      const permission = ROLE_PERM_MAP[selRole] ?? "view";
+      const saved = await repo.grantAccess({
         document_id: docId,
         subject_type: "user",
-        subject_id: selUser,
-        permission: ROLE_PERM_MAP[selRole] ?? "view",
+        subject_id: subjectId,
+        permission,
         granted_by: "current_user",
       });
+      if (!documentActionSessionUnchanged("doc_share", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or access changed. Refresh the document access list.");
+      }
+      const confirmed = await reload();
+      if (!confirmed || !documentShareGrantReadback(confirmed, saved, docId, subjectId, permission)) {
+        throw new Error("Access grant was submitted, but SQL readback did not confirm it. Refresh and check before retrying.");
+      }
       toast.success("Access granted.");
       setShowForm(false); setSelUser(""); setSelRole("Viewer");
-      await reload();
-    } catch { toast.error("Failed to grant access."); }
-    finally { setSaving(false); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to grant access.");
+    } finally { setSaving(false); }
   };
 
   const handleRevoke = async (entryId: string, name: string) => {
     if (!repo) return;
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_share", readAccessSnapshot())) {
+      toast.error("You do not have permission to revoke document access.");
+      return;
+    }
     try {
       await repo.revokeAccess(entryId);
+      if (!documentActionSessionUnchanged("doc_share", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or access changed. Refresh the document access list.");
+      }
+      const confirmed = await reload();
+      if (!confirmed || !documentShareRevokeReadback(confirmed, entryId)) {
+        throw new Error("Revocation was submitted, but SQL readback did not confirm removal. Refresh before retrying.");
+      }
       toast.success(`Access removed for ${name}.`);
-      await reload();
-    } catch { toast.error("Failed to remove access."); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to remove access.");
+    }
   };
 
   const userOptions = useMemo(
@@ -293,6 +358,12 @@ function AccessTab({
   };
 
   if (loading) return <div className="doc-drawer__loading"><Loader2 size={16} className="spin-icon" /> Loading access…</div>;
+  if (accessError) return (
+    <div className="doc-drawer__empty" role="alert">
+      <div>{accessError}</div>
+      <Button variant="secondary" size="sm" onClick={() => { void reload(); }}>Retry</Button>
+    </div>
+  );
 
   return (
     <>
@@ -1665,14 +1736,24 @@ export function DocumentDetailsDrawer({ open, onClose, document: doc }: Document
 
   const handleDownload = useCallback(async () => {
     if (!doc?.file_name) return;
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_download", accessAtStart)) {
+      toast.error("You do not have permission to download this document.");
+      return;
+    }
     try {
       const file = await documentContentStore.getOriginalFile(docId);
+      if (!documentActionSessionUnchanged("doc_download", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or document access changed. Download again after refreshing.");
+      }
       if (!file) { toast.error("Original file not found."); return; }
       const url = URL.createObjectURL(file);
       const a   = document.createElement("a");
       a.href = url; a.download = doc.file_name; a.click();
       URL.revokeObjectURL(url);
-    } catch { toast.error("Download failed."); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Download failed.");
+    }
   }, [doc, docId]);
 
   // ── Workspace type and action labels ───────────────────────────────────────
