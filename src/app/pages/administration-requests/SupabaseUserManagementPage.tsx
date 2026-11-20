@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { Eye, Shield, UserCheck, UserPlus, UserX, Users } from "lucide-react";
 import { toast } from "sonner";
@@ -10,13 +10,14 @@ import { AppTextField } from "../../components/forms/AppTextField";
 import { AppSelectField } from "../../components/forms/AppSelectField";
 import { AppPasswordField } from "../../components/forms/AppPasswordField";
 import { AppCheckbox } from "../../components/forms/AppCheckbox";
-import { useAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
+import { useAccessSnapshot, readAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
 import { ResponsiveOverlay } from "../../components/shared/ResponsiveOverlay";
 import { UnifiedDataTable } from "../../components/tables";
 import { fc, BADGE } from "../modulePageUtils";
 import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
 import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./userBusinessFields";
+import { createLatestUserDirectoryRead } from "./userDirectoryRead";
 
 type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
@@ -68,19 +69,40 @@ export function SupabaseUserManagementPage() {
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [assignError, setAssignError] = useState("");
 
-  const loadUsers = async () => {
-    setLoading(true);
-    setLoadError("");
-    try {
-      const result = await convayAuth.users("list");
-      setUsers(result.users ?? []);
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Unable to load users");
-    } finally {
+  // UAM-01: fail closed on denied/failed reads, and never publish another
+  // account's late response after logout, permissions refresh or retry.
+  const directoryRead = useRef(createLatestUserDirectoryRead<ConvayProfile>());
+  const loadUsers = async (): Promise<boolean> => {
+    const currentAccess = readAccessSnapshot();
+    if (!currentAccess.loaded || !currentAccess.is_super_admin) {
+      directoryRead.current.invalidate();
+      setUsers([]);
       setLoading(false);
+      setLoadError("Super Admin access required");
+      return false;
     }
+    return directoryRead.current.load(
+      () => convayAuth.users("list"),
+      update => {
+        setUsers(update.users);
+        setLoading(update.phase === "loading");
+        setLoadError(update.error);
+      },
+    );
   };
-  useEffect(() => { void loadUsers(); }, []);
+  useEffect(() => {
+    if (access.loaded && access.is_super_admin) {
+      void loadUsers();
+    } else {
+      directoryRead.current.invalidate();
+      setUsers([]);
+      setLoading(false);
+      setLoadError("");
+    }
+    return () => { directoryRead.current.invalidate(); };
+    // Reload only when effective Super Admin access changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [access.loaded, access.is_super_admin]);
 
   const selected = users.find(u => u.user_id === selectedId) ?? null;
   const editing = users.find(u => u.user_id === editId) ?? null;
