@@ -271,6 +271,31 @@ begin
         )
       )),true);
   end if;
+
+  if v_old_status='revision requested' and v_new_status='under secretary review' then
+    -- The reviewer-requested snapshot remains immutable; only a sequential
+    -- new version is valid on the returned author's next submission.
+    if coalesce(old.payload->>'version','') not similar to
+      '(0|[1-9][0-9]{0,3})[.](0|[1-9][0-9]{0,3})' then
+      raise exception 'Invalid existing minutes version' using errcode='23514';
+    end if;
+    if split_part(old.payload->>'version','.',2)::integer >= 9999 then
+      raise exception 'Minutes revision limit reached' using errcode='23514';
+    end if;
+    v_next_version := split_part(old.payload->>'version','.',1) || '.' ||
+      (split_part(old.payload->>'version','.',2)::integer+1)::text;
+    if new.payload->>'version' is distinct from v_next_version then
+      raise exception 'Resubmission requires the next sequential revision version'
+        using errcode='23514';
+    end if;
+  elsif v_old_status='revision requested' and v_new_status<>v_old_status then
+    raise exception 'Returned minutes must be resubmitted for Secretary Review'
+      using errcode='42501';
+  elsif new.payload->'version' is distinct from old.payload->'version' then
+    raise exception 'Minutes version cannot change without resubmission'
+      using errcode='42501';
+  end if;
+
   if v_old_status in ('approved','signed','archived') then
     if not v_reviewer then
       raise exception 'Final minutes transitions require min_approve'
