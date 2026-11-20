@@ -5,6 +5,7 @@ import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
 import { buildGovernanceReportFilters } from "./governanceReportView";
 import { buildDecisionRegisterFilters } from "./decisionRegisterView";
+import { hasReportableFinancialImpact } from "./financialImpactReportView";
 import { countOverdueActions, isActionClosed, todayInLocalTime } from "./actionRegisterView";
 import {
   MEETING_DRAWER_COLS,
@@ -296,12 +297,7 @@ export function FinancialResourceImpactPage() {
   const decisionReg = useDecisionRegistry();
 
   // Only SQL-confirmed, meaningful impact values enter this report.
-  // Ignore whitespace and all case variants of the unsupported N/A sentinel.
-  const withImpact = decisionReg.items.filter(d =>
-    typeof d.financial_impact === "string" &&
-    d.financial_impact.trim().length > 0 &&
-    d.financial_impact.trim().toLowerCase() !== "n/a"
-  );
+  const withImpact = decisionReg.items.filter(d => hasReportableFinancialImpact(d.financial_impact));
 
   const rows: TableRow[] = withImpact.map(d => ({
     id:                    d.id,
