@@ -706,8 +706,7 @@ export function OnlineReturnRegisterPage() {
         .filter(a => a.visible)
         .sort((a, b) => a.priority - b.priority)
         .map(a => {
-          const gated = guardMeetingDrawerAction({
-            id: a.id, label: a.label, icon: a.icon, color: toneToColor[a.tone],
+          const gated = guardMeetingDrawerAction({ id: a.id, label: a.label, icon: a.icon, color: toneToColor[a.tone],
             enabled: a.enabled, disabledReason: a.disabledReason,
           });
           return { ...gated, id: a.id === "delete" ? "delete_draft" : a.id };
