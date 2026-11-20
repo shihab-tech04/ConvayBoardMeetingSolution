@@ -31,7 +31,7 @@ describe("LM-06 SQL-confirmed minutes-capture lifecycle", () => {
   it("requires an ended meeting and saved minutes before completion", () => {
     const active = makeRequest({ action: "complete" });
     expect(() => plannedMinutesStatus(active)).toThrow(/End the meeting/);
-    const ended = { ...active.session, session_status: "ended" };
+    const ended = { ...active.session, session_status: "ended", minutes_capture_status: "active" };
     expect(() => plannedMinutesStatus(makeRequest({ action: "complete", session: ended }))).toThrow(/Save the actual/);
     expect(plannedMinutesStatus(makeRequest({ action: "complete", session: ended, confirmedSavedMinutes: true }))).toBe("completed");
   });
