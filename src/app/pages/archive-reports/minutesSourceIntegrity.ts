@@ -37,3 +37,19 @@ export function resolveMinutesSource(
     meeting_date: source.meeting_date,
   };
 }
+
+/** MN-02: revision is a review-only action; never silently rewind signed records. */
+const REVISION_REVIEW_STAGES = new Set([
+  "Under Secretary Review", "Under Chairperson Review", "Member Review",
+]);
+
+export function validateMinutesRevisionRequest(status: string, instructions: unknown): string {
+  if (!REVISION_REVIEW_STAGES.has(status)) {
+    throw new Error("A revision may only be requested during minutes review.");
+  }
+  const reason = typeof instructions === "string" ? instructions.trim() : "";
+  if (reason.length < 10) {
+    throw new Error("Provide revision instructions of at least 10 characters.");
+  }
+  return reason;
+}
