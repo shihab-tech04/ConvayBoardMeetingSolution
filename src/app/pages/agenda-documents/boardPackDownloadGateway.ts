@@ -40,7 +40,7 @@ export interface BoardPackDownloadGateway {
   /** Authenticated, server-issued, immutable manifest, NOT a local cache. */
   requestManifest(packId: string): Promise<unknown>;
   /** Fetch exact original under actor/document/version Storage RLS. */
-  loadOriginal(documentId: string, versionId: string): Promise<Blob | null>;
+  loadOriginal(documentId: string, versionId: string, signal?: AbortSignal): Promise<Blob | null>;
   /** Server revalidates manifest + access then persists an actor-bound receipt. */
   confirmReceipt(packId: string, manifestId: string): Promise<unknown>;
   /** Optional deterministic clock only for tests. */
@@ -85,6 +85,7 @@ export function parseAuthorizedBoardPackManifest(
     throw new Error("The authorized board pack has no valid document list.");
   }
   const seen = new Set<string>();
+  let expectedTotalBytes = 0;
   const files: BoardPackManifestFile[] = input.files.map((file: unknown) => {
     if (!isRecord(file) || !validIdentifier(file.documentId) ||
         !validIdentifier(file.versionId) || !validIdentifier(file.fileName)) {
@@ -99,6 +100,12 @@ export function parseAuthorizedBoardPackManifest(
     const pair = `${file.documentId}\0${file.versionId}`;
     if (seen.has(pair)) throw new Error("The board pack contains duplicate document versions.");
     seen.add(pair);
+    // Reject over-budget manifests BEFORE initiating any private Storage read.
+    // The ZIP composer independently enforces the same 256 MiB payload ceiling.
+    expectedTotalBytes += file.sizeBytes as number;
+    if (expectedTotalBytes > 256 * 1024 * 1024) {
+      throw new Error("Board pack exceeds ZIP size limit.");
+    }
     // Defensive filename validation; the ZIP writer also sanitizes and deduplicates.
     safeBoardPackEntryName(file.fileName);
     return {
@@ -157,7 +164,7 @@ export async function prepareAuthorizedBoardPackDownload(
       if (Date.parse(manifest.expiresAt) <= currentTime()) {
         throw new Error("Board pack authorization expired during download. Try again.");
       }
-      const original = await gateway.loadOriginal(documentId, versionId);
+      const original = await gateway.loadOriginal(documentId, versionId, signal);
       assertNotCancelled(signal);
       if (!original) return null; // The composer fails closed on a missing original.
       const expected = fileIndex.get(`${documentId}\0${versionId}`);

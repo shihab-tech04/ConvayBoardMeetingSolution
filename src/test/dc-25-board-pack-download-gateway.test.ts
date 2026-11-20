@@ -46,7 +46,7 @@ describe("DC-25: server-authorized board-pack download gateway", () => {
     expect(download.archive.size).toBeGreaterThan(20);
     expect(download.receiptId).toBe("audited-actor-receipt");
     expect(download.fileName).toBe("pack-1.zip");
-    expect(g.loadOriginal).toHaveBeenCalledWith("doc-1","v2");
+    expect(g.loadOriginal).toHaveBeenCalledWith("doc-1","v2",undefined);
     expect(g.confirmReceipt).toHaveBeenCalledWith("pack-1","manifest-revision-7");
   });
   it("fails closed on missing original; no receipt is created", async () => {
@@ -59,6 +59,28 @@ describe("DC-25: server-authorized board-pack download gateway", () => {
     await expect(prepareAuthorizedBoardPackDownload("pack-1",g)).rejects.toThrow("revoked");
     const bad = gateway();bad.confirmReceipt = vi.fn(async()=>({receiptId:"receipt",packId:"foreign",manifestId:"manifest-revision-7"}));
     await expect(prepareAuthorizedBoardPackDownload("pack-1",bad)).rejects.toThrow();
+  });
+  it("rejects over-budget frozen manifests before any private original-file request", async () => {
+    // 400 individually valid 1 MiB objects exceed the ZIP utility's 256 MiB budget.
+    const tooLarge = {
+      ...manifest(),
+      files: Array.from({length:400}, (_,i) => ({
+        documentId:`doc-${i}`, versionId:"v1",
+        fileName:`Board paper ${i}.pdf`, sizeBytes:1024*1024,
+      })),
+    };
+    expect(() => parseAuthorizedBoardPackManifest(tooLarge,"pack-1",NOW)).toThrow(/ZIP size limit/i);
+    const g = gateway();
+    g.requestManifest = vi.fn(async () => tooLarge);
+    await expect(prepareAuthorizedBoardPackDownload("pack-1",g)).rejects.toThrow(/ZIP size limit/i);
+    expect(g.loadOriginal).not.toHaveBeenCalled();
+    expect(g.confirmReceipt).not.toHaveBeenCalled();
+  });
+  it("forwards cancellation to exact-version private Storage transport", async () => {
+    const g = gateway();
+    const controller = new AbortController();
+    await prepareAuthorizedBoardPackDownload("pack-1",g,controller.signal);
+    expect(g.loadOriginal).toHaveBeenCalledWith("doc-1","v2",controller.signal);
   });
   it("rejects cancellation before any manifest request", async () => {
     const g = gateway();const c = new AbortController();c.abort();
