@@ -75,9 +75,15 @@ export function BoardPacksPage() {
     drawerCols:  DRAWER_COLS,
     drawerActions: [
       { id: "edit",    label: "Edit Pack",      icon: Pencil,  color: "#3b82f6" },
-      { id: "publish", label: "Publish",         icon: Upload,  color: "#22c55e" },
-      { id: "download",label: "Download Pack",   icon: Download,color: "#6b7280" },
-      { id: "archive", label: "Archive",         icon: Archive, color: "#ef4444" },
+      // DC-25: retain approved actions, but never offer an unimplemented
+      // publication/download/archive as if SQL and audit had confirmed it.
+      // Re-enable only with authenticated server handlers and actor tests.
+      { id: "publish", label: "Publish",         icon: Upload,  color: "#22c55e",
+        enabled: false, disabledReason: "Publishing requires server approval, an immutable frozen manifest and an audit trail." },
+      { id: "download",label: "Download Pack",   icon: Download,color: "#6b7280",
+        enabled: false, disabledReason: "An authorized published manifest, original versions and server audit receipt are not connected yet." },
+      { id: "archive", label: "Archive",         icon: Archive, color: "#ef4444",
+        enabled: false, disabledReason: "Archiving requires a server-confirmed lifecycle transition and audit record." },
     ],
     rows,
     kpis,

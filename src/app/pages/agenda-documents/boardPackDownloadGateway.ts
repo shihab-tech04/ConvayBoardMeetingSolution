@@ -56,6 +56,11 @@ function validIdentifier(value: unknown): value is string {
     value.trim() === value && value.length <= 220 && !/[\u0000-\u001f\u007f]/.test(value);
 }
 
+/** An immutable board-pack pin must not resolve to the mutable original-file alias. */
+function validFrozenVersionId(value: unknown): value is string {
+  return validIdentifier(value) && !/^(?:latest|live)$/i.test(value);
+}
+
 function assertNotCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("Board pack download cancelled.", "AbortError");
 }
@@ -87,7 +92,7 @@ export function parseAuthorizedBoardPackManifest(
   const seen = new Set<string>();
   const files: BoardPackManifestFile[] = input.files.map((file: unknown) => {
     if (!isRecord(file) || !validIdentifier(file.documentId) ||
-        !validIdentifier(file.versionId) || !validIdentifier(file.fileName)) {
+        !validFrozenVersionId(file.versionId) || !validIdentifier(file.fileName)) {
       throw new Error("The board pack contains an invalid document/version.");
     }
     if (!Number.isSafeInteger(file.sizeBytes) || Number(file.sizeBytes) < 0 ||
