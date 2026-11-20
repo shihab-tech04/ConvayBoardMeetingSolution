@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus } from "../app/pages/archive-reports/minutesSourceIntegrity";
+import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission } from "../app/pages/archive-reports/minutesSourceIntegrity";
 
 const sourceMeeting = {
   id: "meeting-uuid-1", meeting_id: "MTG-2026-0001", meeting_title: "Annual Board Meeting",
@@ -43,6 +43,34 @@ describe("MN-01 minutes source integrity", () => {
     for (const status of ["Under Secretary Review", "Under Chairperson Review", "Member Review", "Approved", "Signed", "Archived"]) {
       expect(isEditableMinutesStatus(status)).toBe(false);
     }
+  });
+  it("submits an initial draft without changing its version", () => {
+    expect(buildMinutesReviewSubmission("Draft", "1.0"))
+      .toEqual({ approval_status: "Under Secretary Review", version: "1.0" });
+  });
+  it("increments only returned minutes by one minor version", () => {
+    expect(buildMinutesReviewSubmission("Revision Requested", "1.0"))
+      .toEqual({ approval_status: "Under Secretary Review", version: "1.1" });
+    expect(buildMinutesReviewSubmission("Revision Requested", "2.19"))
+      .toEqual({ approval_status: "Under Secretary Review", version: "2.20" });
+  });
+  it("rejects invalid status/version rather than forging a review transition", () => {
+    for (const status of ["Under Secretary Review", "Member Review", "Approved", "Signed", "Archived", ""]) {
+      expect(() => buildMinutesReviewSubmission(status, "1.0")).toThrow(/Only draft/);
+    }
+    for (const version of ["", "latest", "1.2.3", "1.-1", "01.0", "1.10000"]) {
+      expect(() => buildMinutesReviewSubmission("Revision Requested", version)).toThrow(/version/);
+    }
+    expect(() => buildMinutesReviewSubmission("Revision Requested", "1.9999")).toThrow(/limit/);
+  });
+  it("keeps the resubmission modal explicit and waits for server persistence", () => {
+    const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
+    expect(page).toContain('id: "submit_for_review"');
+    expect(page).toContain("<SConfirmModal");
+    expect(page).toContain("buildMinutesReviewSubmission(original.approval_status, original.version)");
+    expect(page).toContain("const saved = await registry.update(id, patch)");
+    expect(page).toContain("await registry.refresh?.()");
+    expect(page).toContain("submissionInFlight.current");
   });
   it("connects the revision action to awaited SQL and the shared permission gate", () => {
     const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
