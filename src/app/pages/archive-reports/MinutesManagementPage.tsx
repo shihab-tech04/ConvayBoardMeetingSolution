@@ -169,6 +169,7 @@ export function MinutesManagementPage() {
         co_authors:         String(values.co_authors         ?? ""),
         quorum_statement:   String(values.quorum_statement   ?? ""),
         discussion_summary: String(values.discussion_summary ?? ""),
+        notes:              String(values.notes ?? ""),
         next_meeting_date:  String(values.next_meeting_date  ?? ""),
         closing_time:       String(values.closing_time       ?? ""),
         version:            "1.0",
@@ -198,6 +199,7 @@ export function MinutesManagementPage() {
         co_authors: String(values.co_authors ?? ""),
         quorum_statement: String(values.quorum_statement ?? ""),
         discussion_summary: String(values.discussion_summary ?? ""),
+        notes: String(values.notes ?? ""),
         next_meeting_date: String(values.next_meeting_date ?? ""),
         closing_time: String(values.closing_time ?? ""),
       });
