@@ -160,6 +160,7 @@ describe("MN-01 minutes source integrity", () => {
   it("requires permission, confirmed SQL create and immutable meeting linkage on edit", () => {
     const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
     expect(page).toContain('access.effective_permissions.includes("min_create")');
+    expect(page).toContain("awaitCreateSave: true");
     expect(page).toContain('const saved = await registry.add(');
     expect(page).toContain('if (saved !== true) throw new Error(');
     expect(page).toContain("!isEditableMinutesStatus(original.approval_status)");
