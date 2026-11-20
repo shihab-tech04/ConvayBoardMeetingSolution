@@ -1,8 +1,9 @@
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
+import { fc, BADGE } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { buildDecisionRegisterFilters } from "./decisionRegisterView";
+import { buildResolutionRegisterFilters } from "./resolutionRegisterView";
 import { buildActionRegisterFilters, isActionClosed, isActionOpen, countOverdueActions, todayInLocalTime } from "./actionRegisterView";
 import { buildAttendanceRegisterFilters } from "./attendanceRegisterView";
 import { buildConflictRegisterFilters } from "./conflictRegisterView";
@@ -54,12 +55,16 @@ export function ResolutionRegisterPage() {
       status:     "approval_status",
       date:       "effective_date",
     },
-    filters: BASE_FILTERS,
+    filters: buildResolutionRegisterFilters(rows),
+    dataLoading: registry.loading,
+    dataError: registry.error,
+    onDataRetry: registry.refresh,
     actions: ROW_VIEW,
     drawerTitle: "Resolution Details",
     drawerCols: RESOLUTION_DRAWER_COLS,
     rows,
-    kpis,
+    kpis: registry.loading || registry.error ? [] : kpis,
+    searchPlaceholder: "Search resolutions",
   };
   return <GenPage cfg={cfg} />;
 }
