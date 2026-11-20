@@ -143,7 +143,10 @@ export function ParticipationAnalyticsPage() {
     drawerTitle: "Meeting Details",
     drawerCols:  MEETING_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(registry.loading),
+    dataError: registry.error ?? null,
+    onDataRetry: registry.refresh,
+    kpis: registry.loading || registry.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
