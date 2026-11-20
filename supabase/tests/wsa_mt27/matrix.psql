@@ -18,6 +18,21 @@ begin
  raise notice 'MT-27 CHECK 00 grants, private journal and direct-delete deny PASS';
 end $gate$;
 
+-- MT-27: explicit source statuses, including malformed/missing variants.
+-- These are synthetic records in this rollback-only PostgreSQL transaction.
+insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id,created_by)
+values
+ ('bms.meetings','status-missing','{"id":"status-missing"}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333'),
+ ('bms.meetings','status-blank','{"id":"status-blank","approval_status":"  ","status":""}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333'),
+ ('bms.meetings','approval-only','{"id":"approval-only","approval_status":"Draft"}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333'),
+ ('bms.meetings','status-only','{"id":"status-only","status":"Draft"}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333'),
+ ('bms.meetings','status-conflict','{"id":"status-conflict","approval_status":"Draft","status":"Completed"}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333');
+
 set local role authenticated;
 select set_config('request.jwt.claim.sub','33333333-3333-4333-8333-333333333333',true);
 select set_config('request.jwt.claims',
@@ -61,6 +76,41 @@ begin
  if not denied then raise exception 'MT-27 scheduled deletion accepted'; end if;
  raise notice 'MT-27 CHECK 04 non-Draft denied PASS';
 end $state$;
+
+do $explicit_state$
+declare rid text; denied boolean;
+begin
+ foreach rid in array array['status-missing','status-blank','status-conflict'] loop
+   denied:=false;
+   begin
+     perform public.convay_delete_draft_meeting(rid,'reject-'||rid,1);
+   exception when sqlstate '40001' then denied:=true; end;
+   if not denied then
+     raise exception 'MT-27 missing, blank or contradictory Draft accepted: %',rid;
+   end if;
+   if not exists(select 1 from public.convay_entity_records
+       where entity_key='bms.meetings' and record_id=rid) then
+     raise exception 'MT-27 rejected record lost: %',rid;
+   end if;
+ end loop;
+ raise notice 'MT-27 CHECK 18 missing/blank/contradictory status denied PASS';
+end $explicit_state$;
+
+do $single_state$
+declare rid text; ack jsonb;
+begin
+ foreach rid in array array['approval-only','status-only'] loop
+   ack:=public.convay_delete_draft_meeting(rid,'delete-'||rid,1);
+   if ack->>'outcome'<>'deleted' then
+     raise exception 'MT-27 valid explicit single Draft field rejected: %',rid;
+   end if;
+   if exists(select 1 from public.convay_entity_records
+       where entity_key='bms.meetings' and record_id=rid) then
+     raise exception 'MT-27 valid Draft not deleted: %',rid;
+   end if;
+ end loop;
+ raise notice 'MT-27 CHECK 19 approval-only/status-only Draft deletion PASS';
+end $single_state$;
 
 do $hold$
 declare denied boolean:=false;

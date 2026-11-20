@@ -99,8 +99,22 @@ begin
     raise exception 'Draft revision changed; refresh before deleting'
       using errcode='40001';
   end if;
-  if lower(btrim(coalesce(v_meeting.payload->>'approval_status','Draft'))) <> 'draft'
-     or lower(btrim(coalesce(v_meeting.payload->>'status','Draft'))) <> 'draft'
+  -- Never manufacture a Draft state from NULL/missing/blank data. Require
+  -- explicit Draft evidence in at least one supported lifecycle field, and
+  -- reject ANY nonblank contradictory state in the other field.
+  -- This matches the guarded client snapshot without trusting that client.
+  if not (
+       lower(btrim(coalesce(v_meeting.payload->>'approval_status',''))) = 'draft'
+       or lower(btrim(coalesce(v_meeting.payload->>'status',''))) = 'draft'
+     )
+     or (
+       nullif(btrim(coalesce(v_meeting.payload->>'approval_status','')),'') is not null
+       and lower(btrim(v_meeting.payload->>'approval_status')) <> 'draft'
+     )
+     or (
+       nullif(btrim(coalesce(v_meeting.payload->>'status','')),'') is not null
+       and lower(btrim(v_meeting.payload->>'status')) <> 'draft'
+     )
      or v_meeting.payload->>'legal_hold'='true'
      or v_meeting.payload->>'retention_hold'='true'
      or v_meeting.payload->>'is_locked'='true'
