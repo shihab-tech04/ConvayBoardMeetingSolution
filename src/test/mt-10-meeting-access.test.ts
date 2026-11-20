@@ -74,4 +74,44 @@ describe("MT-09/MT-10 — meeting mode, venue, and access", () => {
       .toEqual(["Hybrid meeting requires a virtual meeting link"]);
   });
 
+
+  it("does not trust conflicting persisted lifecycle status aliases", () => {
+    const contradictory = {
+      approval_status: "Draft", status: "Scheduled", mode: "Hybrid",
+      venue: "Board Room A", virtual_link: "https://example.com/live",
+    };
+    expect(meetingUpdateAccessBlockers(contradictory, { venue: "" }))
+      .toEqual(["Hybrid meeting requires a venue address"]);
+    expect(meetingUpdateAccessBlockers({
+      ...contradictory, approval_status: "Scheduled", status: "Draft",
+    }, { virtual_link: "" }))
+      .toEqual(["Hybrid meeting requires a virtual meeting link"]);
+  });
+
+  it("rejects attempts to bypass scheduled access by patching both state aliases to Draft", () => {
+    const scheduled = {
+      approval_status: "Scheduled", status: "Scheduled",
+      mode: "Hybrid", venue: "Room A", virtual_link: "https://example.com/live",
+    };
+    expect(meetingUpdateAccessBlockers(scheduled, {
+      approval_status: "Draft", status: "Draft", venue: "",
+    })).toEqual(["Hybrid meeting requires a venue address"]);
+  });
+
+  it("allows intentionally incomplete Draft edits with explicit consistent lifecycle evidence", () => {
+    const draft = {
+      approval_status: " draft ", status: "DRAFT",
+      mode: "Hybrid", venue: "", virtual_link: "",
+    };
+    expect(meetingUpdateAccessBlockers(draft, { venue: "" })).toEqual([]);
+    expect(meetingUpdateAccessBlockers({ status: "Draft", mode: "Hybrid" }, { virtual_link: "" }))
+      .toEqual([]);
+  });
+
+  it("does not assume a missing lifecycle status means Draft", () => {
+    expect(meetingUpdateAccessBlockers({ mode: "Hybrid", venue: "Room A", virtual_link: "https://example.com/live" }, {
+      venue: "",
+    })).toEqual(["Hybrid meeting requires a venue address"]);
+  });
+
 });
