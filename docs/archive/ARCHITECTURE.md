@@ -367,6 +367,7 @@ interface ThemeConfig {
 
 Themes are applied via inline styles (not CSS classes) for maximum flexibility:
 
+{% raw %}
 ```typescript
 <div style={{ 
   backgroundColor: theme.surface,
@@ -374,6 +375,7 @@ Themes are applied via inline styles (not CSS classes) for maximum flexibility:
   border: `1px solid ${theme.border}`
 }}>
 ```
+{% endraw %}
 
 ### Benefits of This Approach
 
