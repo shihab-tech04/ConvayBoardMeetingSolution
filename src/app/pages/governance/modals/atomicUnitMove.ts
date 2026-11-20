@@ -30,7 +30,7 @@ function required(value: unknown): value is string {
 export async function commitAtomicUnitMove(intent: UnitMoveIntent, gateway: UnitMoveGateway): Promise<UnitMoveReceipt> {
   if (!required(intent.unit_id) || !required(intent.new_parent_id) || intent.new_parent_id === intent.unit_id)
     throw new Error("A different valid parent unit is required.");
-  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(intent.effective_date) ||
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(intent.effective_date) ||
       !Number.isFinite(Date.parse(intent.effective_date + "T00:00:00Z")))
     throw new Error("A valid effective date is required.");
   if (!required(intent.reason) || !required(intent.request_id))
