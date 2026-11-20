@@ -18,6 +18,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("LM-02 prejoin meeting time integrity", () => {
+  it("renders a real SQL 24-hour meeting time without changing the join options", () => {
+    setMediaDevices(() => new Promise<MediaStream>(() => {}));
+    const onJoin = vi.fn();
+    render(<MeetingPreJoinPanel meeting={{ start_time: "14:05:00" }} initialRole="Board Member" onJoin={onJoin} onBack={vi.fn()} />);
+    expect(screen.getByText("2:05 PM")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Join Meeting" }));
+    expect(onJoin).toHaveBeenCalledWith({ micOn: true, camOn: true, role: "Board Member" });
+  });
+
+  it.each(["25:99", "24:00", "10:60", "12:30:60", "abc:30", "12:5", "14:00garbage"])(
+    "does not turn invalid meeting time %s into authoritative display",
+    (value) => {
+      setMediaDevices(() => new Promise<MediaStream>(() => {}));
+      render(<MeetingPreJoinPanel meeting={{ start_time: value }} initialRole="Board Member" onJoin={vi.fn()} onBack={vi.fn()} />);
+      expect(screen.queryByText("Time")).toBeNull();
+      expect(screen.queryByText(/NaN|Invalid Date/)).toBeNull();
+    },
+  );
+});
+
 describe("LM-02 prejoin media status is evidence-based", () => {
   it("does not claim microphone permission is granted before joining", () => {
     setMediaDevices(() => new Promise<MediaStream>(() => {}));
