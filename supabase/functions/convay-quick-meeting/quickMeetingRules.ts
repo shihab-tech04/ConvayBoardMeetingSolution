@@ -33,7 +33,11 @@ const reject = (status: number, error: string): QuickMeetingAdmissionDecision =>
 export function checkQuickMeetingLink(meeting: QuickMeetingAccessRecord, link: QuickMeetingLinkAccessRecord, now = Date.now()): QuickMeetingAdmissionDecision {
   if (meeting.meeting_kind !== "quick" || meeting.access_mode !== "link") return reject(404, "This quick meeting link is unavailable.");
   if (meeting.status !== "active") return reject(410, "This quick meeting has ended.");
-  if (Date.parse(meeting.expires_at) <= now || Date.parse(link.expires_at) <= now) return reject(410, "This quick meeting link has expired.");
+  const meetingExpiresAt = Date.parse(meeting.expires_at);
+  const linkExpiresAt = Date.parse(link.expires_at);
+  if (!Number.isFinite(meetingExpiresAt) || !Number.isFinite(linkExpiresAt) || meetingExpiresAt <= now || linkExpiresAt <= now) {
+    return reject(410, "This quick meeting link has expired.");
+  }
   if (link.revoked_at) return reject(410, "This quick meeting link has been revoked.");
   return { allowed: true };
 }
