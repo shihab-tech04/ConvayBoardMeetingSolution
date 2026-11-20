@@ -58,7 +58,7 @@ begin
   v_payload := jsonb_build_object(
     'id',v_mins,'minutes_id',v_mins,'meeting_id',v_mid,
     'meeting_title','Synthetic board meeting','meeting_date','2026-11-19',
-    'minute_taker','Synthetic minute taker','approval_status','Draft','version','1.0'
+    'minute_taker','Synthetic minute taker','discussion_summary','Recorded first version','approval_status','Draft','version','1.0'
   );
   if public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
     'entity_key','bms.minutes','action','create','payload',v_payload
@@ -171,6 +171,70 @@ begin
   end;
   if not v_denied_write then raise exception 'Principal without min_create wrote minutes'; end if;
 
+  -- Complete MN-02: review -> requested revision -> author edit -> v1.1 review.
+  perform set_config('request.jwt.claim.sub',v_actor::text,true);
+  perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+    'entity_key','bms.minutes','record_id',v_mins,'action','update',
+    'payload',jsonb_build_object('approval_status','Under Secretary Review')
+  )));
+  v_denied_write := false;
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.minutes','record_id',v_mins,'action','update',
+      'payload',jsonb_build_object('approval_status','Revision Requested',
+        'revision_instructions','short')
+    )));
+  exception when others then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Short revision instructions were accepted'; end if;
+
+  perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+    'entity_key','bms.minutes','record_id',v_mins,'action','update',
+    'payload',jsonb_build_object('approval_status','Revision Requested',
+      'revision_instructions','Correct the recorded attendance')
+  )));
+  if not exists(select 1 from public.convay_entity_records
+    where entity_key='bms.minutes' and record_id=v_mins
+      and jsonb_array_length(payload->'revision_history')=1
+      and payload->'revision_history'->0->>'version'='1.0'
+      and payload->'revision_history'->0->'content'->>'discussion_summary'='Recorded first version'
+      and payload->'revision_history'->0->>'instructions'='Correct the recorded attendance'
+      and payload->'revision_history'->0->>'requested_by'=v_actor::text
+  ) then raise exception 'Trusted immutable revision snapshot missing'; end if;
+
+  foreach v_status in array array['forged-history','changed-reason','skipped-version','wrong-stage'] loop
+    v_denied_write := false;
+    begin
+      perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+        'entity_key','bms.minutes','record_id',v_mins,'action','update',
+        'payload',case v_status
+          when 'forged-history' then jsonb_build_object('revision_history','[]'::jsonb)
+          when 'changed-reason' then jsonb_build_object('revision_instructions','Tampered explanation')
+          when 'skipped-version' then jsonb_build_object('approval_status','Under Secretary Review','version','1.9')
+          else jsonb_build_object('approval_status','Approved') end
+      )));
+    exception when others then v_denied_write := true;
+    end;
+    if not v_denied_write then raise exception 'Unauthorized revision mutation accepted: %',v_status; end if;
+  end loop;
+
+  -- Author corrections are allowed while returned but historical content stays frozen.
+  perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+    'entity_key','bms.minutes','record_id',v_mins,'action','update',
+    'payload',jsonb_build_object('discussion_summary','Corrected attendance in new version')
+  )));
+  perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+    'entity_key','bms.minutes','record_id',v_mins,'action','update',
+    'payload',jsonb_build_object('approval_status','Under Secretary Review','version','1.1')
+  )));
+  if not exists(select 1 from public.convay_entity_records
+    where entity_key='bms.minutes' and record_id=v_mins
+      and payload->>'version'='1.1'
+      and payload->>'approval_status'='Under Secretary Review'
+      and jsonb_array_length(payload->'revision_history')=1
+      and payload->'revision_history'->0->'content'->>'discussion_summary'='Recorded first version'
+      and payload->>'revision_instructions'='Correct the recorded attendance'
+  ) then raise exception 'Returned minutes resubmission lost version or history'; end if;
   -- Restore Root and ensure final minutes content and linked source are immutable.
   perform set_config('request.jwt.claim.sub',v_actor::text,true);
   perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
