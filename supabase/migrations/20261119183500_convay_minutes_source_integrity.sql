@@ -27,7 +27,7 @@ declare
   v_safe_workflow_keys text[] := array[
     'approval_status', 'status', 'workflow_status', 'approval_history',
     'approved_by', 'approved_at', 'signed_by', 'signed_at',
-    'archived_by', 'archived_at', 'revision_instructions', 'updated_at'
+    'archived_by', 'archived_at', 'revision_instructions', 'revision_history', 'updated_at'
   ];
 begin
   if tg_op = 'DELETE' then
@@ -225,6 +225,52 @@ begin
       using errcode='42501';
   end if;
   v_old_status := lower(btrim(coalesce(old.payload->>'approval_status','')));
+
+  -- Revision snapshots are stamped from OLD persistent content by this trigger.
+  -- Direct REST/batch clients cannot forge or delete previously reviewed text.
+  if new.payload->'revision_history' is distinct from old.payload->'revision_history' then
+    raise exception 'Minutes revision history is server-owned' using errcode='42501';
+  end if;
+  if new.payload->'revision_instructions' is distinct from old.payload->'revision_instructions'
+     and not (v_new_status='revision requested' and
+       v_old_status in ('under secretary review','under chairperson review','member review')) then
+    raise exception 'Revision instructions may only be recorded by a reviewer'
+      using errcode='42501';
+  end if;
+
+  if v_new_status='revision requested' and v_old_status<>v_new_status then
+    if v_old_status not in ('under secretary review','under chairperson review','member review')
+       or not v_reviewer then
+      raise exception 'Only a reviewer can return review-stage minutes'
+        using errcode='42501';
+    end if;
+    if length(btrim(coalesce(new.payload->>'revision_instructions',''))) < 10
+       or new.payload->'version' is distinct from old.payload->'version' then
+      raise exception 'Revision request requires instructions and unchanged version'
+        using errcode='23514';
+    end if;
+    v_history := coalesce(old.payload->'revision_history','[]'::jsonb);
+    if jsonb_typeof(v_history)<>'array' then
+      raise exception 'Invalid saved minutes revision history' using errcode='23514';
+    end if;
+    new.payload := jsonb_set(new.payload,'{revision_history}',
+      v_history || jsonb_build_array(jsonb_build_object(
+        'version',old.payload->>'version',
+        'review_status',old.payload->>'approval_status',
+        'instructions',new.payload->>'revision_instructions',
+        'requested_by',v_actor::text,
+        'requested_at',clock_timestamp(),
+        'content',jsonb_build_object(
+          'minutes_template',old.payload->>'minutes_template',
+          'minute_taker',old.payload->>'minute_taker',
+          'co_authors',old.payload->>'co_authors',
+          'quorum_statement',old.payload->>'quorum_statement',
+          'discussion_summary',old.payload->>'discussion_summary',
+          'next_meeting_date',old.payload->>'next_meeting_date',
+          'closing_time',old.payload->>'closing_time'
+        )
+      )),true);
+  end if;
   if v_old_status in ('approved','signed','archived') then
     if not v_reviewer then
       raise exception 'Final minutes transitions require min_approve'
