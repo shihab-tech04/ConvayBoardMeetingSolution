@@ -297,6 +297,40 @@ begin
       using errcode='42501';
   end if;
 
+  -- Explicit state graph: no direct Draft -> Approved/Signed/Archived shortcut,
+  -- no reversal of final records, and no client-controlled generic Published.
+  if v_new_status is distinct from v_old_status and not (
+       (v_old_status='draft' and v_new_status='under secretary review')
+    or (v_old_status='revision requested' and v_new_status='under secretary review')
+    or (v_old_status='under secretary review' and v_new_status in ('under chairperson review','revision requested'))
+    or (v_old_status='under chairperson review' and v_new_status in ('member review','revision requested'))
+    or (v_old_status='member review' and v_new_status in ('approved','revision requested'))
+    or (v_old_status='approved' and v_new_status='signed')
+    or (v_old_status='signed' and v_new_status='archived')
+  ) then
+    raise exception 'Invalid minutes lifecycle transition'
+      using errcode='42501';
+  end if;
+  if v_new_status is distinct from v_old_status
+    and v_old_status in ('under secretary review','under chairperson review','member review','approved','signed')
+    and not v_reviewer then
+    raise exception 'Review, approval, signing or archival requires min_approve'
+      using errcode='42501';
+  end if;
+  if v_old_status='under secretary review' and v_new_status='under chairperson review'
+     and not (v_profile.account_role='super_admin'
+       or nullif(btrim(coalesce(v_meeting.payload->>'secretary_user_id','')),'')=v_actor::text
+       or v_legacy_secretary) then
+    raise exception 'Only assigned secretary may forward minutes to chairperson'
+      using errcode='42501';
+  end if;
+  if v_old_status='under chairperson review' and v_new_status='member review'
+     and not (v_profile.account_role='super_admin'
+       or nullif(btrim(coalesce(v_meeting.payload->>'chairperson_user_id','')),'')=v_actor::text) then
+    raise exception 'Only assigned chairperson may forward minutes for member review'
+      using errcode='42501';
+  end if;
+
   if v_old_status in ('approved','signed','archived') then
     if not v_reviewer then
       raise exception 'Final minutes transitions require min_approve'
