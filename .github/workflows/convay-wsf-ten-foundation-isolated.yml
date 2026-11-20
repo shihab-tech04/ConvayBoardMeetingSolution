@@ -1,0 +1,56 @@
+name: Convay WS-F TEN-00 — disposable PostgreSQL 17 foundation rehearsal
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/convay-wsf-ten-foundation-isolated.yml'
+      - 'supabase/tests/wsf_ten_foundation/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ten-foundation-rehearsal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact source revision without persistent credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Start disposable PostgreSQL 17 with no production connection
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-wsf-ten00-db \
+            -e POSTGRES_PASSWORD=isolated-test-only-not-a-real-credential \
+            -e POSTGRES_DB=convay_wsf_fixture_20261120 \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            postgres:17-alpine
+          for attempt in $(seq 1 45); do
+            if docker exec convay-wsf-ten00-db pg_isready -U postgres -d convay_wsf_fixture_20261120 >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs convay-wsf-ten00-db
+          exit 1
+
+      - name: Create synthetic Convay-compatible schema for SQL syntax only
+        run: |
+          docker exec convay-wsf-ten00-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsf_fixture_20261120 \
+            -f /workspace/supabase/tests/wsf_ten_foundation/bootstrap.sql
+
+      - name: Test TEN-00 DDL, constraints and rollback (no hosted writes)
+        run: |
+          docker exec convay-wsf-ten00-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsf_fixture_20261120 \
+            -f /workspace/supabase/tests/wsf_ten_foundation/rehearsal.psql
+
+      - name: Destroy disposable database
+        if: always()
+        run: docker rm -f convay-wsf-ten00-db || true
