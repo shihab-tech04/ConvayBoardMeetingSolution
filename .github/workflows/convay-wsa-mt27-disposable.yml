@@ -49,7 +49,7 @@ jobs:
         run: |
           docker exec convay-wsa-mt27-pg psql -X -v ON_ERROR_STOP=1 \
             -U postgres -d convay_wsa_mt27_fixture \
-            -c "select case when to_regclass('convay_private.mt27_delete_receipts') is null and (select count(*) from public.convay_entity_records)=1 then 'MT-27 ROLLBACK PASS' else 1/0::text end;"
+            -tA -c "select case when to_regclass('convay_private.mt27_delete_receipts') is null and (select count(*) from public.convay_entity_records)=1 then 'MT-27 ROLLBACK PASS' else 'MT-27 ROLLBACK FAIL' end;" | grep -Fx 'MT-27 ROLLBACK PASS'
       - name: Destroy disposable database
         if: always()
         run: docker rm -f convay-wsa-mt27-pg || true
