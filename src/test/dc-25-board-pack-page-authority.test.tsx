@@ -1,10 +1,13 @@
 import { render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { PageCfg } from "../app/pages/modulePageUtils";
 import { BoardPacksPage } from "../app/pages/agenda-documents/BoardPacksPage";
 
 vi.mock("../app/data/boardMeetingData", () => ({
+  GOVERNANCE_BODIES: ["Board of Directors"],
   useBoardPackRegistry: () => ({ items: [] }),
+  useMeetingRegistry: () => ({ items: [] }),
 }));
 vi.mock("../app/data/documentWorkspaceData", () => ({
   useBoardPackDocumentLinkRegistry: () => ({ items: [] }),
@@ -42,5 +45,18 @@ describe("DC-25 board-pack page respects server authority", () => {
       expect(action.hasAttribute("disabled")).toBe(true);
       expect(action.getAttribute("title")).toMatch(reason);
     }
+  });
+});
+
+describe("DC-21 safe board-pack draft entry", () => {
+  it("keeps exact approved field list and wires server ACK create/edit without enabling publication", () => {
+    const src = readFileSync("src/app/pages/agenda-documents/BoardPacksPage.tsx", "utf8");
+    expect(src).toContain("formFields: BOARD_PACK_FORM_FIELDS");
+    expect(src).toContain("onRowCreate: createDraft");
+    expect(src).toContain("onRowUpdate: updateDraft");
+    expect(src).toContain("await reg.add(draft)");
+    expect(src).toContain("await reg.update(id, patch)");
+    expect(src).toContain("actor = await convayAuth.restore()");
+    expect(src).toContain('enabled: false');
   });
 });
