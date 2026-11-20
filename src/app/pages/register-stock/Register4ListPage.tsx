@@ -30,6 +30,7 @@ import { UnifiedDataTable } from "../../components/tables/UnifiedDataTable";
 import { KpiRow } from "../../components/cards/KpiRow";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { collectAgendaRegisterDescendants } from "./agendaRegisterDescendants";
+import { buildAgendaPreviewOutline } from "./agendaPreviewOutline";
 import { isAgendaOwnedBy, resolveAgendaOwnerUserId } from "./agendaOwnerIdentity";
 import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
 
@@ -1265,8 +1266,8 @@ export function Register4ListPage() {
         const pvParent = allItems.find(a => a.id === previewParentId);
         if (!pvParent) return null;
         const pvIdx      = parentItems.findIndex(p => p.id === pvParent.id);
-        const pvChildren = directChildren(pvParent.id);
-        const pvAllHier  = [pvParent, ...getDescendants(pvParent.id, allItems)];
+        const pvRows     = buildAgendaPreviewOutline(pvParent.id, String(pvIdx + 1), allItems);
+        const pvAllHier  = [pvParent, ...pvRows.map(row => row.item)];
         const pvApproved = pvAllHier.filter(a => a.approval_status === "Approved").length;
         const pvTotalMin = pvAllHier.reduce((s, a) => s + parseDurationMin(a.estimated_duration), 0);
         const pvTotalDocs = pvAllHier.reduce((s, a) => s + docCount(a.id), 0);
@@ -1309,9 +1310,9 @@ export function Register4ListPage() {
               </div>
             </div>
 
-            {pvChildren.map((child, ci) => (
-              <div key={child.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--color-text-secondary)", flexShrink: 0, paddingTop: 2 }}>{pvIdx + 1}.{ci + 1}</span>
+            {pvRows.map(({ item: child, outline, level }) => (
+              <div key={child.id} aria-label={`Agenda ${outline}: ${child.agenda_title}`} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 8, marginBottom: 8, marginLeft: level > 2 ? 20 : 0 }}>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--color-text-secondary)", flexShrink: 0, paddingTop: 2 }}>{outline}</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
                     <h4 style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)", margin: 0 }}>{child.agenda_title}</h4>
@@ -1326,7 +1327,7 @@ export function Register4ListPage() {
               </div>
             ))}
 
-            {pvChildren.length === 0 && (
+            {pvRows.length === 0 && (
               <p style={{ textAlign: "center", color: "var(--color-text-secondary)", fontSize: 13, padding: "16px 0" }}>No child items added yet.</p>
             )}
           </AppModal>
