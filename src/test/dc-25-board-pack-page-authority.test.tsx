@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { PageCfg } from "../app/pages/modulePageUtils";
 import { BoardPacksPage } from "../app/pages/agenda-documents/BoardPacksPage";
 
-vi.mock("../app/data/boardMeetingData", () => ({
-  GOVERNANCE_BODIES: ["Board of Directors"],
+vi.mock("../app/data/boardMeetingData", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../app/data/boardMeetingData")>()),
   useBoardPackRegistry: () => ({ items: [] }),
   useMeetingRegistry: () => ({ items: [] }),
 }));
