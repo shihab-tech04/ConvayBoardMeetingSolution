@@ -266,6 +266,7 @@ begin
           'co_authors',old.payload->>'co_authors',
           'quorum_statement',old.payload->>'quorum_statement',
           'discussion_summary',old.payload->>'discussion_summary',
+          'notes',old.payload->>'notes',
           'next_meeting_date',old.payload->>'next_meeting_date',
           'closing_time',old.payload->>'closing_time'
         )
