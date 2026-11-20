@@ -404,7 +404,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: allDocuments }                                          = useDocumentRegistry();
   const { items: docCommentThreads, add: addDocThread, update: updateDocThread } = useDocumentCommentRegistry();
   const { items: interactionItems, add: addInteraction }                = useMeetingInteractionRegistry();
-  const { items: liveSessions, add: addSession, update: updateSession, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
+  const { items: liveSessions, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
   const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = useAttendanceRegistry();
   const { add: addQuorumEvent }                                          = useQuorumEventRegistry();
   const { items: govBodies }                                             = useGovernanceRegistry();
@@ -688,10 +688,6 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [myMicOn, setMyMicOn]         = useState(true);
   const [myCamOn, setMyCamOn]         = useState(true);
   const [isSharing, setIsSharing]     = useState(false);
-  const [isRecording, setIsRecording]               = useState(false);
-  const [isRecordingPaused, setIsRecordingPaused]   = useState(false);
-  const [isTranscribing, setIsTranscribing]         = useState(false);
-  const [isTranscribingPaused, setIsTranscribingPaused] = useState(false);
   // LM-06: only server-confirmed capture may appear active or complete.
   const confirmedMinutesSession = liveSessions.find(item => item.meeting_id === meetingId);
   const isMinutesCapture = confirmedMinutesSession?.minutes_capture_status === "active";
@@ -699,7 +695,6 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [isMinutesPaused, setIsMinutesPaused] = useState(false); // local note-taking preference only
   const [minutesCaptureBusy, setMinutesCaptureBusy] = useState(false);
   const minutesRequestPending = useRef(false);
-  const [recordingStartedAt, setRecordingStartedAt] = useState<string | null>(null);
   const [isLocked, setIsLocked]       = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewMode, setViewMode]       = useState<ViewMode>("speaker");
@@ -1322,84 +1317,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     }
   };
 
-  // ── Session / recording / transcription persistence ───────────────────────
-  const getOrCreateSession = (): string => {
-    if (!meetingId) return "";
-    const existing = liveSessions.find(s => s.meeting_id === meetingId);
-    if (existing) return existing.id;
-    const sid = mkId("SES");
-    addSession({
-      id: sid, meeting_id: meetingId,
-      started_at: nowISO(), started_by: currentUser.id,
-      session_status: "active",
-      recording_status: "not_started",
-      transcription_status: "not_started",
-      minutes_capture_status: "not_started",
-      created_at: nowISO(),
-    } as never);
-    return sid;
-  };
-
-  const toggleRecording = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isRecording) {
-      setRecordingStartedAt(now);
-      setIsRecordingPaused(false);
-      if (sid) updateSession(sid, { recording_status: "active" } as never);
-      addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Recording started", metadata: { event: "recording_start", time: now }, created_at: now } as never);
-      toast.success("Recording started");
-    } else {
-      if (sid) updateSession(sid, { recording_status: "ended" } as never);
-      const dur = recordingStartedAt ? Math.round((Date.now() - new Date(recordingStartedAt).getTime()) / 1000) : 0;
-      addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Recording stopped", metadata: { event: "recording_stop", started_at: recordingStartedAt, ended_at: now, duration_seconds: dur }, created_at: now } as never);
-      setRecordingStartedAt(null);
-      setIsRecordingPaused(false);
-      toast("Recording stopped");
-    }
-    setIsRecording(v => !v);
-  };
-
-  const pauseResumeRecording = () => {
-    if (!meetingId || !isRecording) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isRecordingPaused;
-    if (sid) updateSession(sid, { recording_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Recording paused" : "Recording resumed", metadata: { event: nextPaused ? "recording_pause" : "recording_resume", time: now }, created_at: now } as never);
-    setIsRecordingPaused(nextPaused);
-    toast(nextPaused ? "Recording paused" : "Recording resumed");
-  };
-
-  const toggleTranscription = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isTranscribing) {
-      setIsTranscribingPaused(false);
-      if (sid) updateSession(sid, { transcription_status: "active" } as never);
-      addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Transcription started", metadata: { event: "transcription_start", time: now }, created_at: now } as never);
-      toast.success("Transcription started");
-    } else {
-      if (sid) updateSession(sid, { transcription_status: "ended" } as never);
-      addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Transcription stopped", metadata: { event: "transcription_stop", time: now }, created_at: now } as never);
-      setIsTranscribingPaused(false);
-      toast("Transcription stopped");
-    }
-    setIsTranscribing(v => !v);
-  };
-
-  const pauseResumeTranscription = () => {
-    if (!meetingId || !isTranscribing) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isTranscribingPaused;
-    if (sid) updateSession(sid, { transcription_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Transcription paused" : "Transcription resumed", metadata: { event: nextPaused ? "transcription_pause" : "transcription_resume", time: now }, created_at: now } as never);
-    setIsTranscribingPaused(nextPaused);
-    toast(nextPaused ? "Transcription paused" : "Transcription resumed");
-  };
+  // LM-04/05: no recording or transcription provider has been activated.
+  // A client-only toggle cannot create a media recording, transcript or audit proof.
+  // Record/Captions controls below report the integration as unavailable instead.
+  // Do not add session writes here without an authenticated provider operation,
+  // durable server ACK and exact meeting/actor/tenant authorization.
 
   const toggleMinutesCapture = async () => {
     if (!meetingId || minutesRequestPending.current) return;
