@@ -51,12 +51,15 @@ function isRealVenue(text?: string): boolean {
 /** Convert "14:00" or "14:00:00" → "2:00 PM" */
 function formatTime12h(raw?: string): string {
   if (!raw) return "";
-  const parts = raw.split(":");
-  let h = parseInt(parts[0], 10);
-  const m = parts[1] ?? "00";
-  const ampm = h >= 12 ? "PM" : "AM";
-  h = h % 12 || 12;
-  return `${h}:${m} ${ampm}`;
+  // Only treat supported 24-hour SQL times as verified meeting details.
+  // parseInt alone accepted malformed values like "25:99" or "abc:30".
+  const match = /^(\\d{1,2}):(\\d{2})(?::(\\d{2}))?$/.exec(raw.trim());
+  if (!match) return "";
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = match[3] === undefined ? 0 : Number(match[3]);
+  if (hour > 23 || minute > 59 || second > 59) return "";
+  return `${hour % 12 || 12}:${match[2]} ${hour >= 12 ? "PM" : "AM"}`;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
