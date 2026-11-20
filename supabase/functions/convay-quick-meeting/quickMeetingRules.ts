@@ -30,6 +30,12 @@ export type QuickMeetingAdmissionDecision =
 
 const reject = (status: number, error: string): QuickMeetingAdmissionDecision => ({ allowed: false, status, error });
 
+/** Host and media entry fail closed on malformed or expired server timestamps. */
+export function isQuickMeetingActive(meeting: Pick<QuickMeetingAccessRecord, "status" | "expires_at">, now = Date.now()): boolean {
+  const expiresAt = Date.parse(meeting.expires_at);
+  return meeting.status === "active" && Number.isFinite(expiresAt) && expiresAt > now;
+}
+
 export function checkQuickMeetingLink(meeting: QuickMeetingAccessRecord, link: QuickMeetingLinkAccessRecord, now = Date.now()): QuickMeetingAdmissionDecision {
   if (meeting.meeting_kind !== "quick" || meeting.access_mode !== "link") return reject(404, "This quick meeting link is unavailable.");
   if (meeting.status !== "active") return reject(410, "This quick meeting has ended.");
