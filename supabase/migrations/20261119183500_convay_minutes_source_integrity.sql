@@ -16,6 +16,8 @@ declare
   v_source_status text;
   v_old_status text;
   v_new_status text;
+  v_next_version text;
+  v_history jsonb;
   v_source_scope text;
   v_actor_scope text;
   v_is_leader boolean := false;
@@ -193,6 +195,12 @@ begin
     end if;
     if v_new_status <> 'draft' then
       raise exception 'New minutes must begin as Draft' using errcode='23514';
+    end if;
+    if new.payload->>'version' is distinct from '1.0'
+       or (new.payload ? 'revision_history'
+           and new.payload->'revision_history' is distinct from '[]'::jsonb) then
+      raise exception 'New minutes must begin at version 1.0 without forged history'
+        using errcode='23514';
     end if;
     if new.created_by is not null and new.created_by <> v_actor then
       raise exception 'Minutes creator identity may not be impersonated'
