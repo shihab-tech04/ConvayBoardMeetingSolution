@@ -1,5 +1,8 @@
-import { Eye, RefreshCw, CheckCircle, Archive } from "lucide-react";
+import { Eye, RefreshCw, CheckCircle, Archive, Send } from "lucide-react";
+import { useRef, useState } from "react";
+import { toast } from "sonner";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
+import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import type { PageCfg, KpiDef, FilterDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { EDIT } from "../../data/modulePageConfigs";
@@ -7,8 +10,8 @@ import { MINUTES_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { useMinutesRegistry, useMeetingRegistry, generateId } from "../../data/boardMeetingData";
 import { MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import { patchFormOptions } from "../../utils/patchFormOptions";
-import { useAccessSnapshot } from "../../services/supabase/convayAccess";
-import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus } from "./minutesSourceIntegrity";
+import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission } from "./minutesSourceIntegrity";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
 
@@ -17,6 +20,39 @@ export function MinutesManagementPage() {
   const meetingReg = useMeetingRegistry();
   const access = useAccessSnapshot();
   const canWriteMinutes = access.loaded && (access.is_super_admin || access.effective_permissions.includes("min_create"));
+  const [submissionRow, setSubmissionRow] = useState<TableRow | null>(null);
+  const [submissionSaving, setSubmissionSaving] = useState(false);
+  const submissionInFlight = useRef(false);
+
+  async function submitForSecretaryReview() {
+    if (!submissionRow || submissionInFlight.current) return;
+    submissionInFlight.current = true;
+    setSubmissionSaving(true);
+    try {
+      const currentAccess = readAccessSnapshot();
+      if (!currentAccess.loaded || !(currentAccess.is_super_admin || currentAccess.effective_permissions.includes("min_create"))) {
+        throw new Error("You do not have permission to submit minutes for review.");
+      }
+      if (registry.loading || registry.error) {
+        throw new Error("Minutes records are not ready. Refresh and retry.");
+      }
+      const id = String(submissionRow.id ?? "").trim();
+      const original = registry.items.find(item => item.id === id);
+      if (!original) throw new Error("Minutes record changed or is missing. Refresh and retry.");
+      const patch = buildMinutesReviewSubmission(original.approval_status, original.version);
+      // SQL enforces authorship, source, revision order and immutable history.
+      const saved = await registry.update(id, patch);
+      if (saved !== true) throw new Error("Minutes submission was not confirmed. Refresh and retry.");
+      await registry.refresh?.();
+      setSubmissionRow(null);
+      toast.success("Minutes submitted for secretary review.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to submit minutes. Retry after refreshing.");
+    } finally {
+      submissionInFlight.current = false;
+      setSubmissionSaving(false);
+    }
+  }
   const dynamicFields = patchFormOptions(MINUTES_FORM_FIELDS, {
     meeting_id: meetingReg.items.map(m => m.meeting_id),
     related_meeting: meetingReg.items.map(m => m.meeting_id + " — " + m.meeting_title),
@@ -66,6 +102,7 @@ export function MinutesManagementPage() {
     drawerCols: MINUTES_DRAWER_COLS,
     drawerActions: [
       ...EDIT,
+      { id: "submit_for_review", label: "Submit for Secretary Review", icon: Send, color: "#2563eb" },
       { id: "request_revision", label: "Request Revision", labelKey: "actions.requestRevision", icon: RefreshCw, color: "#f59e0b" },
       { id: "publish",          label: "Sign & Approve",   labelKey: "actions.publish",          icon: CheckCircle, color: "#22c55e" },
       { id: "archive",          label: "Archive",          labelKey: "actions.archive",           icon: Archive, color: "#6b7280" },
@@ -79,6 +116,19 @@ export function MinutesManagementPage() {
     kpis,
     entryBtn: canWriteMinutes ? "Create Minutes" : undefined,
     formFields: dynamicFields,
+    onCustomAction(actionId, row) {
+      if (actionId !== "submit_for_review") return;
+      if (!canWriteMinutes) {
+        toast.error("You do not have permission to submit minutes for review.");
+        return;
+      }
+      try {
+        buildMinutesReviewSubmission(String(row.approval_status ?? ""), String(row.version ?? ""));
+        setSubmissionRow(row);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Only draft or returned minutes can be submitted.");
+      }
+    },
     // MN-02: use the shared confirmation modal and await an authorized SQL
     // revision write before reporting success. This is not a local-only status.
     requestRevisionPermission: "min_approve",
@@ -156,5 +206,18 @@ export function MinutesManagementPage() {
     },
   };
 
-  return <GenPage cfg={cfg} />;
+  return (
+    <>
+      <GenPage cfg={cfg} />
+      {submissionRow && (
+        <SConfirmModal
+          title="Submit Minutes for Secretary Review"
+          message="Confirm that your latest minutes edits have been saved. Submission moves this version to secretary review; returned minutes receive a new version. The source meeting and previous review history remain protected."
+          confirmLabel={submissionSaving ? "Submitting…" : "Submit for Review"}
+          onConfirm={() => { void submitForSecretaryReview(); }}
+          onClose={() => { if (!submissionInFlight.current) setSubmissionRow(null); }}
+        />
+      )}
+    </>
+  );
 }
