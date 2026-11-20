@@ -24,7 +24,7 @@ describe("LM-06 SQL-confirmed minutes-capture lifecycle", () => {
     expect(() => plannedMinutesStatus(makeRequest({ session: { id: "session-a", meeting_id: "meeting-a", session_status: "ended", minutes_capture_status: "not_started" } }))).toThrow(/active meeting/);
   });
   it("rejects a wrong meeting ID before touching SQL", async () => {
-    const write = vi.fn(async () => 2);
+    const write = vi.fn(async (_operations: unknown) => 2);
     await expect(commitVerifiedMinutesCapture(makeRequest({ meetingId: "meeting-b", applyBatch: write }))).rejects.toThrow(/valid meeting/);
     expect(write).not.toHaveBeenCalled();
   });
@@ -41,7 +41,7 @@ describe("LM-06 SQL-confirmed minutes-capture lifecycle", () => {
     }
   });
   it("atomically writes state and stable audit record and confirms readback", async () => {
-    const write = vi.fn(async () => 2);
+    const write = vi.fn(async (_operations: unknown) => 2);
     const request = makeRequest({ applyBatch: write });
     await expect(commitVerifiedMinutesCapture(request)).resolves.toBe("active");
     const operations = write.mock.calls[0][0] as unknown as Array<{ entity_key: string; record_id: string; payload: Record<string, unknown> }>;
@@ -62,7 +62,7 @@ describe("LM-06 SQL-confirmed minutes-capture lifecycle", () => {
       [{ id: "session-a", meeting_id: "meeting-a", session_status: "active", minutes_capture_status: "not_started" }] ) }))).rejects.toThrow(/verified/);
   });
   it("complete writes only the allowed completed state", async () => {
-    const write = vi.fn(async () => 2);
+    const write = vi.fn(async (_operations: unknown) => 2);
     const request = makeRequest({
       action: "complete", confirmedSavedMinutes: true, applyBatch: write,
       session: { id: "session-a", meeting_id: "meeting-a", session_status: "ended", minutes_capture_status: "active" },
