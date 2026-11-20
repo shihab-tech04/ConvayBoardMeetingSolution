@@ -784,6 +784,7 @@ export interface Minutes {
   co_authors: string;
   quorum_statement: string;
   discussion_summary: string;
+  notes?: string;
   next_meeting_date: string;
   closing_time: string;
   version: string;
