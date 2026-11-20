@@ -1,4 +1,4 @@
-import { Eye, RefreshCw, CheckCircle, Archive, Send, PenLine } from "lucide-react";
+import { Eye, RefreshCw, CheckCircle, Archive, Send, PenLine, Download } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
@@ -13,6 +13,7 @@ import { patchFormOptions } from "../../utils/patchFormOptions";
 import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition, isMinutesLifecycleAction } from "./minutesSourceIntegrity";
 import type { MinutesLifecycleAction } from "./minutesSourceIntegrity";
+import { buildMinutesHtmlExport } from "./minutesHtmlExport";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
 
@@ -21,6 +22,8 @@ export function MinutesManagementPage() {
   const meetingReg = useMeetingRegistry();
   const access = useAccessSnapshot();
   const canWriteMinutes = access.loaded && (access.is_super_admin || access.effective_permissions.includes("min_create"));
+  const canExportMinutes = access.loaded && (access.is_super_admin || access.effective_permissions.includes("arc_view"));
+  const exportInFlight = useRef(false);
   const [submissionRow, setSubmissionRow] = useState<TableRow | null>(null);
   const [submissionSaving, setSubmissionSaving] = useState(false);
   const submissionInFlight = useRef(false);
@@ -95,6 +98,39 @@ export function MinutesManagementPage() {
   }
   // MN-02: select a real, accessible meeting; carry title and context from
   // its authoritative register record rather than requiring duplicate typing.
+  async function exportMinutes(row: TableRow) {
+    if (exportInFlight.current) return;
+    exportInFlight.current = true;
+    try {
+      const nowAccess = readAccessSnapshot();
+      if (!nowAccess.loaded || !(nowAccess.is_super_admin || nowAccess.effective_permissions.includes("arc_view"))) {
+        throw new Error("You do not have permission to export minutes.");
+      }
+      // Do not export an optimistic table snapshot or a test fixture.
+      await registry.refresh?.();
+      const current = registry.getById(String(row.id ?? ""));
+      if (!current) throw new Error("Minutes record was not found in the authorized server readback.");
+      const exportFile = buildMinutesHtmlExport(current);
+      const blob = new Blob([exportFile.content], { type: exportFile.mimeType });
+      const url = URL.createObjectURL(blob);
+      try {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = exportFile.filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        toast.success("Minutes export file prepared. Check your browser downloads.");
+      } finally {
+        // Keep the object URL alive until the download has been initiated.
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Minutes export could not be prepared.");
+    } finally {
+      exportInFlight.current = false;
+    }
+  }
   const dynamicFields = patchFormOptions(MINUTES_FORM_FIELDS, {
     meeting_id: meetingReg.items.map(m => ({
       value: m.meeting_id,
@@ -163,25 +199,33 @@ export function MinutesManagementPage() {
     ],
     drawerActionsResolver(row) {
       const status = String(row.approval_status ?? "");
+      const exportAction = canExportMinutes
+        ? [{ id: "export_minutes", label: "Export Minutes (HTML)", icon: Download, color: "#2563eb" }]
+        : [];
       if (isEditableMinutesStatus(status)) return [
         ...EDIT,
         { id: "submit_for_review", label: "Submit for Secretary Review", icon: Send, color: "#2563eb" },
+        ...exportAction,
       ];
       if (status === "Under Secretary Review" || status === "Under Chairperson Review") return [
         { id: "request_revision", label: "Request Revision", labelKey: "actions.requestRevision", icon: RefreshCw, color: "#f59e0b" },
         { id: "forward_review", label: status === "Under Secretary Review" ? "Forward to Chairperson Review" : "Forward to Member Review", icon: Send, color: "#2563eb" },
+        ...exportAction,
       ];
       if (status === "Member Review") return [
         { id: "request_revision", label: "Request Revision", labelKey: "actions.requestRevision", icon: RefreshCw, color: "#f59e0b" },
         { id: "approve_minutes", label: "Approve Minutes", icon: CheckCircle, color: "#22c55e" },
+        ...exportAction,
       ];
       if (status === "Approved") return [
         { id: "sign_minutes", label: "Record Internal Signature", icon: PenLine, color: "#22c55e" },
+        ...exportAction,
       ];
       if (status === "Signed") return [
         { id: "archive_minutes", label: "Archive", labelKey: "actions.archive", icon: Archive, color: "#6b7280" },
+        ...exportAction,
       ];
-      return [];
+      return exportAction;
     },
     rows: items.map(m => ({
       ...m,
@@ -201,6 +245,10 @@ export function MinutesManagementPage() {
     entryBtn: canWriteMinutes ? "Create Minutes" : undefined,
     formFields: dynamicFields,
     onCustomAction(actionId, row) {
+      if (actionId === "export_minutes") {
+        void exportMinutes(row);
+        return;
+      }
       if (actionId === "submit_for_review") {
         if (!canWriteMinutes) {
           toast.error("You do not have permission to submit minutes for review.");
