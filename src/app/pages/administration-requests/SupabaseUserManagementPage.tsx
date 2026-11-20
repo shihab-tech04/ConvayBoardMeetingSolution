@@ -18,6 +18,7 @@ import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
 import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./userBusinessFields";
 import { createLatestUserDirectoryRead } from "./userDirectoryRead";
+import { requireUserMutationAck } from "./userMutationAck";
 
 type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
@@ -209,23 +210,28 @@ export function SupabaseUserManagementPage() {
     setFormError("");
     try {
       if (mode === "invite") {
-        await convayAuth.users("invite", {
+        const confirmed = await convayAuth.users("invite", {
           name: form.name.trim(), username: form.username.trim() || undefined,
           email: form.email.trim(),
           phone: form.phone.trim() || undefined,
           ...userBusinessFields(form),
         });
+        requireUserMutationAck("invite", confirmed, { email: form.email.trim() });
         toast.success("Invitation sent. The account stays inactive until the user verifies their email and sets a password.");
       } else if (mode === "edit" && editing) {
-        await convayAuth.users("update", {
+        const confirmed = await convayAuth.users("update", {
           user_id: editing.user_id, name: form.name.trim(), username: form.username.trim(),
           phone: form.phone.trim(), ...userBusinessFields(form),
         });
+        requireUserMutationAck("update", confirmed, {
+          userId: editing.user_id, displayName: form.name.trim(),
+        });
         toast.success("User updated");
       } else if (mode === "password" && editing) {
-        await convayAuth.users("set_password", {
+        const confirmed = await convayAuth.users("set_password", {
           user_id: editing.user_id, password: form.password,
         });
+        requireUserMutationAck("set_password", confirmed, { userId: editing.user_id });
         toast.success("Password updated");
       } else {
         throw new Error("User not found");
@@ -247,10 +253,12 @@ export function SupabaseUserManagementPage() {
     setLoadError("");
     try {
       if (confirm.action === "delete") {
-        await convayAuth.users("delete", { user_id: confirm.id });
+        const confirmed = await convayAuth.users("delete", { user_id: confirm.id });
+        requireUserMutationAck("delete", confirmed, { userId: confirm.id });
         toast.success("User removed");
       } else {
-        await convayAuth.users("set_status", { user_id: confirm.id, status: confirm.action });
+        const confirmed = await convayAuth.users("set_status", { user_id: confirm.id, status: confirm.action });
+        requireUserMutationAck("set_status", confirmed, { userId: confirm.id, status: confirm.action });
         toast.success("Account status updated");
       }
       setConfirm(null);
