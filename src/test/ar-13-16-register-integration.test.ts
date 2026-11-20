@@ -24,9 +24,14 @@ describe("AR-13/14/15/16 restored live register integration", () => {
     expect(part).not.toContain("filters: BASE_FILTERS");
   });
 
-  it("preserves independently owned Resolution Register without redesign", () => {
+  it("preserves Resolution Register UI while adding the AR-12 scoped SQL read state", () => {
     const part = section("ResolutionRegisterPage", "DecisionRegisterPage");
-    expect(part).toContain("filters: BASE_FILTERS");
+    expect(part).toContain("filters: buildResolutionRegisterFilters(rows)");
+    expect(part).toContain("dataLoading: registry.loading");
+    expect(part).toContain("dataError: registry.error");
+    expect(part).toContain("onDataRetry: registry.refresh");
+    expect(part).toContain("kpis: registry.loading || registry.error ? [] : kpis");
+    expect(part).not.toContain("filters: BASE_FILTERS");
     expect(part).toContain("drawerCols: RESOLUTION_DRAWER_COLS");
     expect(part).toContain("actions: ROW_VIEW");
   });
