@@ -9,6 +9,7 @@ import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIden
 import { normalizeMeetingSchedule } from "./meetingSchedule";
 import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
+import { DRAFT_DELETION_UNAVAILABLE_REASON, guardMeetingDrawerAction } from "./meetingDeletionReleaseGate";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
 import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
@@ -321,8 +322,10 @@ export function OnlineReturnRegisterPage() {
       return;
     }
     if (actionId === "delete") {
-      const deleted = await registry.remove(mid);
-      if (deleted === true || import.meta.env.MODE === "test") toast.success("Meeting deleted.");
+      // MT-27: never call generic registry DELETE while the dedicated,
+      // revision-aware tenant-authorized SQL operation is not hosted.
+      // Keep the approved drawer action visible but disabled below.
+      toast.error(DRAFT_DELETION_UNAVAILABLE_REASON);
       return;
     }
 
@@ -646,7 +649,7 @@ export function OnlineReturnRegisterPage() {
       resolveMeetingActions(row)
         .filter(a => a.visible)
         .sort((a, b) => a.priority - b.priority)
-        .map(a => ({ id: a.id, label: a.label, icon: a.icon, color: toneToColor[a.tone], enabled: a.enabled, disabledReason: a.disabledReason })),
+        .map(a => guardMeetingDrawerAction({ id: a.id, label: a.label, icon: a.icon, color: toneToColor[a.tone], enabled: a.enabled, disabledReason: a.disabledReason })),
     drawerTitle:   "Meeting Details",
     drawerCols:    MEETING_DRAWER_COLS,
     rows: tableRows,
