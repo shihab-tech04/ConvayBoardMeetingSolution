@@ -51,3 +51,49 @@ export async function persistUploadedDocument(
   }
   return checkpoint.documentId;
 }
+
+/**
+ * DC-02/DC-18: authored Blank/Template content is subject to the same metadata
+ * RLS prerequisite as a binary original. Keep the durable stages retryable.
+ */
+export interface AuthoredDocumentCheckpoint {
+  documentId: string;
+  metadataSaved: boolean;
+  editorSaved: boolean;
+  versionSaved: boolean;
+}
+
+export interface AuthoredDocumentWrites {
+  createMetadata(): boolean | Promise<boolean>;
+  saveEditor(): Promise<string>;
+  createVersion(): boolean | Promise<boolean>;
+}
+
+export async function persistAuthoredDocument(
+  checkpoint: AuthoredDocumentCheckpoint,
+  writes: AuthoredDocumentWrites,
+): Promise<string> {
+  if (!checkpoint.documentId || checkpoint.documentId.trim() !== checkpoint.documentId) {
+    throw new Error("A valid document ID is required.");
+  }
+  if (!checkpoint.metadataSaved) {
+    if (await writes.createMetadata() !== true) {
+      throw new Error("Document metadata was not confirmed by SQL.");
+    }
+    checkpoint.metadataSaved = true;
+  }
+  if (!checkpoint.editorSaved) {
+    const contentId = await writes.saveEditor();
+    if (contentId !== `editor:${checkpoint.documentId}:live`) {
+      throw new Error("The original editor content was not confirmed by SQL.");
+    }
+    checkpoint.editorSaved = true;
+  }
+  if (!checkpoint.versionSaved) {
+    if (await writes.createVersion() !== true) {
+      throw new Error("The document version was not confirmed by SQL.");
+    }
+    checkpoint.versionSaved = true;
+  }
+  return checkpoint.documentId;
+}

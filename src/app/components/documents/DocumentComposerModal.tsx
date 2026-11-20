@@ -22,7 +22,6 @@ import { SToggle } from "../forms/SToggle";
 import {
   useDocumentRegistry,
   useDocumentVersionRegistry,
-  useAuditEventRegistry,
   useMeetingRegistry,
   useAgendaRegistry,
   useGovernanceRegistry,
@@ -34,7 +33,10 @@ import {
 import { useBmsUserRegistry } from "../../data/bmsUsers";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
-import { persistUploadedDocument, type DocumentUploadCheckpoint } from "./documentUploadPersistence";
+import {
+  persistUploadedDocument, persistAuthoredDocument,
+  type DocumentUploadCheckpoint, type AuthoredDocumentCheckpoint,
+} from "./documentUploadPersistence";
 import { useSearchParams } from "react-router";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -53,8 +55,6 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${(bytes / k ** i).toFixed(1)} ${units[i]}`;
 }
-
-function newAuditId() { return `AUD-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`; }
 
 /** Safely infer document type from file extension — only when unambiguous. */
 function guessDocType(filename: string): string {
@@ -119,7 +119,6 @@ export function DocumentComposerModal({
 }: DocumentComposerModalProps) {
   const registry        = useDocumentRegistry();
   const versionRegistry = useDocumentVersionRegistry();
-  const auditRegistry   = useAuditEventRegistry();
   const meetingReg      = useMeetingRegistry();
   const agendaReg       = useAgendaRegistry();
   const govReg          = useGovernanceRegistry();
@@ -180,12 +179,18 @@ export function DocumentComposerModal({
   const [files,            setFiles]            = useState<File[]>([]);
   const [form,             setForm]             = useState<ComposerForm>(makeInitialForm);
   const [busy,             setBusy]             = useState(false);
-  const uploadBusy = useRef(false);
+  const creationBusy = useRef(false);
   const pendingUpload = useRef<{
     fingerprint: string;
     file: File;
     versionId: string;
     stage: DocumentUploadCheckpoint;
+  } | null>(null);
+  const pendingAuthored = useRef<{
+    fingerprint: string;
+    kind: "blank" | "template";
+    versionId: string;
+    stage: AuthoredDocumentCheckpoint;
   } | null>(null);
   const [moreOpen,         setMoreOpen]         = useState(false);
   const [tmplContextOpen,  setTmplContextOpen]  = useState(false);
@@ -198,8 +203,9 @@ export function DocumentComposerModal({
       setSource(initialSource);
       setFiles([]);
       setBusy(false);
-      uploadBusy.current = false;
+      creationBusy.current = false;
       pendingUpload.current = null;
+      pendingAuthored.current = null;
       setMoreOpen(false);
       setTmplContextOpen(false);
       setShowCloseConfirm(false);
@@ -256,17 +262,24 @@ export function DocumentComposerModal({
     setForm(makeInitialForm());
     setSource(initialSource);
     setBusy(false);
-    uploadBusy.current = false;
+    creationBusy.current = false;
     pendingUpload.current = null;
+    pendingAuthored.current = null;
     setMoreOpen(false);
     setTmplContextOpen(false);
     setShowCloseConfirm(false);
     onClose();
   }
 
+  function incompleteDraftId(): string | null {
+    if (pendingUpload.current?.stage.metadataSaved) return pendingUpload.current.stage.documentId;
+    if (pendingAuthored.current?.stage.metadataSaved) return pendingAuthored.current.stage.documentId;
+    return null;
+  }
+
   function tryClose() {
-    if (busy || uploadBusy.current) return;
-    if (isDirty() || pendingUpload.current?.stage.metadataSaved) {
+    if (busy || creationBusy.current) return;
+    if (isDirty() || incompleteDraftId()) {
       setShowCloseConfirm(true);
     } else {
       resetAndClose();
@@ -298,61 +311,101 @@ export function DocumentComposerModal({
 
   // ── Submit: blank ─────────────────────────────────────────────────────────────
 
+  /** Shared SQL-first writer for Blank Document and Create from Template. */
+  async function createAuthoredDocument(
+    kind: "blank" | "template", content: string, docType: string,
+    changeSummary: string, metadataOverrides: Record<string, string | boolean> = {},
+  ) {
+    if (creationBusy.current) return;
+    if (pendingUpload.current?.stage.metadataSaved) {
+      toast.error(`Finish or close incomplete upload ${pendingUpload.current.stage.documentId} before creating another document.`);
+      return;
+    }
+    creationBusy.current = true;
+    setBusy(true);
+    try {
+      const fingerprint = JSON.stringify({kind, form, content, docType, changeSummary, metadataOverrides});
+      let pending = pendingAuthored.current;
+      if (pending && pending.fingerprint !== fingerprint) {
+        if (pending.stage.metadataSaved) {
+          throw new Error(`Draft ${pending.stage.documentId} already exists. Retry these selections or close and review the draft.`);
+        }
+        pending = null;
+      }
+      if (!pending) {
+        const docId = generateId("DOC", registry.items.map(d => d.doc_id));
+        pending = {
+          fingerprint, kind, versionId: `DV-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          stage: {documentId: docId, metadataSaved: false, editorSaved: false, versionSaved: false},
+        };
+        pendingAuthored.current = pending;
+      }
+      const active = pending;
+      const docId = active.stage.documentId;
+      const now = new Date().toISOString();
+      const owner = resolvedOwnerName();
+      const meetId = form.related_meeting.split(" — ")[0];
+      const confirmedId = await persistAuthoredDocument(active.stage, {
+        // Content SELECT/INSERT RLS requires an existing bms.documents metadata row.
+        createMetadata: () => registry.add({
+          id: docId, doc_id: docId, doc_number: docId,
+          doc_name: form.doc_name.trim(), doc_type: docType,
+          related_meeting: meetId, related_agenda: form.related_agenda,
+          owner, version: "1.0", confidentiality: form.confidentiality || "Internal",
+          effective_date: form.effective_date, expiry_date: form.expiry_date,
+          acknowledgement_required: form.acknowledgement_required ? "Yes" : "No",
+          approval_status: "Draft", created_at: now, content_type: "editor",
+          tags: form.tags, ...metadataOverrides,
+        }),
+        saveEditor: () => documentContentStore.putEditorContent(docId, content),
+        createVersion: () => versionRegistry.add({
+          id: active.versionId, version_id: active.versionId, document_id: docId,
+          document_name: form.doc_name.trim(), version_number: "1.0",
+          change_summary: changeSummary, created_by: owner, created_at: now,
+          approval_status: "Draft", snapshot_type: "manual", is_named: true,
+        }),
+      });
+      // The SQL entity_changes trigger audits persisted metadata/version writes.
+      // bms.audit is intentionally read-only: never claim a client-inserted event.
+      pendingAuthored.current = null;
+      toast.success(kind === "template"
+        ? `"${form.doc_name.trim()}" created from template.`
+        : `"${form.doc_name.trim()}" created.`);
+      try {
+        await onCreated?.(confirmedId);
+      } catch {
+        toast.error(`Document ${confirmedId} was saved, but its agenda link was not confirmed. Retry linking from document details.`);
+      }
+      setSearchParams(p => { const n = new URLSearchParams(p); n.set("view", confirmedId); return n; });
+      resetAndClose();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not save this document. Please retry.";
+      const partial = pendingAuthored.current;
+      toast.error(partial?.stage.metadataSaved
+        ? `${message} Draft ${partial.stage.documentId} remains saved. Retry these same selections.`
+        : message);
+    } finally {
+      creationBusy.current = false;
+      setBusy(false);
+    }
+  }
+
   const handleSubmitBlank = useCallback(async () => {
     if (!form.doc_name.trim()) { toast.error("Document name is required."); return; }
     if (!form.doc_type)        { toast.error("Document type is required."); return; }
-    setBusy(true);
-    try {
-      const now    = new Date().toISOString();
-      const docId  = generateId("DOC", registry.items.map(d => d.doc_id));
-      const meetId = form.related_meeting.split(" — ")[0];
-      const owner  = resolvedOwnerName();
-      await documentContentStore.putEditorContent(docId, JSON.stringify({ type: "doc", content: [] }));
-      registry.add({
-        id: docId, doc_id: docId, doc_number: docId,
-        doc_name:                 form.doc_name.trim(),
-        doc_type:                 form.doc_type,
-        related_meeting:          meetId,
-        related_agenda:           form.related_agenda,
-        owner,
-        version:                  "1.0",
-        confidentiality:          form.confidentiality || "Internal",
-        effective_date:           form.effective_date,
-        expiry_date:              form.expiry_date,
-        acknowledgement_required: form.acknowledgement_required ? "Yes" : "No",
-        approval_status:          "Draft",
-        created_at:               now,
-        content_type:             "editor",
-        tags:                     form.tags,
-      });
-      const vId = `DV-${Date.now()}`;
-      versionRegistry.add({
-        id: vId, version_id: vId, document_id: docId,
-        document_name:  form.doc_name.trim(), version_number: "1.0",
-        change_summary: "Document created", created_by: owner,
-        created_at: now, approval_status: "Draft",
-        snapshot_type: "manual", is_named: true,
-      });
-      const aid = newAuditId();
-      auditRegistry.add({
-        id: aid, event_id: aid,
-        entity_type: "Document", entity_id: docId,
-        action: "Document created", actor: owner, actor_role: "User",
-        timestamp: now, ip_address: "", details: form.doc_name.trim(), approval_status: "Logged",
-      });
-      toast.success(`"${form.doc_name.trim()}" created.`);
-      onCreated?.(docId);
-      setSearchParams(p => { const n = new URLSearchParams(p); n.set("view", docId); return n; });
-      resetAndClose();
-    } catch { toast.error("Could not create document. Please try again."); }
-    finally { setBusy(false); }
+    await createAuthoredDocument("blank", JSON.stringify({ type: "doc", content: [] }),
+      form.doc_type, "Document created");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form, registry, versionRegistry, auditRegistry, onCreated, setSearchParams]);
+  }, [form, registry, versionRegistry, onCreated, setSearchParams]);
 
   // ── Submit: upload ────────────────────────────────────────────────────────────
 
   const handleSubmitUpload = useCallback(async () => {
-    if (uploadBusy.current) return;
+    if (creationBusy.current) return;
+    if (pendingAuthored.current?.stage.metadataSaved) {
+      toast.error(`Finish or close incomplete document ${pendingAuthored.current.stage.documentId} before uploading a different file.`);
+      return;
+    }
     if (!files.length)         { toast.error("Please select a file to upload."); return; }
     if (!form.doc_name.trim()) { toast.error("Document name is required."); return; }
     if (!form.doc_type)        { toast.error("Document type is required."); return; }
@@ -361,7 +414,7 @@ export function DocumentComposerModal({
       toast.error(`The private document store permits files up to ${MAX_ORIGINAL_UPLOAD_MB} MiB.`);
       return;
     }
-    uploadBusy.current = true;
+    creationBusy.current = true;
     setBusy(true);
     try {
       const fingerprint = JSON.stringify(form);
@@ -429,7 +482,7 @@ export function DocumentComposerModal({
         ? `${message} Draft ${partial.stage.documentId} remains saved. Retry this same upload without changing its fields.`
         : message);
     } finally {
-      uploadBusy.current = false;
+      creationBusy.current = false;
       setBusy(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -441,9 +494,7 @@ export function DocumentComposerModal({
     const tmpl = templateDocs.find(t => (t.doc_id ?? t.id) === form.template_id);
     if (!tmpl)               { toast.error("Select a template."); return; }
     if (!form.doc_name.trim()) { toast.error("Document name is required."); return; }
-    setBusy(true);
     try {
-      const now       = new Date().toISOString();
       const meetId    = form.related_meeting.split(" — ")[0];
       const meeting   = meetingReg.items.find(m => m.meeting_id === meetId);
       const mtTitle   = meeting?.meeting_title ?? form.related_meeting ?? "";
@@ -462,43 +513,17 @@ export function DocumentComposerModal({
         .replace(/\{\{AGENDA_REF\}\}/g,        form.agenda_ref       || "[Agenda Reference]")
         .replace(/\{\{RESOLUTION_REF\}\}/g,    form.resolution_ref   || "[Resolution Reference]");
 
-      const docId = generateId("DOC", registry.items.map(d => d.doc_id));
-      await documentContentStore.putEditorContent(docId, resolved);
-      registry.add({
-        id: docId, doc_id: docId, doc_number: docId,
-        doc_name:                 form.doc_name.trim(),
-        doc_type:                 tmpl.doc_type,
-        related_meeting:          meetId,
-        related_agenda:           form.related_agenda || form.agenda_ref || "",
-        owner, version: "1.0", confidentiality: form.confidentiality || "Internal",
-        effective_date: "", expiry_date: "", acknowledgement_required: "No",
-        approval_status: "Draft", created_at: now,
-        content_type: "editor", is_template: false,
-      });
-      const vId = `DV-${Date.now()}`;
-      versionRegistry.add({
-        id: vId, version_id: vId, document_id: docId,
-        document_name: form.doc_name.trim(), version_number: "1.0",
-        change_summary: `Created from template: ${tmpl.doc_name}`,
-        created_by: owner, created_at: now, approval_status: "Draft",
-        snapshot_type: "manual", is_named: true,
-      });
-      const aid = newAuditId();
-      auditRegistry.add({
-        id: aid, event_id: aid,
-        entity_type: "Document", entity_id: docId,
-        action: "Document created from template", actor: owner, actor_role: "User",
-        timestamp: now, ip_address: "", details: `Template: ${tmpl.doc_name}`,
-        approval_status: "Logged",
-      });
-      toast.success(`"${form.doc_name.trim()}" created from template.`);
-      onCreated?.(docId);
-      setSearchParams(p => { const n = new URLSearchParams(p); n.set("view", docId); return n; });
-      resetAndClose();
-    } catch { toast.error("Could not create document from template."); }
-    finally { setBusy(false); }
+      await createAuthoredDocument("template", resolved, tmpl.doc_type,
+        `Created from template: ${tmpl.doc_name}`, {
+          related_agenda: form.related_agenda || form.agenda_ref || "",
+          effective_date: "", expiry_date: "", acknowledgement_required: "No",
+          is_template: false,
+        });
+    } catch {
+      toast.error("Could not prepare the selected document template.");
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form, templateDocs, meetingReg.items, registry, versionRegistry, auditRegistry, onCreated, setSearchParams]);
+  }, [form, templateDocs, meetingReg.items, registry, versionRegistry, onCreated, setSearchParams]);
 
   function handleSubmit() {
     if (source === "blank")    return handleSubmitBlank();
@@ -813,11 +838,11 @@ export function DocumentComposerModal({
               boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
             }}>
               <p style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 8px" }}>
-                {pendingUpload.current?.stage.metadataSaved ? "Leave incomplete draft?" : "Discard changes?"}
+                {incompleteDraftId() ? "Leave incomplete draft?" : "Discard changes?"}
               </p>
               <p style={{ fontSize: "0.83rem", color: "var(--color-text-secondary)", margin: "0 0 20px", lineHeight: 1.5 }}>
-                {pendingUpload.current?.stage.metadataSaved
-                  ? `Document ${pendingUpload.current.stage.documentId} is saved as an incomplete draft. Closing will leave it on the server. Retry this upload to finish.`
+                {incompleteDraftId()
+                  ? `Document ${incompleteDraftId()} is saved as an incomplete draft. Closing will leave it on the server. Retry this creation to finish.`
                   : "You have unsaved information in this form. Closing now will discard it."}
               </p>
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -825,7 +850,7 @@ export function DocumentComposerModal({
                   Continue Editing
                 </Button>
                 <Button variant="destructive-subtle" size="sm" onClick={resetAndClose}>
-                  {pendingUpload.current?.stage.metadataSaved ? "Close (Keep Draft)" : "Discard"}
+                  {incompleteDraftId() ? "Close (Keep Draft)" : "Discard"}
                 </Button>
               </div>
             </div>
