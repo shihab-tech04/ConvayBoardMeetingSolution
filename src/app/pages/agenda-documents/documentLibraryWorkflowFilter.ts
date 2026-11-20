@@ -19,3 +19,16 @@ export function matchesDocumentWorkflowStatus(
     ? row.approval_status.trim() : "";
   return (workflow || fallback) === selectedStatus;
 }
+
+
+/**
+ * Quick tabs and KPI cards must use the same workflow classification as the
+ * Workflow Status filter. This intentionally preserves the exact legacy
+ * approval-status fallback only for documents lacking explicit workflow state.
+ */
+export function matchesAnyDocumentWorkflowStatus(
+  row: DocumentWorkflowProjection,
+  statuses: readonly string[],
+): boolean {
+  return statuses.some(status => matchesDocumentWorkflowStatus(row, status));
+}
