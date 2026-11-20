@@ -35,15 +35,23 @@ export type AdmissionDecision =
   | { allowed: false; status: number; error: string };
 
 export function checkOnlineAdmission(ctx: AdmissionContext): AdmissionDecision {
-  const mode = ctx.meeting.mode ?? ctx.meeting.meeting_mode;
-  if (mode !== "Virtual" && mode !== "Hybrid") {
+  // Both mode aliases must be safe: a stale Virtual value must not
+  // override a Physical meeting stored in the other field.
+  const modes = [ctx.meeting.mode, ctx.meeting.meeting_mode]
+    .filter((value): value is string => typeof value === "string" && value.trim() !== "");
+  if (!modes.length || modes.some(mode => mode !== "Virtual" && mode !== "Hybrid")) {
     return { allowed: false, status: 409, error: "This meeting has no online room." };
   }
   if (!ctx.isSuperAdmin && !ctx.permissions.includes("mtg_join")) {
     return { allowed: false, status: 403, error: "You do not have meeting-join permission." };
   }
-  const state = String(ctx.meeting.approval_status ?? ctx.meeting.status ?? "").toLowerCase();
-  if (["draft", "cancelled", "canceled", "rejected", "completed", "ended", "archived"].includes(state)) {
+  // Inspect both lifecycle aliases rather than trusting the first field.
+  // Conflicting Draft/Cancelled/Ended values cannot authorize a room.
+  const blockedStates = new Set(["draft", "cancelled", "canceled", "rejected", "completed", "ended", "archived"]);
+  const states = [ctx.meeting.approval_status, ctx.meeting.status]
+    .filter((value): value is string => typeof value === "string" && value.trim() !== "")
+    .map(value => value.trim().toLowerCase());
+  if (!states.length || states.some(state => blockedStates.has(state))) {
     return { allowed: false, status: 409, error: "This meeting cannot be joined at its current status." };
   }
   // A URL or scheduled meeting is not proof that the organizer has started it.
