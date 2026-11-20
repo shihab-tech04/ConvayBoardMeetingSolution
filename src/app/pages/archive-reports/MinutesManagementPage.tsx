@@ -8,7 +8,7 @@ import { useMinutesRegistry, useMeetingRegistry, generateId } from "../../data/b
 import { MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import { patchFormOptions } from "../../utils/patchFormOptions";
 import { useAccessSnapshot } from "../../services/supabase/convayAccess";
-import { resolveMinutesSource, validateMinutesRevisionRequest } from "./minutesSourceIntegrity";
+import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus } from "./minutesSourceIntegrity";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
 
@@ -132,8 +132,8 @@ export function MinutesManagementPage() {
       if (!canWriteMinutes) throw new Error("You do not have permission to edit minutes.");
       const original = registry.items.find(item => item.id === id);
       if (!original) throw new Error("Minutes record not found. Refresh and try again.");
-      if (original.approval_status !== "Draft") {
-        throw new Error("Only draft minutes can be edited. Approved and signed minutes must retain their original record.");
+      if (!isEditableMinutesStatus(original.approval_status)) {
+        throw new Error("Only draft or returned-for-revision minutes can be edited. Approved and signed records remain immutable.");
       }
       // Never accept a changed meeting link, identity, version or approval state from the form.
       if (String(values.meeting_id ?? "").trim() !== original.meeting_id ||
