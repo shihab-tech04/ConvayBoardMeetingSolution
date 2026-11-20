@@ -1,5 +1,5 @@
 /**
- * WS-C MN-09/MN-13: fail-closed preflight for the Meeting Record detail tab.
+ * WS-C MN-10/MN-12/MN-13/MN-15: fail-closed preflight for the Meeting Record detail tab.
  *
  * UI-only checks, not authorization. The future trusted MN-01 SQL guard must
  * independently validate actor, meeting, current status and immutable history.
