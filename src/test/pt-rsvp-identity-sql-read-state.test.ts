@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { resolveRSVPIdentity } from "../app/pages/return-register/rsvpIdentity";
 
 const meeting = { meeting_id: "MTG-1", meeting_title: "Board Meeting" };
@@ -9,10 +8,7 @@ const input = {
   meeting_id: "MTG-1", participant_name: "A. Member",
   response: "Accepted", response_date: "2028-02-29",
 };
-const page = readFileSync(
-  fileURLToPath(new URL("../app/pages/return-register/RSVPManagementPage.tsx", import.meta.url)),
-  "utf8",
-);
+const page = readFileSync("src/app/pages/return-register/RSVPManagementPage.tsx", "utf8");
 
 describe("WS-A RSVP meeting/participant identity and SQL read-state guard", () => {
   it("persists canonical meeting and participant IDs and approved response", () => {
