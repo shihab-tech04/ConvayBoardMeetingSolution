@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { OnlinePresenceTransition } from "../app/pages/meetings/onlinePresenceTransition";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-const workspace = readFileSync(new URL("../app/pages/meetings/LiveMeetingWorkspace.tsx", import.meta.url), "utf8");
-const media = readFileSync(new URL("../app/pages/meetings/LiveMeetingMedia.tsx", import.meta.url), "utf8");
+const workspace = readFileSync(resolve(process.cwd(), "src/app/pages/meetings/LiveMeetingWorkspace.tsx"), "utf8");
+const media = readFileSync(resolve(process.cwd(), "src/app/pages/meetings/LiveMeetingMedia.tsx"), "utf8");
 
 describe("LM-26 online presence and leave transition", () => {
   it("never turns a denied/failed admission into recorded attendance", () => {
