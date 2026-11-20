@@ -44,6 +44,11 @@ import {
 import { useUserRegistry } from "../../hooks/useUserRegistry";
 import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { documentActionGranted, documentActionSessionUnchanged } from "./documentActionAccess";
+import {
+  resolveUniqueActiveDocumentUserId,
+  documentShareGrantReadback,
+  documentShareRevokeReadback,
+} from "./documentAccessReadback";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getDocumentRepository } from "../../services/repositories/documentRepository";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
@@ -238,8 +243,11 @@ function AccessTab({
   can: (id: string) => boolean;
 }) {
   const { users } = useUserRegistry();
+  const actorAccess = useAccessSnapshot();
+  const requestEpoch = useRef(0);
   const [entries, setEntries]     = useState<DocumentAccessEntry[]>([]);
   const [loading, setLoading]     = useState(true);
+  const [accessError, setAccessError] = useState<string | null>(null);
   const [showForm, setShowForm]   = useState(false);
   const [selUser, setSelUser]     = useState("");
   const [selRole, setSelRole]     = useState("Viewer");
@@ -248,15 +256,42 @@ function AccessTab({
   const canShare = can("doc_share");
   const docId = doc.doc_id ?? doc.id;
 
-  const reload = useCallback(async () => {
-    if (!repo) return;
+  const reload = useCallback(async (): Promise<DocumentAccessEntry[] | null> => {
+    const requestId = ++requestEpoch.current;
+    const accessAtStart = readAccessSnapshot();
+    if (!repo) return null;
     setLoading(true);
-    try { setEntries(await repo.listAccess(docId)); }
-    catch { setEntries([]); }
-    finally { setLoading(false); }
-  }, [repo, docId]);
+    setEntries([]);
+    setAccessError(null);
+    if (!documentActionGranted("doc_view", accessAtStart)) {
+      setLoading(false);
+      setAccessError("You do not have permission to view this document's access list.");
+      return null;
+    }
+    try {
+      const latest = await repo.listAccess(docId);
+      if (requestId !== requestEpoch.current ||
+          readAccessSnapshot() !== accessAtStart) return null;
+      if (!Array.isArray(latest)) throw new Error("Invalid access-list response.");
+      setEntries(latest);
+      return latest;
+    } catch {
+      if (requestId === requestEpoch.current &&
+          readAccessSnapshot() === accessAtStart) {
+        setEntries([]);
+        setAccessError("Unable to load document access. Retry this request.");
+      }
+      return null;
+    } finally {
+      if (requestId === requestEpoch.current &&
+          readAccessSnapshot() === accessAtStart) setLoading(false);
+    }
+  }, [repo, docId, actorAccess]);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => {
+    void reload();
+    return () => { requestEpoch.current += 1; };
+  }, [reload]);
 
   const handleAdd = async () => {
     if (!repo || !selUser) { toast.error("Select a user to add."); return; }
@@ -267,17 +302,22 @@ function AccessTab({
     }
     setSaving(true);
     try {
-      await repo.grantAccess({
+      const subjectId = resolveUniqueActiveDocumentUserId(users, selUser);
+      const permission = ROLE_PERM_MAP[selRole] ?? "view";
+      const saved = await repo.grantAccess({
         document_id: docId,
         subject_type: "user",
-        subject_id: selUser,
-        permission: ROLE_PERM_MAP[selRole] ?? "view",
+        subject_id: subjectId,
+        permission,
         granted_by: "current_user",
       });
       if (!documentActionSessionUnchanged("doc_share", accessAtStart, readAccessSnapshot())) {
         throw new Error("Your account or access changed. Refresh the document access list.");
       }
-      await reload();
+      const confirmed = await reload();
+      if (!confirmed || !documentShareGrantReadback(confirmed, saved, docId, subjectId, permission)) {
+        throw new Error("Access grant was submitted, but SQL readback did not confirm it. Refresh and check before retrying.");
+      }
       toast.success("Access granted.");
       setShowForm(false); setSelUser(""); setSelRole("Viewer");
     } catch (error) {
@@ -297,7 +337,10 @@ function AccessTab({
       if (!documentActionSessionUnchanged("doc_share", accessAtStart, readAccessSnapshot())) {
         throw new Error("Your account or access changed. Refresh the document access list.");
       }
-      await reload();
+      const confirmed = await reload();
+      if (!confirmed || !documentShareRevokeReadback(confirmed, entryId)) {
+        throw new Error("Revocation was submitted, but SQL readback did not confirm removal. Refresh before retrying.");
+      }
       toast.success(`Access removed for ${name}.`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to remove access.");
@@ -315,6 +358,12 @@ function AccessTab({
   };
 
   if (loading) return <div className="doc-drawer__loading"><Loader2 size={16} className="spin-icon" /> Loading access…</div>;
+  if (accessError) return (
+    <div className="doc-drawer__empty" role="alert">
+      <div>{accessError}</div>
+      <Button variant="secondary" size="sm" onClick={() => { void reload(); }}>Retry</Button>
+    </div>
+  );
 
   return (
     <>
