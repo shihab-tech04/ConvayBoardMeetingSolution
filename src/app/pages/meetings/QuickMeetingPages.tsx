@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { Copy, DoorOpen, Link2, Lock, Mic, MicOff, Monitor, MonitorOff, PhoneOff, RotateCcw, ShieldOff, Unlock, Users, Video, VideoOff } from "lucide-react";
 import { FullScreenWorkspaceShell } from "../../components/shared/FullScreenWorkspaceShell";
@@ -6,6 +6,7 @@ import { PrimaryButton } from "../../components/buttons/PrimaryButton";
 import { SecondaryButton } from "../../components/buttons/SecondaryButton";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
 import { quickGuestShareUrl, quickMeetingApi, type QuickMeetingState } from "../../services/quickMeetingApi";
+import { rememberQuickGuestShareToken, resolveQuickGuestSessionId, resolveQuickGuestShareToken } from "./quickGuestSession";
 
 const cardStyle: CSSProperties = {
   background: "var(--color-surface)",
@@ -268,29 +269,18 @@ export function QuickMeetingHostPage() {
 
 type GuestMeetingInfo = { title: string; expiresAt: string; capacity: number; onlineCount: number };
 
-function sessionStorageValue(key: string): string | null {
-  try { return window.sessionStorage.getItem(key); } catch { return null; }
-}
-function saveSessionStorageValue(key: string, value: string) {
-  try { window.sessionStorage.setItem(key, value); } catch { /* Browser private mode can disable storage. */ }
+function quickGuestStorage() {
+  try { return window.sessionStorage; }
+  catch { return null; }
 }
 
 function useGuestSession(routeToken: string | undefined) {
-  const [shareToken] = useState(() => {
-    if (routeToken) {
-      saveSessionStorageValue("convay.quick.guest.token", routeToken);
-      return routeToken;
-    }
-    return sessionStorageValue("convay.quick.guest.token") ?? "";
-  });
-  const sessionKey = `convay.quick.guest.session.${shareToken.slice(0, 12)}`;
-  const [clientSessionId] = useState(() => {
-    const existing = sessionStorageValue(sessionKey);
-    if (existing) return existing;
-    const created = crypto.randomUUID();
-    saveSessionStorageValue(sessionKey, created);
-    return created;
-  });
+  const shareToken = resolveQuickGuestShareToken(routeToken, quickGuestStorage());
+  useEffect(() => { rememberQuickGuestShareToken(routeToken, quickGuestStorage()); }, [routeToken]);
+  const clientSessionId = useMemo(
+    () => resolveQuickGuestSessionId(shareToken, quickGuestStorage(), () => crypto.randomUUID()),
+    [shareToken],
+  );
   return { shareToken, clientSessionId };
 }
 
@@ -386,6 +376,18 @@ function GuestPrejoin({
 export function QuickMeetingGuestPage() {
   const { shareToken: routeToken } = useParams<{ shareToken?: string }>();
   const { shareToken, clientSessionId } = useGuestSession(routeToken);
+  // Reset prejoin/media/async link state when the capability changes in this tab.
+  return <QuickMeetingGuestFlow
+    key={shareToken}
+    shareToken={shareToken}
+    clientSessionId={clientSessionId}
+    routeToken={routeToken}
+  />;
+}
+
+function QuickMeetingGuestFlow({
+  shareToken, clientSessionId, routeToken,
+}: { shareToken: string; clientSessionId: string; routeToken: string | undefined }) {
   const [meeting, setMeeting] = useState<GuestMeetingInfo | null>(null);
   const [phase, setPhase] = useState<"checking" | "prejoin" | "live" | "left" | "unavailable">("checking");
   const [error, setError] = useState("");

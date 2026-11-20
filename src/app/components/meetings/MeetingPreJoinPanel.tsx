@@ -71,19 +71,41 @@ export function MeetingPreJoinPanel({
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
+    let active = true;
     if (!camOn) {
-      streamRef.current?.getTracks().forEach(t => t.stop());
+      streamRef.current?.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
       return;
     }
-    navigator.mediaDevices?.getUserMedia({ video: true, audio: false })
+    // Permission may resolve after a camera-off click, navigation or unmount.
+    // Never retain a stream from a no-longer-active preview request.
+    if (typeof navigator.mediaDevices?.getUserMedia !== "function") {
+      setPermErr("Camera unavailable");
+      setCamOn(false);
+      return;
+    }
+    void navigator.mediaDevices.getUserMedia({ video: true, audio: false })
       .then(stream => {
+        if (!active) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
         setPermErr("");
       })
-      .catch(() => { setPermErr("Camera unavailable"); setCamOn(false); });
-    return () => { streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null; };
+      .catch(() => {
+        if (!active) return;
+        setPermErr("Camera unavailable");
+        setCamOn(false);
+      });
+    return () => {
+      active = false;
+      streamRef.current?.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
+    };
   }, [camOn]);
 
   const dateStr = meeting?.meeting_date
@@ -205,7 +227,7 @@ export function MeetingPreJoinPanel({
                 </div>
                 <div className="meeting-prejoin__tray-info">
                   <span className="meeting-prejoin__tray-label">Connection</span>
-                  <span className="meeting-prejoin__tray-state pj-ok">Ready</span>
+                  <span className="meeting-prejoin__tray-state pj-off">Checked on join</span>
                 </div>
               </div>
             </div>

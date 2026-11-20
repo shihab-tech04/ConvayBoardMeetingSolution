@@ -1,4 +1,7 @@
 import { useNavigate } from "react-router";
+import { ExternalLink } from "lucide-react";
+import { toast } from "sonner";
+import { archiveRecordPath } from "./archiveRecordPath";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
@@ -45,15 +48,23 @@ export function MeetingArchivePage() {
     actions:  [
       ...ROW_VIEW,
     ],
-    drawerActions: [],
+    drawerActions: [
+      { id: "view_record", label: "Open Full Meeting Record", icon: ExternalLink, color: "#2563eb" },
+    ],
     drawerTitle: "Meeting Details",
     drawerCols: MEETING_DRAWER_COLS,
     rows:     archived,
+    dataLoading: Boolean(registry.loading),
+    dataError: registry.error ?? null,
+    onDataRetry: async () => { await registry.refresh?.(); },
     kpis,
     onCustomAction(actionId, row) {
       if (actionId === "view_record") {
-        const id = String(row.id ?? row.meeting_id ?? "");
-        if (id) navigate(`/meetings/${id}/record`);
+        try {
+          navigate(archiveRecordPath(row.id ?? row.meeting_id));
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Unable to open this meeting record.");
+        }
       }
     },
   };
