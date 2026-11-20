@@ -1,0 +1,252 @@
+\set ON_ERROR_STOP on
+-- TEN-03: exact PostgreSQL 17 direct-role isolation rehearsal ONLY.
+-- It runs in a disposable database and rolls back *all* staged SQL.
+-- Simulated JWT GUCs test RLS logic, NOT cryptographic JWT verification.
+BEGIN;
+
+DO $pre$
+BEGIN
+  if to_regclass('convay_private.tenants') is not null
+    or (select count(*) from public.convay_entity_records)<>1
+  then raise exception 'Unclean TEN-03 baseline'; end if;
+END $pre$;
+
+\ir ../wsf_ten_foundation/foundation.sql
+\ir fixture_scope.sql
+\ir activation_candidate.sql
+
+DO $setup$
+BEGIN
+  if (select count(*) from pg_policies where schemaname='public'
+    and tablename='convay_entity_records'
+    and policyname like 'convay_wsf_tenant_%')<>4
+  then raise exception 'Missing any restrictive tenant policy'; end if;
+  if exists(select 1 from pg_policies where schemaname='public'
+    and tablename='convay_entity_records'
+    and policyname like 'convay_wsf_tenant_%'
+    and permissive<>'RESTRICTIVE') then
+      raise exception 'Tenant policy not restrictive';
+  end if;
+  if has_column_privilege('authenticated','public.convay_entity_records',
+    'tenant_id','INSERT') or
+    has_column_privilege('authenticated','public.convay_entity_records',
+    'tenant_id','UPDATE') then
+      raise exception 'Tenant column writable by authenticated';
+  end if;
+  raise notice 'TEN-03 CHECK 00: restrictive policies + tenant column grants PASS';
+END $setup$;
+
+-- Actor A, tenant A, current signed session, full module permissions.
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','33333333-3333-4333-8333-333333333333',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"77777777-7777-4777-8777-777777777777"}',true);
+DO $case01$
+declare n integer;
+begin
+  select count(*) into n from public.convay_entity_records
+   where entity_key='bms.meetings';
+  if n<>1 then raise exception 'TEN-03 case01 actor A expected exactly one A row, got %',n; end if;
+  raise notice 'TEN-03 CASE 01 A reads own record PASS';
+end $case01$;
+
+-- A insert with no client-supplied tenant ID; trigger fills from signed claim.
+DO $case03$
+declare tid uuid;
+begin
+  insert into public.convay_entity_records(entity_key,record_id,payload)
+  values('bms.meetings','fixture-a-created',
+    '{"id":"fixture-a-created","status":"Draft"}'::jsonb)
+  returning tenant_id into tid;
+  if tid is distinct from '55555555-5555-4555-8555-555555555555'::uuid then
+    raise exception 'TEN-03 CASE 03 server tenant stamping wrong';
+  end if;
+  raise notice 'TEN-03 CASE 03 server-owned tenant on direct create PASS';
+end $case03$;
+
+-- Caller cannot stamp someone else's tenant even with permissions.
+DO $case03b$
+declare denied boolean := false;
+begin
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.meetings','foreign-stamp',
+      '{"id":"foreign-stamp"}'::jsonb,
+      '66666666-6666-4666-8666-666666666666'::uuid);
+  exception when insufficient_privilege then denied:=true; end;
+  if not denied then raise exception 'TEN-03 CASE 03b foreign ownership write accepted'; end if;
+  raise notice 'TEN-03 CASE 03b foreign tenant INSERT denied PASS';
+end $case03b$;
+
+-- Actor B has IDENTICAL module grants, but must not see/modify A rows.
+SELECT set_config('request.jwt.claim.sub','44444444-4444-4444-8444-444444444444',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"66666666-6666-4666-8666-666666666666"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+
+DO $case02$
+declare n integer;
+begin
+  select count(*) into n from public.convay_entity_records
+    where entity_key='bms.meetings';
+  if n<>1 then raise exception 'TEN-03 CASE 02 B must see only its 1 row: got %',n; end if;
+  if exists(select 1 from public.convay_entity_records where record_id='fixture-meeting-1')
+     or exists(select 1 from public.convay_entity_records where record_id='fixture-a-created')
+  then raise exception 'TEN-03 CASE 02 cross-tenant SELECT leak'; end if;
+  raise notice 'TEN-03 CASE 02 exact foreign SELECT hidden PASS';
+end $case02$;
+
+DO $case05$
+declare n integer;
+begin
+  update public.convay_entity_records set payload='{"id":"fixture-meeting-1","status":"Changed"}'
+    where entity_key='bms.meetings' and record_id='fixture-meeting-1';
+  get diagnostics n = row_count;
+  if n<>0 then raise exception 'TEN-03 CASE 05 foreign UPDATE mutated %',n; end if;
+  delete from public.convay_entity_records
+    where entity_key='bms.meetings' and record_id='fixture-meeting-1';
+  get diagnostics n = row_count;
+  if n<>0 then raise exception 'TEN-03 CASE 05 foreign DELETE removed %',n; end if;
+  raise notice 'TEN-03 CASE 05 direct foreign UPDATE/DELETE denied PASS';
+end $case05$;
+
+-- Batch has intentionally unscoped WHERE and both tenants have same grants.
+-- Its earlier valid write must roll back atomically when the foreign row fails.
+DO $case06$
+declare denied boolean:=false;
+begin
+  begin
+    perform public.convay_apply_entity_batch('[
+      {"entity_key":"bms.meetings","action":"update","record_id":"fixture-b-record","payload":{"status":"ShouldRollback"}},
+      {"entity_key":"bms.meetings","action":"delete","record_id":"fixture-meeting-1"}
+    ]'::jsonb);
+  exception when others then denied:=true; end;
+  if not denied then raise exception 'TEN-03 CASE 06 mixed foreign batch accepted'; end if;
+  if (select payload->>'status' from public.convay_entity_records
+        where record_id='fixture-b-record') is distinct from 'Draft' then
+    raise exception 'TEN-03 CASE 06 first batch operation not rolled back';
+  end if;
+  raise notice 'TEN-03 CASE 06 foreign batch atomic denial PASS';
+end $case06$;
+
+-- Same user B falsely selects tenant A claim. DB membership must win.
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+DO $foreign_claim$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 signed tenant claim without matching membership leaked';
+  end if;
+  raise notice 'TEN-03 CASE 07 foreign selected tenant denied PASS';
+end $foreign_claim$;
+
+-- Missing trusted claim and malformed UUID never cast unsafely.
+SELECT set_config('request.jwt.claims','{"user_metadata":{"active_tenant_id":"66666666-6666-4666-8666-666666666666"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+DO $badclaim$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 user_metadata claim used for authorization';
+  end if;
+  raise notice 'TEN-03 CASE 07b user_metadata forgery denied PASS';
+end $badclaim$;
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"not-uuid"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+DO $malformed$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 malformed tenant claim authorized';
+  end if;
+  raise notice 'TEN-03 CASE 07c malformed claim denied PASS';
+end $malformed$;
+
+-- Restore B JWT then suspend membership under trusted fixture DB owner.
+RESET ROLE;
+UPDATE convay_private.tenant_memberships set
+ membership_state='revoked',revoked_at=now(),revision=revision+1
+where user_id='44444444-4444-4444-8444-444444444444';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"66666666-6666-4666-8666-666666666666"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+DO $revoke$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 CASE 08 revoked user retained read access';
+  end if;
+  raise notice 'TEN-03 CASE 08 membership revoked mid-session denied PASS';
+end $revoke$;
+
+-- Reactivate B, suspend its entire tenant and verify same token is denied.
+RESET ROLE;
+UPDATE convay_private.tenant_memberships set
+ membership_state='active',revoked_at=null,revision=revision+1
+where user_id='44444444-4444-4444-8444-444444444444';
+UPDATE convay_private.tenants set lifecycle_state='suspended'
+where id='66666666-6666-4666-8666-666666666666';
+SET LOCAL ROLE authenticated;
+DO $suspend$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 CASE 09 suspended tenant retained access';
+  end if;
+  raise notice 'TEN-03 CASE 09 tenant suspension denied PASS';
+end $suspend$;
+
+RESET ROLE;
+UPDATE convay_private.tenants set lifecycle_state='active'
+where id='66666666-6666-4666-8666-666666666666';
+DELETE FROM auth.sessions where id='88888888-8888-4888-8888-888888888888';
+SET LOCAL ROLE authenticated;
+DO $session$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 session revoked, stale token still authorized';
+  end if;
+  raise notice 'TEN-03 CASE 09b deleted Auth session denies stale JWT PASS';
+end $session$;
+
+-- A globally entitled platform root has no membership/tenant receipt:
+-- root status MUST NOT silently override tenant isolation.
+SELECT set_config('request.jwt.claim.sub','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"dddddddd-dddd-4ddd-8ddd-dddddddddddd"}',true);
+DO $root$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 CASE 13 unscoped root override leaked records';
+  end if;
+  raise notice 'TEN-03 CASE 13 implicit platform-root bypass denied PASS';
+end $root$;
+
+-- Both A and B may have identical record IDs in future, but the original
+-- global PK still forbids this; keep TEN-03 ID namespace marked UNVERIFIED.
+RESET ROLE;
+DO $key$
+begin
+  if not exists (
+    select 1 from pg_constraint c
+    where c.conrelid='public.convay_entity_records'::regclass
+    and c.contype='p'
+    and pg_get_constraintdef(c.oid)='PRIMARY KEY (entity_key, record_id)'
+  ) then raise exception 'Unexpected legacy PK alteration in test candidate'; end if;
+  raise notice 'TEN-03 CASE 15 known PK cross-tenant ID collision unresolved; no activation permitted';
+end $key$;
+
+ROLLBACK;
+
+DO $post$
+begin
+  if to_regclass('convay_private.tenants') is not null
+    or to_regclass('auth.sessions') is not null
+    or to_regprocedure('convay_private.tenant_actor_authorized(uuid)') is not null
+    or exists(select 1 from information_schema.columns
+      where table_schema='public' and table_name='convay_entity_records'
+        and column_name='tenant_id') then
+    raise exception 'TEN-03 rollback left tenant DDL/schema behind';
+  end if;
+  if (select count(*) from public.convay_entity_records
+      where record_id='fixture-meeting-1'
+      and payload->>'status'='Draft')<>1 then
+    raise exception 'TEN-03 rollback modified legacy record';
+  end if;
+  raise notice 'TEN-03 CASE 16 baseline schema and record rollback PASS';
+  raise notice 'TEN-03 disposable SQL tests PASS, NOT native Auth/DB/Storage tenant activation';
+end $post$;
