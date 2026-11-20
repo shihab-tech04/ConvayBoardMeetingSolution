@@ -52,18 +52,18 @@ describe("GV-04 authorized assignment ACK before UI completion", () => {
     state.userUpdate.mockRejectedValue(new Error("Manage user accounts through authorized User Management"));
     const onClose = vi.fn(), onSuccess = vi.fn();
     openConfirmation(onClose, onSuccess);
-    expect(await screen.findByRole("alert")).toHaveTextContent("authorized User Management");
+    expect((await screen.findByRole("alert")).textContent).toContain("authorized User Management");
     expect(state.auditAdd).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     expect(onSuccess).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Confirm Assignment" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Confirm Assignment" }).hasAttribute("disabled")).toBe(false);
   });
 
   it("requires a true server acknowledgement before audit and closure", async () => {
     state.userUpdate.mockResolvedValue(false);
     const onClose = vi.fn(), onSuccess = vi.fn();
     openConfirmation(onClose, onSuccess);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Assignment was not saved");
+    expect((await screen.findByRole("alert")).textContent).toContain("Assignment was not saved");
     expect(state.auditAdd).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
