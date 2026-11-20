@@ -73,7 +73,7 @@ describe("DC-25: server-authorized board-pack download gateway", () => {
   });
   it("rejects expiry during source retrieval and before receipt", async () => {
     const g = gateway();let t=NOW;g.now=()=>t;
-    g.loadOriginal = vi.fn(async()=>{t=NOW+61_000;return new Blob(["document"])});
+    g.loadOriginal = vi.fn(async()=>{t=NOW+61_000;return new Blob(["original bytes"])});
     await expect(prepareAuthorizedBoardPackDownload("pack-1",g)).rejects.toThrow(/expired/i);
     expect(g.confirmReceipt).not.toHaveBeenCalled();
   });
@@ -96,7 +96,7 @@ describe("DC-25: server-authorized board-pack download gateway", () => {
     expect(() => parseAuthorizedBoardPackManifest({...manifest(),manifestId:"m\n1"},"pack-1",NOW)).toThrow();
   });
   it("fails closed on original size mismatch without recording a receipt", async () => {
-    const g=gateway();g.loadOriginal=vi.fn(async()=>new Blob(["different body"]));
+    const g=gateway();g.loadOriginal=vi.fn(async()=>new Blob(["different-sized body"]));
     await expect(prepareAuthorizedBoardPackDownload("pack-1",g)).rejects.toThrow(/size does not match/i);
     expect(g.confirmReceipt).not.toHaveBeenCalled();
   });
