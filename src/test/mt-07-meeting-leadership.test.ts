@@ -66,4 +66,35 @@ describe("MT-07 meeting leadership assignments", () => {
 
     expect(initial.chairperson).toBe("");
   });
+
+  it("fails closed when duplicate active rows claim one canonical user ID", () => {
+    const duplicateIdUsers = [
+      { id: "user-3", name: "Sam Rahman", status: "Active" },
+      { id: "user-3", name: "Different Person", status: "Active" },
+      { id: "user-1", name: "Alex Lee", status: "Active" },
+    ];
+    const result = resolveMeetingLeadership({
+      chairperson: "user-3", secretary: "user-1", organizer: "user-3",
+    }, duplicateIdUsers);
+    expect(result.ids).toEqual({
+      chairperson: "", secretary: "user-1", organizer: "",
+    });
+    expect(result.names).toEqual({
+      chairperson: "", secretary: "Alex Lee", organizer: "",
+    });
+    expect(result.missing).toEqual(["chairperson", "organizer"]);
+  });
+
+  it("rejects duplicate canonical IDs even when their display names match", () => {
+    const result = resolveMeetingLeadership({
+      chairperson: "user-3", secretary: "Sam Rahman", organizer: "user-1",
+    }, [
+      { id: "user-3", name: "Sam Rahman", status: "Active" },
+      { id: "user-3", name: "Sam Rahman", status: "Active" },
+      { id: "user-1", name: "Alex Lee", status: "Active" },
+    ]);
+    expect(result.missing).toEqual(["chairperson", "secretary"]);
+    expect(result.ids.organizer).toBe("user-1");
+  });
+
 });
