@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { recordListState } from "./recordListState";
 import { normalizeRecordedQuorum } from "./recordedQuorumStatus";
 import {
   buildMinutesRevisionRequest, canArchiveMinutes, canEditMinutesContent,
@@ -305,10 +306,22 @@ export function MeetingRecordPage() {
     </div>
   );
 
+  // An in-flight or failed permission-scoped SQL read is not an empty history.
+  const participantHistoryState = recordListState(Boolean(participantReg.loading), participantReg.error, meetingParticipants.length);
+  const attendanceHistoryState = recordListState(Boolean(attendanceReg.loading), attendanceReg.error, meetingAttendance.length);
+
   const renderParticipants = () => (
     <>
       <SectionCard title={`Participants (${meetingParticipants.length})`}>
-        {meetingParticipants.length === 0 ? (
+        {participantHistoryState === "loading" ? (
+          <div role="status" aria-live="polite"><EmptyState icon={RefreshCw} message="Loading meeting participants…" /></div>
+        ) : participantHistoryState === "error" ? (
+          <div role="alert" style={{ textAlign: "center", padding: "1.5rem" }}>
+            <p style={{ marginBottom: "0.75rem" }}>Unable to load meeting participants.</p>
+            <button type="button" onClick={() => { void Promise.resolve(participantReg.refresh?.()).catch(() => toast.error("Unable to refresh participants.")); }}
+              style={{ padding: "0.5rem 1.25rem", borderRadius: 8, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}>Retry</button>
+          </div>
+        ) : participantHistoryState === "empty" ? (
           <EmptyState icon={Users} message="No participant records linked to this meeting." />
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -330,7 +343,15 @@ export function MeetingRecordPage() {
         )}
       </SectionCard>
       <SectionCard title={`Attendance Records (${meetingAttendance.length})`}>
-        {meetingAttendance.length === 0 ? (
+        {attendanceHistoryState === "loading" ? (
+          <div role="status" aria-live="polite"><EmptyState icon={RefreshCw} message="Loading attendance history…" /></div>
+        ) : attendanceHistoryState === "error" ? (
+          <div role="alert" style={{ textAlign: "center", padding: "1.5rem" }}>
+            <p style={{ marginBottom: "0.75rem" }}>Unable to load attendance history.</p>
+            <button type="button" onClick={() => { void Promise.resolve(attendanceReg.refresh?.()).catch(() => toast.error("Unable to refresh attendance.")); }}
+              style={{ padding: "0.5rem 1.25rem", borderRadius: 8, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}>Retry</button>
+          </div>
+        ) : attendanceHistoryState === "empty" ? (
           <EmptyState icon={Users} message="No attendance records for this meeting." />
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
