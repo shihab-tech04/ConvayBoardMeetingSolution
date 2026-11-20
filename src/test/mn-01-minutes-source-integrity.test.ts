@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolveMinutesSource } from "../app/pages/archive-reports/minutesSourceIntegrity";
+import { resolveMinutesSource, validateMinutesRevisionRequest } from "../app/pages/archive-reports/minutesSourceIntegrity";
 
 const sourceMeeting = {
   id: "meeting-uuid-1", meeting_id: "MTG-2026-0001", meeting_title: "Annual Board Meeting",
@@ -23,6 +23,27 @@ describe("MN-01 minutes source integrity", () => {
         { ...sourceMeeting, approval_status: status },
       ])).toThrow();
     }
+  });
+  it("accepts a review-only revision with substantive instructions", () => {
+    for (const stage of ["Under Secretary Review", "Under Chairperson Review", "Member Review"]) {
+      expect(validateMinutesRevisionRequest(stage, "  Revise the recorded attendance  ")).toBe("Revise the recorded attendance");
+    }
+  });
+  it("rejects draft, approved, signed and archived revision requests and short instructions", () => {
+    for (const status of ["Draft", "Revision Requested", "Approved", "Signed", "Archived"]) {
+      expect(() => validateMinutesRevisionRequest(status, "Change attendance details")).toThrow(/review/);
+    }
+    for (const instructions of ["", "  ", "Too short", null]) {
+      expect(() => validateMinutesRevisionRequest("Under Secretary Review", instructions)).toThrow(/10 characters/);
+    }
+  });
+  it("connects the revision action to awaited SQL and the shared permission gate", () => {
+    const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
+    expect(page).toContain('requestRevisionPermission: "min_approve"');
+    expect(page).toContain('async onRequestRevision(id, instructions)');
+    expect(page).toContain("validateMinutesRevisionRequest(original.approval_status, instructions)");
+    expect(page).toContain("const saved = await registry.update(id, revisionPatch)");
+    expect(page).toContain('if (saved !== true) throw new Error(');
   });
   it("requires permission, confirmed SQL create and immutable meeting linkage on edit", () => {
     const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
