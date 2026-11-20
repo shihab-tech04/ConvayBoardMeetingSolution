@@ -11,7 +11,7 @@ import { useMinutesRegistry, useMeetingRegistry, generateId } from "../../data/b
 import { MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import { patchFormOptions } from "../../utils/patchFormOptions";
 import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
-import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition, isMinutesLifecycleAction } from "./minutesSourceIntegrity";
+import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition, isMinutesLifecycleAction, eligibleMinutesSourceMeetings } from "./minutesSourceIntegrity";
 import type { MinutesLifecycleAction } from "./minutesSourceIntegrity";
 import { buildMinutesHtmlExport } from "./minutesHtmlExport";
 
@@ -132,7 +132,7 @@ export function MinutesManagementPage() {
     }
   }
   const dynamicFields = patchFormOptions(MINUTES_FORM_FIELDS, {
-    meeting_id: meetingReg.items.map(m => ({
+    meeting_id: eligibleMinutesSourceMeetings(meetingReg.items).map(m => ({
       value: m.meeting_id,
       label: `${m.meeting_id} — ${m.meeting_title}`,
     })),
