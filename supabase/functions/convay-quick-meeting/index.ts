@@ -5,6 +5,7 @@ import {
   checkQuickGuestAdmission,
   checkQuickMeetingLink,
   isQuickMeetingSessionId,
+  isQuickMeetingActive,
   normalizeQuickParticipantName,
   type QuickMeetingAccessRecord,
   type QuickMeetingLinkAccessRecord,
@@ -170,11 +171,17 @@ async function requireHostUser(req: Request): Promise<HostIdentity> {
     is_super_admin?: boolean;
     effective_permissions?: string[];
   }>("/functions/v1/convay-access", jwt, { method: "POST", body: JSON.stringify({ action: "snapshot" }) });
+  const isSuperAdmin = snapshot.is_super_admin === true;
+  const permissions = Array.isArray(snapshot.effective_permissions) ? snapshot.effective_permissions : [];
+  // Re-check current grants for every host operation, not only meeting creation.
+  if (!canCreateQuickMeeting(isSuperAdmin, permissions)) {
+    throw new HttpError(403, "You need Quick Meeting creation permission.");
+  }
   return {
     id: user.id,
     name: profiles[0].display_name,
-    isSuperAdmin: snapshot.is_super_admin === true,
-    permissions: Array.isArray(snapshot.effective_permissions) ? snapshot.effective_permissions : [],
+    isSuperAdmin,
+    permissions,
   };
 }
 
@@ -280,7 +287,7 @@ async function allRoomParticipants(meeting: QuickMeetingRow): Promise<LivePartic
 }
 
 async function ensureLiveRoom(meeting: QuickMeetingRow) {
-  if (meeting.status !== "active" || Date.parse(meeting.expires_at) <= Date.now()) {
+  if (!isQuickMeetingActive(meeting)) {
     throw new HttpError(410, "This quick meeting has ended or expired.");
   }
   const service = roomService();
@@ -576,7 +583,7 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
   }
 
   if (action === "host-join") {
-    if (meeting.status !== "active" || Date.parse(meeting.expires_at) <= Date.now()) {
+    if (!isQuickMeetingActive(meeting)) {
       throw new HttpError(410, "This quick meeting has ended or expired.");
     }
     await ensureLiveRoom(meeting);
@@ -612,7 +619,7 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
   }
 
   if (action === "rotate-link") {
-    if (meeting.status !== "active" || Date.parse(meeting.expires_at) <= Date.now()) {
+    if (!isQuickMeetingActive(meeting)) {
       throw new HttpError(410, "This quick meeting has ended or expired.");
     }
     const secret = await newShareSecret();
