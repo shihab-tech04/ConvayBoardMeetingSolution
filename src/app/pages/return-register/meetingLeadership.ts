@@ -62,8 +62,12 @@ export function resolveMeetingLeadership(
 
   for (const role of MEETING_LEADERSHIP_ROLES) {
     const value = String(values[role] ?? "").trim();
-    let selected = activeUsers.find(user => user.id === value);
-    if (!selected && value) {
+    // Never choose the first row for a duplicated canonical ID. Multiple
+    // records claiming one user ID make the assignment ambiguous even if
+    // their displayed names happen to match.
+    const idMatches = value ? activeUsers.filter(user => user.id === value) : [];
+    let selected = idMatches.length === 1 ? idMatches[0] : undefined;
+    if (idMatches.length === 0 && value) {
       const name = legacyName(value);
       const matches = activeUsers.filter(user => user.name.trim() === name);
       if (matches.length === 1) selected = matches[0];
