@@ -51,12 +51,15 @@ function isRealVenue(text?: string): boolean {
 /** Convert "14:00" or "14:00:00" → "2:00 PM" */
 function formatTime12h(raw?: string): string {
   if (!raw) return "";
-  const parts = raw.split(":");
-  let h = parseInt(parts[0], 10);
-  const m = parts[1] ?? "00";
-  const ampm = h >= 12 ? "PM" : "AM";
-  h = h % 12 || 12;
-  return `${h}:${m} ${ampm}`;
+  // Only treat supported 24-hour SQL times as verified meeting details.
+  // parseInt alone accepted malformed values like "25:99" or "abc:30".
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(raw.trim());
+  if (!match) return "";
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = match[3] === undefined ? 0 : Number(match[3]);
+  if (hour > 23 || minute > 59 || second > 59) return "";
+  return `${hour % 12 || 12}:${match[2]} ${hour >= 12 ? "PM" : "AM"}`;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -67,12 +70,14 @@ export function MeetingPreJoinPanel({
   const [micOn,   setMicOn]   = useState(true);
   const [camOn,   setCamOn]   = useState(true);
   const [permErr, setPermErr] = useState("");
+  const [cameraPreviewActive, setCameraPreviewActive] = useState(false);
   const videoRef  = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     let active = true;
     if (!camOn) {
+      setCameraPreviewActive(false);
       streamRef.current?.getTracks().forEach(track => track.stop());
       streamRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
@@ -81,10 +86,12 @@ export function MeetingPreJoinPanel({
     // Permission may resolve after a camera-off click, navigation or unmount.
     // Never retain a stream from a no-longer-active preview request.
     if (typeof navigator.mediaDevices?.getUserMedia !== "function") {
+      setCameraPreviewActive(false);
       setPermErr("Camera unavailable");
       setCamOn(false);
       return;
     }
+    setCameraPreviewActive(false);
     void navigator.mediaDevices.getUserMedia({ video: true, audio: false })
       .then(stream => {
         if (!active) {
@@ -93,10 +100,12 @@ export function MeetingPreJoinPanel({
         }
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
+        setCameraPreviewActive(true);
         setPermErr("");
       })
       .catch(() => {
         if (!active) return;
+        setCameraPreviewActive(false);
         setPermErr("Camera unavailable");
         setCamOn(false);
       });
@@ -203,7 +212,7 @@ export function MeetingPreJoinPanel({
                 </div>
                 <div className="meeting-prejoin__tray-info">
                   <span className="meeting-prejoin__tray-label">Microphone</span>
-                  <span className={`meeting-prejoin__tray-state ${micOn ? "pj-ok" : "pj-off"}`}>{micOn ? "On" : "Muted"}</span>
+                  <span className={`meeting-prejoin__tray-state ${micOn ? "pj-ok" : "pj-off"}`}>{micOn ? "Enabled on join" : "Muted"}</span>
                 </div>
               </div>
 
@@ -215,7 +224,7 @@ export function MeetingPreJoinPanel({
                 </div>
                 <div className="meeting-prejoin__tray-info">
                   <span className="meeting-prejoin__tray-label">Camera</span>
-                  <span className={`meeting-prejoin__tray-state ${camOn ? "pj-ok" : "pj-off"}`}>{camOn ? "On" : "Off"}</span>
+                  <span className={`meeting-prejoin__tray-state ${camOn ? "pj-ok" : "pj-off"}`}>{camOn ? (cameraPreviewActive ? "Preview active" : "Checking camera") : "Off"}</span>
                 </div>
               </div>
 
