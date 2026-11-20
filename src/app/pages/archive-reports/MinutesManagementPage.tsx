@@ -1,4 +1,4 @@
-import { Eye, RefreshCw, CheckCircle, Archive, Send } from "lucide-react";
+import { Eye, RefreshCw, CheckCircle, Archive, Send, PenLine } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
@@ -11,7 +11,8 @@ import { useMinutesRegistry, useMeetingRegistry, generateId } from "../../data/b
 import { MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import { patchFormOptions } from "../../utils/patchFormOptions";
 import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
-import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission } from "./minutesSourceIntegrity";
+import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition, isMinutesLifecycleAction } from "./minutesSourceIntegrity";
+import type { MinutesLifecycleAction } from "./minutesSourceIntegrity";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
 
@@ -23,6 +24,9 @@ export function MinutesManagementPage() {
   const [submissionRow, setSubmissionRow] = useState<TableRow | null>(null);
   const [submissionSaving, setSubmissionSaving] = useState(false);
   const submissionInFlight = useRef(false);
+  const [workflowRequest, setWorkflowRequest] = useState<{ row: TableRow; action: MinutesLifecycleAction } | null>(null);
+  const [workflowSaving, setWorkflowSaving] = useState(false);
+  const workflowInFlight = useRef(false);
 
   async function submitForSecretaryReview() {
     if (!submissionRow || submissionInFlight.current) return;
@@ -51,6 +55,42 @@ export function MinutesManagementPage() {
     } finally {
       submissionInFlight.current = false;
       setSubmissionSaving(false);
+    }
+  }
+  async function confirmMinutesLifecycle() {
+    if (!workflowRequest || workflowInFlight.current) return;
+    workflowInFlight.current = true;
+    setWorkflowSaving(true);
+    try {
+      const currentAccess = readAccessSnapshot();
+      if (!currentAccess.loaded || !(currentAccess.is_super_admin || currentAccess.effective_permissions.includes("min_approve"))) {
+        throw new Error("You do not have permission to review, sign or archive minutes.");
+      }
+      if (registry.loading || registry.error) {
+        throw new Error("Minutes records are unavailable. Refresh and try again.");
+      }
+      const id = String(workflowRequest.row.id ?? "").trim();
+      const current = registry.items.find(m => m.id === id);
+      if (!current || String(current.approval_status) !== String(workflowRequest.row.approval_status)) {
+        throw new Error("Minutes review stage changed. Refresh before taking action.");
+      }
+      const patch = buildMinutesLifecycleTransition(current.approval_status, workflowRequest.action);
+      // Only a trusted SQL trigger can stamp reviewers/signers and verify
+      // stage-specific privileges. The client never supplies actor identity.
+      const saved = await registry.update(id, patch);
+      if (saved !== true) throw new Error("Minutes transition was not saved. Refresh and retry.");
+      await registry.refresh?.();
+      const readback = registry.getById(id);
+      if (!readback || readback.approval_status !== patch.approval_status) {
+        throw new Error("The updated minutes status could not be verified. Refresh and retry.");
+      }
+      setWorkflowRequest(null);
+      toast.success("Minutes status updated and verified.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Minutes transition failed. Refresh and retry.");
+    } finally {
+      workflowInFlight.current = false;
+      setWorkflowSaving(false);
     }
   }
   const dynamicFields = patchFormOptions(MINUTES_FORM_FIELDS, {
@@ -100,13 +140,28 @@ export function MinutesManagementPage() {
     ],
     drawerTitle: "Minutes Details",
     drawerCols: MINUTES_DRAWER_COLS,
-    drawerActions: [
-      ...EDIT,
-      { id: "submit_for_review", label: "Submit for Secretary Review", icon: Send, color: "#2563eb" },
-      { id: "request_revision", label: "Request Revision", labelKey: "actions.requestRevision", icon: RefreshCw, color: "#f59e0b" },
-      { id: "publish",          label: "Sign & Approve",   labelKey: "actions.publish",          icon: CheckCircle, color: "#22c55e" },
-      { id: "archive",          label: "Archive",          labelKey: "actions.archive",           icon: Archive, color: "#6b7280" },
-    ],
+    drawerActionsResolver(row) {
+      const status = String(row.approval_status ?? "");
+      if (isEditableMinutesStatus(status)) return [
+        ...EDIT,
+        { id: "submit_for_review", label: "Submit for Secretary Review", icon: Send, color: "#2563eb" },
+      ];
+      if (status === "Under Secretary Review" || status === "Under Chairperson Review") return [
+        { id: "request_revision", label: "Request Revision", labelKey: "actions.requestRevision", icon: RefreshCw, color: "#f59e0b" },
+        { id: "forward_review", label: status === "Under Secretary Review" ? "Forward to Chairperson Review" : "Forward to Member Review", icon: Send, color: "#2563eb" },
+      ];
+      if (status === "Member Review") return [
+        { id: "request_revision", label: "Request Revision", labelKey: "actions.requestRevision", icon: RefreshCw, color: "#f59e0b" },
+        { id: "approve_minutes", label: "Approve Minutes", icon: CheckCircle, color: "#22c55e" },
+      ];
+      if (status === "Approved") return [
+        { id: "sign_minutes", label: "Record Internal Signature", icon: PenLine, color: "#22c55e" },
+      ];
+      if (status === "Signed") return [
+        { id: "archive_minutes", label: "Archive", labelKey: "actions.archive", icon: Archive, color: "#6b7280" },
+      ];
+      return [];
+    },
     rows: items.map(m => ({ ...m } as TableRow)),
     dataLoading: Boolean(registry.loading || meetingReg.loading),
     dataError: registry.error ?? meetingReg.error ?? null,
@@ -117,16 +172,31 @@ export function MinutesManagementPage() {
     entryBtn: canWriteMinutes ? "Create Minutes" : undefined,
     formFields: dynamicFields,
     onCustomAction(actionId, row) {
-      if (actionId !== "submit_for_review") return;
-      if (!canWriteMinutes) {
-        toast.error("You do not have permission to submit minutes for review.");
+      if (actionId === "submit_for_review") {
+        if (!canWriteMinutes) {
+          toast.error("You do not have permission to submit minutes for review.");
+          return;
+        }
+        try {
+          buildMinutesReviewSubmission(String(row.approval_status ?? ""), String(row.version ?? ""));
+          setSubmissionRow(row);
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Only draft or returned minutes can be submitted.");
+        }
         return;
       }
-      try {
-        buildMinutesReviewSubmission(String(row.approval_status ?? ""), String(row.version ?? ""));
-        setSubmissionRow(row);
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Only draft or returned minutes can be submitted.");
+      if (isMinutesLifecycleAction(actionId)) {
+        const currentAccess = readAccessSnapshot();
+        if (!currentAccess.loaded || !(currentAccess.is_super_admin || currentAccess.effective_permissions.includes("min_approve"))) {
+          toast.error("You do not have permission to review, sign or archive minutes.");
+          return;
+        }
+        try {
+          buildMinutesLifecycleTransition(String(row.approval_status ?? ""), actionId);
+          setWorkflowRequest({ row, action: actionId });
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "This minutes action is unavailable.");
+        }
       }
     },
     // MN-02: use the shared confirmation modal and await an authorized SQL
@@ -218,6 +288,19 @@ export function MinutesManagementPage() {
           confirmLabel={submissionSaving ? "Submitting…" : "Submit for Review"}
           onConfirm={() => { void submitForSecretaryReview(); }}
           onClose={() => { if (!submissionInFlight.current) setSubmissionRow(null); }}
+        />
+      )}
+      {workflowRequest && (
+        <SConfirmModal
+          title="Confirm Minutes Lifecycle Action"
+          message={workflowRequest.action === "sign_minutes"
+            ? "Record an internal sign-off for these approved minutes. This records a server-confirmed actor and timestamp; it is not a third-party digital signature."
+            : workflowRequest.action === "archive_minutes"
+              ? "Archive these signed minutes as an immutable historical record?"
+              : "Move these minutes to the next authorized review stage? This action requires reviewer permission and database confirmation."}
+          confirmLabel={workflowSaving ? "Saving…" : "Confirm Action"}
+          onConfirm={() => { void confirmMinutesLifecycle(); }}
+          onClose={() => { if (!workflowInFlight.current) setWorkflowRequest(null); }}
         />
       )}
     </>
