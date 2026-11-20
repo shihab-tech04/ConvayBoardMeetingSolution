@@ -3,7 +3,7 @@ import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { buildDecisionRegisterFilters } from "./decisionRegisterView";
-import { buildActionRegisterFilters, isActionClosed, countOverdueActions, todayInLocalTime } from "./actionRegisterView";
+import { buildActionRegisterFilters, isActionClosed, isActionOpen, countOverdueActions, todayInLocalTime } from "./actionRegisterView";
 import { buildAttendanceRegisterFilters } from "./attendanceRegisterView";
 import { buildConflictRegisterFilters } from "./conflictRegisterView";
 import {
@@ -121,7 +121,7 @@ export function ActionRegisterPage() {
 
   const kpis: KpiDef[] = [
     { label: "Total Actions",  value: String(rows.length),                                                         tone: "primary" },
-    { label: "Open",           value: String(rows.filter(r => !isActionClosed(r)).length),    tone: "warning" },
+    { label: "Open",           value: String(rows.filter(r => isActionOpen(r)).length),    tone: "warning" },
     { label: "Completed",      value: String(rows.filter(r => isActionClosed(r)).length),    tone: "success" },
     { label: "Overdue",        value: String(overdue),                                                             tone: "error"   },
   ];
