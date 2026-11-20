@@ -40,8 +40,17 @@ export function isActionClosed(action: Record<string, unknown>): boolean {
     .some(value => typeof value === "string" && ["completed", "closed"].includes(value.trim().toLowerCase()));
 }
 
+/** Cancellation is neither successful completion nor an active overdue obligation. */
+export function isActionCancelled(action: Record<string, unknown>): boolean {
+  return [action.implementation_status, action.action_status, action.approval_status]
+    .some(value => typeof value === "string" && ["cancelled", "canceled"].includes(value.trim().toLowerCase()));
+}
+export function isActionOpen(action: Record<string, unknown>): boolean {
+  return !isActionClosed(action) && !isActionCancelled(action);
+}
+
 export function countOverdueActions(rows: readonly Record<string, unknown>[], today: string): number {
   // ISO date only. An empty/malformed due date is not evidence of an overdue action.
   return rows.filter(row => typeof row.due_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row.due_date) &&
-    row.due_date < today && !isActionClosed(row)).length;
+    row.due_date < today && isActionOpen(row)).length;
 }
