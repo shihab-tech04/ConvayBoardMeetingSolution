@@ -58,3 +58,25 @@ export function validateMinutesRevisionRequest(status: string, instructions: unk
 export function isEditableMinutesStatus(status: string): boolean {
   return status === "Draft" || status === "Revision Requested";
 }
+
+/**
+ * MN-02: explicit submission after editing. The frontend only proposes the
+ * next version; the private SQL trigger must validate the transition, actor,
+ * server-side source and immutable revision history for direct API callers.
+ */
+export function buildMinutesReviewSubmission(status: string, version: string) {
+  if (status !== "Draft" && status !== "Revision Requested") {
+    throw new Error("Only draft or returned minutes can be submitted for secretary review.");
+  }
+  if (!/^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$/.test(version)) {
+    throw new Error("Minutes version is invalid. Refresh the record before submitting.");
+  }
+  const [major, minor] = version.split(".").map(Number);
+  if (status === "Revision Requested" && minor >= 9999) {
+    throw new Error("Minutes version limit reached. Contact the records administrator.");
+  }
+  return {
+    approval_status: "Under Secretary Review",
+    version: status === "Revision Requested" ? `${major}.${minor + 1}` : version,
+  };
+}
