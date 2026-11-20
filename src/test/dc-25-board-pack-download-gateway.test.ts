@@ -40,6 +40,19 @@ describe("DC-25: server-authorized board-pack download gateway", () => {
     expect(() => parseAuthorizedBoardPackManifest({...manifest(),files:[file,file]},"pack-1",NOW)).toThrow();
     expect(() => parseAuthorizedBoardPackManifest({...manifest(),files:[{...file,versionId:""}]},"pack-1",NOW)).toThrow();
   });
+  it("rejects mutable latest/live version aliases before fetching any file", async () => {
+    for (const versionId of ["latest", "LATEST", "live", "LiVe"]) {
+      const g = gateway();
+      g.requestManifest = vi.fn(async () => ({
+        ...manifest(), files: [{ ...manifest().files[0], versionId }],
+      }));
+      await expect(prepareAuthorizedBoardPackDownload("pack-1", g))
+        .rejects.toThrow(/document\/version/);
+      expect(g.loadOriginal).not.toHaveBeenCalled();
+      expect(g.confirmReceipt).not.toHaveBeenCalled();
+    }
+  });
+
   it("creates an archive only after the authoritative receipt is confirmed", async () => {
     const g = gateway();
     const download = await prepareAuthorizedBoardPackDownload("pack-1",g);
