@@ -1,6 +1,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { convayAuth } from "../../services/supabase/convayAuth";
+import { confirmedLocalScreenShare } from "./regularMeetingScreenShareState";
 
 type Sdk = { Room: new (options: Record<string, unknown>) => any; RoomEvent: Record<string, string> };
 declare global { interface Window { LivekitClient?: Sdk } }
@@ -98,6 +99,8 @@ export function LiveMeetingMedia({
   const [refresh, setRefresh] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  // Serialize provider publish/unpublish commands across rapid share toggles.
+  const shareOperations = useRef<Promise<void>>(Promise.resolve());
   const callbacks = useRef({ onPresence, onMicChange, onCamChange, onSharingChange, requestAdmission, onParticipants });
   callbacks.current = { onPresence, onMicChange, onCamChange, onSharingChange, requestAdmission, onParticipants };
 
@@ -160,10 +163,17 @@ export function LiveMeetingMedia({
         nextRoom.on(sdk.RoomEvent.LocalTrackUnpublished, (publication: any) => {
           if (publication.source === "screen_share") callbacks.current.onSharingChange(false);
         });
-        nextRoom.on(sdk.RoomEvent.Reconnecting, () => setStatus("Reconnecting"));
+        nextRoom.on(sdk.RoomEvent.Reconnecting, () => {
+          if (ended) return;
+          setStatus("Reconnecting");
+          callbacks.current.onSharingChange(false);
+        });
         nextRoom.on(sdk.RoomEvent.Reconnected, () => { setStatus("Connected"); render(); });
         nextRoom.on(sdk.RoomEvent.Disconnected, () => {
+          if (ended) return;
           setStatus("Disconnected");
+          // Publishing ends when the provider disconnects, regardless of UI intent.
+          callbacks.current.onSharingChange(false);
           if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom?.localParticipant?.identity); }
         });
         await nextRoom.connect(access.serverUrl, access.participantToken);
@@ -180,6 +190,8 @@ export function LiveMeetingMedia({
     })();
     return () => {
       ended = true;
+      // Stop rendering a presentation immediately on unmount/room switch.
+      if (connected) callbacks.current.onSharingChange(false);
       if (nextRoom) void nextRoom.disconnect();
       if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom.localParticipant?.identity); }
     };
@@ -200,12 +212,27 @@ export function LiveMeetingMedia({
     });
   }, [room, camOn]);
   useEffect(() => {
-    if (!room) return;
-    void room.localParticipant.setScreenShareEnabled(sharing).catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "Screen sharing denied");
-      callbacks.current.onSharingChange(false);
+    if (!room || status !== "Connected") return;
+    let active = true;
+    // The last requested transition wins; old responses must not resurrect
+    // the green "Sharing screen" indicator or republish after disconnect.
+    const operation = shareOperations.current.catch(() => undefined).then(async () => {
+      if (!active) return;
+      try {
+        await room.localParticipant.setScreenShareEnabled(sharing);
+        if (!active) return;
+        const published = confirmedLocalScreenShare(room.localParticipant);
+        callbacks.current.onSharingChange(sharing && published);
+        if (sharing && !published) setError("Screen sharing was not confirmed by the meeting service.");
+      } catch (cause) {
+        if (!active) return;
+        setError(cause instanceof Error ? cause.message : "Screen sharing denied");
+        callbacks.current.onSharingChange(false);
+      }
     });
-  }, [room, sharing]);
+    shareOperations.current = operation;
+    return () => { active = false; };
+  }, [room, status, sharing]);
   useEffect(() => {
     if (!room) return;
     if (initialMicDeviceId) {
