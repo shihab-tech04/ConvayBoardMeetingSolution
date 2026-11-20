@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
@@ -10,11 +11,19 @@ import {
   generateId,
   type ParticipantGroup,
 } from "../../data/boardMeetingData";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { createParticipantGroup, updateParticipantGroup, type ParticipantGroupGateway } from "./participantGroupPersistence";
 import { PARTICIPANT_GROUP_FORM_FIELDS } from "../boardMeetingFormFields";
 
 export function ParticipantGroupsPage() {
   const registry = useParticipantGroupRegistry();
   const govRegistry = useGovernanceRegistry();
+  const pendingCreate = useRef<{ signature: string; id: string; created_at: string } | null>(null);
+  const gateway: ParticipantGroupGateway = {
+    list: async () => (await convayAuth.registry<ParticipantGroup>("bms.partgroups", "list")).records.map(row => row.payload),
+    create: async group => (await registry.add(group)) === true,
+    update: async (id, patch) => (await registry.update(id, patch)) === true,
+  };
 
   // Derive governance body options from live registry
   const govBodyOptions = govRegistry.items.map(g => g.body_name);
@@ -72,31 +81,22 @@ export function ParticipantGroupsPage() {
     kpis,
     entryBtn: "Add Participant Group",
     formFields: dynamicFormFields,
-    onRowCreate(values) {
-      const groupId = generateId("PG", registry.items.map(g => g.group_id));
-      registry.add({
-        id:              groupId,
-        group_id:        groupId,
-        group_name:      String(values.group_name      ?? ""),
-        group_type:      String(values.group_type      ?? ""),
-        governance_body: String(values.governance_body ?? ""),
-        membership_rule: String(values.membership_rule ?? ""),
-        member_count:    "0",
-        quorum_rule:     String(values.quorum_rule     ?? "N/A"),
-        description:     String(values.description     ?? ""),
-        status:          "Active",
-        created_at:      new Date().toISOString(),
-      });
+    awaitCreateSave: true,
+    async onRowCreate(values) {
+      const signature = JSON.stringify(values);
+      if (!pendingCreate.current || pendingCreate.current.signature !== signature) {
+        pendingCreate.current = {
+          signature,
+          id: generateId("PG", registry.items.map(g => g.group_id)),
+          created_at: new Date().toISOString(),
+        };
+      }
+      await createParticipantGroup(values, pendingCreate.current, gateway);
+      pendingCreate.current = null;
+      return true;
     },
-    onRowUpdate(id, values) {
-      registry.update(id, {
-        group_name:      String(values.group_name      ?? ""),
-        group_type:      String(values.group_type      ?? ""),
-        governance_body: String(values.governance_body ?? ""),
-        membership_rule: String(values.membership_rule ?? ""),
-        quorum_rule:     String(values.quorum_rule     ?? ""),
-        description:     String(values.description     ?? ""),
-      });
+    async onRowUpdate(id, values) {
+      return updateParticipantGroup(id, values, gateway);
     },
   };
 
