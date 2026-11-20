@@ -6,7 +6,7 @@ import type { PageCfg, TableRow, StatusTabDef } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
-import { normalizeMeetingSchedule } from "./meetingSchedule";
+import { normalizeMeetingSchedule, validateMeetingSchedule } from "./meetingSchedule";
 import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
 import { DRAFT_DELETION_UNAVAILABLE_REASON, guardMeetingDrawerAction } from "./meetingDeletionReleaseGate";
@@ -340,10 +340,16 @@ export function OnlineReturnRegisterPage() {
   }, []);
 
   const handleMeetingUpdate = useCallback(async (id: string, values: Record<string, unknown>) => {
+    const requestedSchedule = normalizeMeetingSchedule(values);
+    const scheduleErrors = validateMeetingSchedule(requestedSchedule);
+    if (scheduleErrors.length > 0) {
+      // Contextual modal catches this error, retains user input and offers retry.
+      throw new Error(scheduleErrors[0]);
+    }
     const saved = await convayAuth.rescheduleMeeting(id, {
-      meeting_date: String(values.meeting_date ?? ""),
-      start_time: String(values.start_time ?? ""),
-      end_time: String(values.end_time ?? ""),
+      meeting_date: requestedSchedule.meeting_date,
+      start_time: requestedSchedule.start_time,
+      end_time: requestedSchedule.end_time,
       reason: String(values.reschedule_reason ?? ""),
     });
     try {
@@ -948,9 +954,7 @@ export function OnlineReturnRegisterPage() {
       {
         const blockers: string[] = [];
         blockers.push(...validateMeetingIdentity(identity));
-        if (!String(values.meeting_date ?? "").trim())        blockers.push("Meeting date is required");
-        if (!String(values.start_time ?? "").trim() || !String(values.end_time ?? "").trim())
-                                                              blockers.push("Start and end time are required");
+        blockers.push(...validateMeetingSchedule(schedule));
         blockers.push(...leadership.missing.map(role => `${meetingLeadershipLabel(role)} must be selected from active registered users`));
 
         const body = govRegistry.items.find(b => b.id === committee || b.body_id === committee || b.body_name === committee);
@@ -1178,6 +1182,18 @@ export function OnlineReturnRegisterPage() {
       const submittedValues = mergeMeetingUpdateValues(existingMeeting, values);
       const identity = normalizeMeetingIdentity(submittedValues);
       const schedule = normalizeMeetingSchedule(submittedValues);
+      // Preserve unrelated edits to legacy meetings; validate the complete
+      // schedule whenever the submitted edit actually changes a schedule field.
+      const scheduleChanged = (["meeting_date", "start_time", "end_time", "time_zone"] as const)
+        .some(key => Object.prototype.hasOwnProperty.call(values, key)
+          && String(values[key] ?? "").trim() !== String(existingMeeting?.[key] ?? "").trim());
+      if (scheduleChanged) {
+        const scheduleErrors = validateMeetingSchedule(schedule);
+        if (scheduleErrors.length > 0) {
+          toast.error(`Cannot save changes. ${scheduleErrors[0]}`);
+          return false;
+        }
+      }
       const leadership = resolveMeetingLeadership(submittedValues, bmsUserRegistry.items);
       if (leadership.missing.length > 0) {
         toast.error(`Cannot save changes. Select active registered users for ${leadership.missing.map(meetingLeadershipLabel).join(", ")}.`);
