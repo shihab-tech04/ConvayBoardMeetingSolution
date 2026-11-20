@@ -15,6 +15,7 @@ import type { PageCfg, TableRow, KpiDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { unverifiedWorkflowHistoryView } from "./workflowHistoryEvidence";
+import { unverifiedWorkflowDefinitionsView } from "./workflowDefinitionsEvidence";
 import {
   WORKFLOW_DRAWER_COLS,
   APPROVAL_RULE_DRAWER_COLS,
@@ -24,29 +25,11 @@ import {
 
 // ─── Local sample data ────────────────────────────────────────────────────────
 
-const WORKFLOW_TYPES = ["Approval", "Review", "Notification", "Escalation", "Archive"];
-const WORKFLOW_STATUSES = ["Active", "Inactive", "Draft", "Deprecated"];
 const APPROVAL_TYPES = ["Sequential", "Parallel", "Majority Vote", "Any Approver"];
 const RULE_TYPES = ["Content Review", "Signature Requirement", "Formatting Check", "Compliance Validation"];
 
-const workflowRows: TableRow[] = gen(28, i => ({
-  workflow_id:   `WF-${String(1000 + i).padStart(4, "0")}`,
-  workflow_name: [
-    "Meeting Notice Approval", "Agenda Submission Workflow", "Minutes Sign-off Process",
-    "Document Publication Flow", "Resolution Adoption Workflow", "Board Pack Approval",
-    "Attendance Sign-off", "Action Item Escalation", "Quorum Verification Flow",
-    "Member Onboarding Workflow",
-  ][i % 10],
-  workflow_type: WORKFLOW_TYPES[i % 5],
-  committee:     CIRCLES_DATA[i % 8],
-  steps:         String((i % 5) + 2),
-  status:        WORKFLOW_STATUSES[i % 4],
-  created_by:    ["Company Secretary", "System Admin", "Governance Officer"][i % 3],
-  created_at:    `2025-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  updated_at:    `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description:   "Manages the structured approval and review process for governance activities.",
-  escalation:    ["Board Chairman", "MD", "Company Secretary", "None"][i % 4],
-}));
+// AD-01: A verified, versioned workflow-definition registry is not deployed.
+// Never render invented workflows as configured production policy.
 
 const approvalRuleRows: TableRow[] = gen(24, i => ({
   rule_id:    `AR-${String(2000 + i).padStart(4, "0")}`,
@@ -92,16 +75,13 @@ const revisionRuleRows: TableRow[] = gen(20, i => ({
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
 export function WorkflowDefinitionsPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Workflows",  value: String(workflowRows.length),                                        tone: "primary"  },
-    { label: "Active",           value: String(workflowRows.filter(r => r.status === "Active").length),     tone: "success"  },
-    { label: "Draft",            value: String(workflowRows.filter(r => r.status === "Draft").length),      tone: "neutral"  },
-    { label: "Inactive",         value: String(workflowRows.filter(r => r.status === "Inactive").length),   tone: "warning"  },
-  ];
+  const evidence = unverifiedWorkflowDefinitionsView();
+  const kpis: KpiDef[] = evidence.kpis;
 
   const cfg: PageCfg = {
     title: "Workflow Definitions",
-    desc:  "Configure and manage approval and review workflow definitions used across all governance activities.",
+    desc:  evidence.description,
+    dataError: evidence.unavailableReason,
     cols: [
       fc("workflow_id",   "Workflow ID"),
       fc("workflow_name", "Workflow Name"),
@@ -129,7 +109,7 @@ export function WorkflowDefinitionsPage() {
       { id: "view_history", label: "View History",   icon: History,     color: "#6b7280" },
       { id: "archive",    label: "Archive",          icon: Archive,     color: "#ef4444" },
     ],
-    rows:      workflowRows,
+    rows:      evidence.rows,
     kpis,
     entryBtn:  "Create Workflow",
     searchPlaceholder: "Search workflow definitions",
