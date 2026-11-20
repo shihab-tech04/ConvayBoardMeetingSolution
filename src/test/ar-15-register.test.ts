@@ -7,8 +7,8 @@ describe("AR-15 — Attendance Register", () => {
   it("lists meaningful fields, never irrelevant generic meeting filters", () => {
     const filters = buildAttendanceRegisterFilters([row]);
     expect(filters.filter(f => f.type === "select").map(f => f.key)).toEqual(["meeting_id", "attendance_mode", "quorum_eligible", "signed"]);
-    expect(filters.map(f => f.key).not.toContain("meeting_type"));
-    expect(filters.map(f => f.key).not.toContain("committee"));
+    expect(filters.map(f => f.key)).not.toContain("meeting_type");
+    expect(filters.map(f => f.key)).not.toContain("committee");
   });
   it("uses scoped values and a working All reset", () => {
     const key = "meeting_id";
