@@ -44,6 +44,7 @@ import { convayAuth } from "../../services/supabase/convayAuth";
 import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
+import { mayOfferRegularScreenShare } from "./regularMeetingScreenShareState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -565,6 +566,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const canCreateTemporaryAgenda = canManageAgenda && hasGrant("agd_submit");
   const canEditAttendance = hasLeadership && hasGrant("mtg_attendance");
   const canDraftMinutes = hasLeadership && hasGrant("min_create");
+  // This only hides controls from obvious viewers. The token issuer must
+  // enforce the same capability server-side; this is not access control.
+  const canOfferScreenShare = !isOnlineMeeting || mayOfferRegularScreenShare(myRole, hasGrant("mtg_join"));
   // Full system administration does not grant ballot eligibility; real
   // membership, attendance and recusal checks still apply.
 
@@ -685,6 +689,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [phase, setPhase]             = useState<"readiness" | "prejoin" | "meeting">(determineInitialPhase);
   const [myMicOn, setMyMicOn]         = useState(true);
   const [myCamOn, setMyCamOn]         = useState(true);
+  // Request and provider-confirmed state are distinct: no phantom presenter.
+  const [shareRequested, setShareRequested] = useState(false);
   const [isSharing, setIsSharing]     = useState(false);
   const [isRecording, setIsRecording]               = useState(false);
   const [isRecordingPaused, setIsRecordingPaused]   = useState(false);
@@ -1714,8 +1720,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
             {isOnlineMeeting && (
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
-                <LiveMeetingMedia meetingId={meetingId} micOn={myMicOn} camOn={myCamOn} sharing={isSharing}
-                  onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={setIsSharing}
+                <LiveMeetingMedia meetingId={meetingId} micOn={myMicOn} camOn={myCamOn} sharing={shareRequested}
+                  onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={confirmed => {
+                    setIsSharing(confirmed);
+                    if (!confirmed) setShareRequested(false);
+                  }}
                   onPresence={connected => { if (myLink) setAttendance(currentUser.id, connected ? "Present" : "Left"); }} />
               </div>
             )}
@@ -2514,9 +2523,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             <DockButton active={myCamOn} danger={!myCamOn} label={myCamOn  ? "Stop Video"  : "Start Video"}  onClick={() => setMyCamOn(v => !v)}>
               {myCamOn ? <Video size={18} /> : <VideoOff size={18} />}
             </DockButton>
-            <DockButton active={isSharing} label={isSharing ? "Stop Share" : "Share Screen"} onClick={() => { setIsSharing(v => !v); if (!LIVE_MEETINGS_RELEASED && !isSharing) setViewMode("document"); }}>
-              {isSharing ? <MonitorOff size={18} /> : <Monitor size={18} />}
-            </DockButton>
+            {canOfferScreenShare && (
+              <DockButton active={isSharing} label={isSharing ? "Stop Share" : shareRequested ? "Cancel Share" : "Share Screen"} onClick={() => {
+                if (isOnlineMeeting) setShareRequested(requested => !requested);
+                else { setIsSharing(v => !v); if (!LIVE_MEETINGS_RELEASED && !isSharing) setViewMode("document"); }
+              }}>
+                {isSharing ? <MonitorOff size={18} /> : <Monitor size={18} />}
+              </DockButton>
+            )}
             </>}
 
             <div style={{ width: 1, height: 32, background: "#334155", margin: "0 0.25rem" }} />
