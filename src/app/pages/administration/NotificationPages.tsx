@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, KpiDef, ColDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA, NAMES, dg } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA, dg } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
@@ -63,32 +63,12 @@ const msgTemplateRows: TableRow[] = gen(24, i => ({
   created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
 }));
 
-const DELIVERY_STATUSES = ["Delivered", "Sent", "Failed", "Pending", "Bounced", "Skipped"];
-const RECIPIENT_NAMES = [
-  "Mr. Abdul Awal Mintoo", "Mr. Md. Nurul Amin", "Ms. Nasrin Sultana",
-  "Mr. Kamal Hossain", "Mr. Rafiqul Islam", "Ms. Fatema Begum",
-  "Mr. Imran Hossain", "Dr. Aminul Haque",
-];
-
-const deliveryLogRows: TableRow[] = gen(40, i => ({
-  log_id:        `DL-${String(6000 + i).padStart(5, "0")}`,
-  rule_name:     `${TRIGGER_EVENTS[i % 12]} Notification`,
-  template_name: MSG_TEMPLATE_NAMES[i % 12],
-  channel:       CHANNELS[i % 4],
-  recipient:     RECIPIENT_NAMES[i % 8],
-  subject:       `[BMS] ${MSG_TEMPLATE_NAMES[i % 12]} - ${NAMES[i % 10]}`,
-  sent_at:       `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")} ${String(8 + (i % 10)).padStart(2, "0")}:${String((i * 7) % 60).padStart(2, "0")}`,
-  delivered_at:  DELIVERY_STATUSES[i % 6] === "Delivered"
-    ? `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")} ${String(8 + (i % 10)).padStart(2, "0")}:${String((i * 7 + 2) % 60).padStart(2, "0")}`
-    : "—",
-  committee:     CIRCLES_DATA[i % 8],
-  retry_count:   String(DELIVERY_STATUSES[i % 6] === "Failed" ? (i % 3) + 1 : 0),
-  error_message: DELIVERY_STATUSES[i % 6] === "Failed"
-    ? ["Mailbox full", "Invalid address", "Connection timeout"][i % 3]
-    : "—",
-  status:        DELIVERY_STATUSES[i % 6],
-  approval_status: DELIVERY_STATUSES[i % 6],
-}));
+/**
+ * NI-03 — Delivery logs must come from server-authoritative, provider-backed
+ * audit events. The admin page has no verified delivery journal connection yet.
+ * Do not show generated recipients, delivery timestamps, or success metrics.
+ */
+const deliveryLogRows: TableRow[] = [];
 
 // ─── Drawer schemas ───────────────────────────────────────────────────────────
 
@@ -249,21 +229,13 @@ export function MessageTemplatesPage() {
 }
 
 export function DeliveryLogsPage() {
-  const delivered  = deliveryLogRows.filter(r => r.status === "Delivered").length;
-  const failed     = deliveryLogRows.filter(r => r.status === "Failed").length;
-  const pending    = deliveryLogRows.filter(r => r.status === "Pending").length;
-
   const kpis: KpiDef[] = [
-    { label: "Total Sent",   value: String(deliveryLogRows.length),   tone: "primary"  },
-    { label: "Delivered",    value: String(delivered),                tone: "success"  },
-    { label: "Failed",       value: String(failed),                   tone: "error"    },
-    { label: "Pending",      value: String(pending),                  tone: "warning"  },
-    { label: "Delivery Rate", value: `${Math.round((delivered / deliveryLogRows.length) * 100)}%`, tone: "success" },
+    { label: "Delivery evidence", value: "Unverified", tone: "warning" },
   ];
 
   const cfg: PageCfg = {
     title: "Delivery Logs",
-    desc:  "Audit log of all notification deliveries, failures, and retries across all communication channels.",
+    desc:  "Provider-backed delivery logs are not connected. Delivery outcomes and retry records remain unverified; no simulated deliveries are shown.",
     cols: [
       fc("log_id",        "Log ID"),
       fc("rule_name",     "Notification Rule"),
@@ -286,8 +258,8 @@ export function DeliveryLogsPage() {
     drawerTitle:  "Delivery Log Details",
     drawerCols:   DELIVERY_LOG_DRAWER_COLS,
     drawerActions: [
-      { id: "retry",     label: "Retry Delivery",  icon: RefreshCw,   color: "#3b82f6" },
-      { id: "download",  label: "Export Log",      icon: Download,    color: "#6b7280" },
+      { id: "retry",     label: "Retry Delivery",  icon: RefreshCw,   color: "#3b82f6", enabled: false, disabledReason: "No authenticated provider retry operation is configured." },
+      { id: "download",  label: "Export Log",      icon: Download,    color: "#6b7280", enabled: false, disabledReason: "No verified delivery records are available to export." },
     ],
     rows:      deliveryLogRows,
     kpis,
