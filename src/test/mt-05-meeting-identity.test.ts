@@ -28,4 +28,29 @@ describe("MT-05 meeting identity", () => {
       meeting_title: "Board Meeting", meeting_type: "Regular", committee: "",
     }))).toContain("Governance body is required");
   });
+
+  it("rejects unknown or forged meeting types not present in the approved select", () => {
+    for (const type of ["Invented", "Regular,Special", "Regular\\nSpecial", "regular"]) {
+      const identity = normalizeMeetingIdentity({
+        meeting_title: "Board Meeting",
+        meeting_type: type,
+        committee: "Board of Directors",
+      });
+      expect(validateMeetingIdentity(identity)).toContain("Select a valid meeting type");
+    }
+  });
+
+  it("accepts each current approved type after trimming, without redesigning the select", () => {
+    const approved = ["Regular", "Special", "Emergency", "Annual", "Extraordinary"];
+    for (const type of approved) {
+      const identity = normalizeMeetingIdentity({
+        meeting_title: "Board Meeting",
+        meeting_type: "  " + type + "  ",
+        committee: "Board of Directors",
+      });
+      expect(identity.meeting_type).toBe(type);
+      expect(validateMeetingIdentity(identity)).toEqual([]);
+    }
+  });
+
 });
