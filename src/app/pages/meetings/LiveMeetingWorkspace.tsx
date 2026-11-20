@@ -30,7 +30,7 @@ import { MeetingPreJoinPanel, type PreJoinRole } from "../../components/meetings
 import { PreMeetingReadinessPanel } from "../../components/meetings/PreMeetingReadinessPanel";
 import { DocumentWorkspaceRouter } from "../../components/documents/DocumentWorkspaceRouter";
 import { getEditorProvider } from "../../components/documents/editor/DocumentEditorProvider";
-import type { BoardDocument, Decision, Resolution, ActionItem } from "../../data/boardMeetingData";
+import type { BoardDocument, Decision, Resolution, ActionItem, Minutes, LiveMeetingSession } from "../../data/boardMeetingData";
 import { AppModal } from "../../components/modals/AppModal";
 import { EntryForm } from "../../components/forms/EntryForm";
 import { PrimaryButton } from "../../components/buttons/PrimaryButton";
@@ -41,6 +41,7 @@ import { MOTION_FORM_FIELDS, MINUTES_FORM_FIELDS } from "../boardMeetingFormFiel
 import type { EntryFormValue } from "../../components/forms/EntryForm";
 import { getAgendaDescription } from "../../utils/agendaDescription";
 import { convayAuth } from "../../services/supabase/convayAuth";
+import { commitVerifiedMinutesCapture } from "./regularMeetingMinutesCaptureState";
 import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
@@ -691,8 +692,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [isRecordingPaused, setIsRecordingPaused]   = useState(false);
   const [isTranscribing, setIsTranscribing]         = useState(false);
   const [isTranscribingPaused, setIsTranscribingPaused] = useState(false);
-  const [isMinutesCapture, setIsMinutesCapture]     = useState(false);
-  const [isMinutesPaused, setIsMinutesPaused]       = useState(false);
+  // LM-06: only server-confirmed capture may appear active or complete.
+  const confirmedMinutesSession = liveSessions.find(item => item.meeting_id === meetingId);
+  const isMinutesCapture = confirmedMinutesSession?.minutes_capture_status === "active";
+  const minutesCompleted = confirmedMinutesSession?.minutes_capture_status === "completed";
+  const [isMinutesPaused, setIsMinutesPaused] = useState(false); // local note-taking preference only
+  const [minutesCaptureBusy, setMinutesCaptureBusy] = useState(false);
+  const minutesRequestPending = useRef(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<string | null>(null);
   const [isLocked, setIsLocked]       = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1395,33 +1401,74 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     toast(nextPaused ? "Transcription paused" : "Transcription resumed");
   };
 
-  const toggleMinutesCapture = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isMinutesCapture) {
-      setIsMinutesPaused(false);
-      if (sid) updateSession(sid, { minutes_capture_status: "active" } as never);
-      addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Minutes capture started", metadata: { event: "minutes_start", time: now }, created_at: now } as never);
-      toast.success("Minutes capture started");
-    } else {
-      if (sid) updateSession(sid, { minutes_capture_status: "ended" } as never);
-      addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Minutes capture stopped", metadata: { event: "minutes_stop", time: now }, created_at: now } as never);
-      setIsMinutesPaused(false);
-      toast("Minutes capture stopped");
+  const toggleMinutesCapture = async () => {
+    if (!meetingId || minutesRequestPending.current) return;
+    if (!canRecordMeeting || !canDraftMinutes || !hasGrant("mtg_join")) {
+      toast.error("You do not have permission to change minutes capture.");
+      return;
     }
-    setIsMinutesCapture(v => !v);
+    const session = liveSessions.find(item => item.meeting_id === meetingId);
+    if (!session) {
+      toast.error("Start the meeting and reload its live session before capturing minutes.");
+      return;
+    }
+    if (session.minutes_capture_status === "completed") {
+      toast.info("Minutes capture was already completed.");
+      return;
+    }
+    const action = session.minutes_capture_status === "active" ? "complete" : "start";
+    minutesRequestPending.current = true;
+    setMinutesCaptureBusy(true);
+    try {
+      let confirmedSavedMinutes = false;
+      if (action === "complete") {
+        // A client-side note or unanswered save is not evidence of persisted minutes.
+        const persisted = await convayAuth.registry<Minutes>("bms.minutes", "list");
+        confirmedSavedMinutes = persisted.records.some(item =>
+          item.payload.meeting_id === meetingId && !!item.payload.discussion_summary?.trim()
+        );
+      }
+      await commitVerifiedMinutesCapture({
+        meetingId,
+        actorId: currentUser.id,
+        session: {
+          id: session.id,
+          meeting_id: session.meeting_id,
+          session_status: session.session_status,
+          minutes_capture_status: session.minutes_capture_status,
+        },
+        action,
+        confirmedSavedMinutes,
+        at: nowISO(),
+        applyBatch: operations => convayAuth.applyBatch(operations),
+        readSessions: async () => (await convayAuth.registry<LiveMeetingSession>(
+          "bms.liveSessions", "list"
+        )).records.map(item => item.payload),
+      });
+      try { await refreshLiveSessions?.(); }
+      catch { toast.info("Minutes state saved; refresh to display the latest status."); }
+      setIsMinutesPaused(false);
+      toast.success(action === "start" ? "Minutes capture started" : "Minutes capture completed");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Minutes capture was not saved.");
+      void refreshLiveSessions?.()?.catch(() => undefined);
+    } finally {
+      minutesRequestPending.current = false;
+      setMinutesCaptureBusy(false);
+    }
   };
 
+  // Pausing the note-taking interface is local only. The canonical LM-06
+  // states are not_started / active / completed; do not write fake "paused".
   const pauseResumeMinutes = () => {
-    if (!meetingId || !isMinutesCapture) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isMinutesPaused;
-    if (sid) updateSession(sid, { minutes_capture_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Minutes capture paused" : "Minutes capture resumed", metadata: { event: nextPaused ? "minutes_pause" : "minutes_resume", time: now }, created_at: now } as never);
-    setIsMinutesPaused(nextPaused);
-    toast(nextPaused ? "Minutes capture paused" : "Minutes capture resumed");
+    if (!isMinutesCapture || minutesRequestPending.current) return;
+    setIsMinutesPaused(previous => {
+      const paused = !previous;
+      toast.info(paused
+        ? "Local note-taking paused. Server minutes capture remains active."
+        : "Local note-taking resumed.");
+      return paused;
+    });
   };
 
   // ── Temporary agenda creation ─────────────────────────────────────────────
@@ -2549,11 +2596,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 <MessageSquare size={18} />
               </DockButton>
             </span>
-            <DockButton active={isMinutesCapture} label={isMinutesCapture ? "Stop Min" : "Minutes"} onClick={toggleMinutesCapture}>
+            <DockButton active={isMinutesCapture} label={minutesCaptureBusy ? "Saving..." : minutesCompleted ? "Min Done" : isMinutesCapture ? "Finish Min" : "Minutes"} onClick={() => { void toggleMinutesCapture(); }}>
               <FileText size={18} />
             </DockButton>
             {isMinutesCapture && (
-              <DockButton active={!isMinutesPaused} label={isMinutesPaused ? "Resume" : "Pause Min"} onClick={pauseResumeMinutes}>
+              <DockButton active={!isMinutesPaused} label={isMinutesPaused ? "Resume Notes" : "Pause Notes"} onClick={pauseResumeMinutes}>
                 {isMinutesPaused ? <Play size={18} /> : <Pause size={18} />}
               </DockButton>
             )}
