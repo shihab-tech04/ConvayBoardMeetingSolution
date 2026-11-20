@@ -7,6 +7,7 @@ import type { SystemRole } from "../data/mockData";
 import { convayAuth } from "../services/supabase/convayAuth";
 import { useAccessSnapshot, reloadAccessSnapshot } from "../services/supabase/convayAccess";
 import { requireRoleMutationReadback, requireRoleDeletionReadback } from "./accessMutationReadback";
+import { requireRoleUnassigned } from "./roleDeletionImpact";
 
 export const ROLE_STORAGE_KEY = "nbr.roleRegistry.customRoles";
 export const ROLE_EVENT = "nbr:roles-updated";
@@ -48,6 +49,10 @@ export function useRoleRegistry() {
     return role;
   }, []);
   const deleteRole = useCallback(async (id: string): Promise<void> => {
+    // Re-read the authoritative server snapshot at the point of deletion.
+    // The Edge function and SQL FK RESTRICT must independently enforce it.
+    const before = await reloadAccessSnapshot();
+    requireRoleUnassigned(before, id);
     const result = await convayAuth.access<unknown>("role_delete", { id });
     const verified = await reloadAccessSnapshot();
     requireRoleDeletionReadback(result, verified, id);
