@@ -12,7 +12,7 @@ export interface RecordedQuorumEvidence {
   created_at?: string;
 }
 
-function normalize(value: unknown): RecordedQuorumStatus {
+export function normalizeRecordedQuorum(value: unknown): RecordedQuorumStatus {
   if (typeof value !== "string") return "Unverified";
   switch (value.trim().toLowerCase()) {
     case "yes":
@@ -38,11 +38,11 @@ export function latestRecordedQuorumStatus(
   if (!id) return "Unverified";
   const related = events.filter(event => event.meeting_id === id);
   if (related.length === 0) return "Unverified";
-  if (related.length === 1) return normalize(related[0].quorum_met);
+  if (related.length === 1) return normalizeRecordedQuorum(related[0].quorum_met);
 
   // Multiple records require enough chronology to establish the last recorded
   // quorum statement, otherwise a stale "Met" event would inflate the KPI.
-  const timed = related.map(event => ({ at: eventTime(event), status: normalize(event.quorum_met) }));
+  const timed = related.map(event => ({ at: eventTime(event), status: normalizeRecordedQuorum(event.quorum_met) }));
   if (timed.some(event => event.at === null)) return "Unverified";
   const latestTime = Math.max(...timed.map(event => event.at as number));
   const latest = timed.filter(event => event.at === latestTime).map(event => event.status);
