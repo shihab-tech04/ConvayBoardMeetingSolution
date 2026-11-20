@@ -52,6 +52,9 @@ begin
     'entity_key','bms.meetings','action','create','payload',jsonb_build_object(
       'id',v_mid,'meeting_id',v_mid,'meeting_title','Synthetic board meeting',
       'meeting_date','2026-11-19','approval_status','Completed',
+      'committee','Board of Directors','meeting_type','Annual',
+      'mode','Hybrid','venue','Board Room','time_zone','Asia/Dhaka',
+      'confidentiality','Internal',
       'organizer_user_id',v_actor::text,'secretary_user_id',v_actor::text
     )
   )));
@@ -65,9 +68,37 @@ begin
   ))) <> 1 then raise exception 'MN-01 authorized create was not committed'; end if;
   if not exists (select 1 from public.convay_entity_records
      where entity_key='bms.minutes' and record_id=v_mins
-       and payload->>'meeting_id'=v_mid and created_by=v_actor) then
+       and payload->>'meeting_id'=v_mid and created_by=v_actor
+       and payload->'meeting_context'->>'committee'='Board of Directors'
+       and payload->'meeting_context'->>'meeting_type'='Annual'
+       and payload->'meeting_context'->>'venue'='Board Room'
+       and payload->'meeting_context'->>'time_zone'='Asia/Dhaka') then
     raise exception 'MN-01 canonical minutes readback failed';
   end if;
+
+  -- MN-02: direct RPC clients cannot forge source meeting context on
+  -- creation or mutate the server-derived snapshot after creation.
+  v_denied_write := false;
+  v_invalid_id := 'MN02-FORGED-'||replace(gen_random_uuid()::text,'-','');
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.minutes','action','create','payload',
+      v_payload || jsonb_build_object('id',v_invalid_id,'minutes_id',v_invalid_id,
+        'meeting_context',jsonb_build_object('committee','Other organization'))
+    )));
+  exception when sqlstate '42501' then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Forged source meeting context was accepted'; end if;
+
+  v_denied_write := false;
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.minutes','record_id',v_mins,'action','update',
+      'payload',jsonb_build_object('meeting_context',jsonb_build_object('venue','Impersonated venue'))
+    )));
+  exception when sqlstate '42501' then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Stored source meeting context was modified'; end if;
 
   -- A minute-backed meeting cannot replace its source title after creation.
   v_denied_write := false;
