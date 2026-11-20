@@ -4,7 +4,7 @@
  * Owner field uses canonical BmsUser selector; all other metadata optional under "More Details".
  */
 
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import {
   FilePlus, UploadCloud, LayoutTemplate,
@@ -34,11 +34,15 @@ import {
 import { useBmsUserRegistry } from "../../data/bmsUsers";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
+import { persistUploadedDocument, type DocumentUploadCheckpoint } from "./documentUploadPersistence";
 import { useSearchParams } from "react-router";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type Source = "upload" | "blank" | "template";
+
+/** The hosted private convay-documents bucket currently permits 15 MiB per object. */
+const MAX_ORIGINAL_UPLOAD_MB = 15;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -176,6 +180,13 @@ export function DocumentComposerModal({
   const [files,            setFiles]            = useState<File[]>([]);
   const [form,             setForm]             = useState<ComposerForm>(makeInitialForm);
   const [busy,             setBusy]             = useState(false);
+  const uploadBusy = useRef(false);
+  const pendingUpload = useRef<{
+    fingerprint: string;
+    file: File;
+    versionId: string;
+    stage: DocumentUploadCheckpoint;
+  } | null>(null);
   const [moreOpen,         setMoreOpen]         = useState(false);
   const [tmplContextOpen,  setTmplContextOpen]  = useState(false);
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
@@ -187,6 +198,8 @@ export function DocumentComposerModal({
       setSource(initialSource);
       setFiles([]);
       setBusy(false);
+      uploadBusy.current = false;
+      pendingUpload.current = null;
       setMoreOpen(false);
       setTmplContextOpen(false);
       setShowCloseConfirm(false);
@@ -243,6 +256,8 @@ export function DocumentComposerModal({
     setForm(makeInitialForm());
     setSource(initialSource);
     setBusy(false);
+    uploadBusy.current = false;
+    pendingUpload.current = null;
     setMoreOpen(false);
     setTmplContextOpen(false);
     setShowCloseConfirm(false);
@@ -250,7 +265,8 @@ export function DocumentComposerModal({
   }
 
   function tryClose() {
-    if (isDirty()) {
+    if (busy || uploadBusy.current) return;
+    if (isDirty() || pendingUpload.current?.stage.metadataSaved) {
       setShowCloseConfirm(true);
     } else {
       resetAndClose();
@@ -336,70 +352,88 @@ export function DocumentComposerModal({
   // ── Submit: upload ────────────────────────────────────────────────────────────
 
   const handleSubmitUpload = useCallback(async () => {
+    if (uploadBusy.current) return;
     if (!files.length)         { toast.error("Please select a file to upload."); return; }
     if (!form.doc_name.trim()) { toast.error("Document name is required."); return; }
     if (!form.doc_type)        { toast.error("Document type is required."); return; }
+    const file = files[0];
+    if (file.size > MAX_ORIGINAL_UPLOAD_MB * 1024 * 1024) {
+      toast.error(`The private document store permits files up to ${MAX_ORIGINAL_UPLOAD_MB} MiB.`);
+      return;
+    }
+    uploadBusy.current = true;
     setBusy(true);
     try {
-      const file   = files[0];
-      const now    = new Date().toISOString();
-      const docId  = generateId("DOC", registry.items.map(d => d.doc_id));
-      const ext    = file.name.split(".").pop()?.toUpperCase() ?? "";
+      const fingerprint = JSON.stringify(form);
+      let pending = pendingUpload.current;
+      if (pending && (pending.fingerprint !== fingerprint || pending.file !== file)) {
+        if (pending.stage.metadataSaved) {
+          throw new Error(`Draft ${pending.stage.documentId} already exists. Retry the original selection or close and review the draft.`);
+        }
+        pending = null;
+      }
+      if (!pending) {
+        const docId = generateId("DOC", registry.items.map(d => d.doc_id));
+        pending = {
+          fingerprint, file,
+          versionId: `DV-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          stage: {documentId: docId, metadataSaved: false, originalSaved: false, versionSaved: false},
+        };
+        pendingUpload.current = pending;
+      }
+      const activeUpload = pending;
+      const docId = activeUpload.stage.documentId;
+      const now = new Date().toISOString();
+      const ext = file.name.split(".").pop()?.toUpperCase() ?? "";
       const meetId = form.related_meeting.split(" — ")[0];
-      const owner  = resolvedOwnerName();
-      // 1. Store file first — if this fails, nothing else is created
-      await documentContentStore.putOriginalFile(docId, file);
-      // 2. Metadata
-      registry.add({
-        id: docId, doc_id: docId, doc_number: docId,
-        doc_name:                 form.doc_name.trim(),
-        doc_type:                 form.doc_type,
-        related_meeting:          meetId,
-        related_agenda:           form.related_agenda,
-        owner,
-        version:                  "1.0",
-        confidentiality:          form.confidentiality || "Internal",
-        effective_date:           form.effective_date,
-        expiry_date:              form.expiry_date,
-        acknowledgement_required: form.acknowledgement_required ? "Yes" : "No",
-        approval_status:          "Draft",
-        created_at:               now,
-        file_name:                file.name,
-        file_format:              ext,
-        mime_type:                file.type,
-        file_size:                file.size,
-        content_type:             "uploaded",
-        tags:                     form.tags,
+      const owner = resolvedOwnerName();
+      const confirmedId = await persistUploadedDocument(activeUpload.stage, {
+        // An existing bms.documents row is required by private Storage INSERT RLS.
+        createMetadata: () => registry.add({
+          id: docId, doc_id: docId, doc_number: docId,
+          doc_name: form.doc_name.trim(), doc_type: form.doc_type,
+          related_meeting: meetId, related_agenda: form.related_agenda,
+          owner, version: "1.0", confidentiality: form.confidentiality || "Internal",
+          effective_date: form.effective_date, expiry_date: form.expiry_date,
+          acknowledgement_required: form.acknowledgement_required ? "Yes" : "No",
+          approval_status: "Draft", created_at: now,
+          file_name: file.name, file_format: ext, mime_type: file.type,
+          file_size: file.size, content_type: "uploaded", tags: form.tags,
+        }),
+        saveOriginal: () => documentContentStore.putOriginalFile(docId, file),
+        createVersion: () => versionRegistry.add({
+          id: activeUpload.versionId, version_id: activeUpload.versionId,
+          document_id: docId, document_name: form.doc_name.trim(),
+          version_number: "1.0", change_summary: "Initial upload",
+          created_by: owner, created_at: now, approval_status: "Draft",
+          original_file_ref: file.name, file_size: file.size,
+          snapshot_type: "manual", is_named: true,
+        }),
       });
-      // 3. Version
-      const vId = `DV-${Date.now()}`;
-      versionRegistry.add({
-        id: vId, version_id: vId, document_id: docId,
-        document_name: form.doc_name.trim(), version_number: "1.0",
-        change_summary: "Initial upload", created_by: owner,
-        created_at: now, approval_status: "Draft",
-        original_file_ref: file.name, file_size: file.size,
-        snapshot_type: "manual", is_named: true,
-      });
-      // 4. Audit
-      const aid = newAuditId();
-      auditRegistry.add({
-        id: aid, event_id: aid,
-        entity_type: "Document", entity_id: docId,
-        action: "Document uploaded", actor: owner, actor_role: "User",
-        timestamp: now, ip_address: "",
-        details: `${file.name} (${formatBytes(file.size)})`,
-        approval_status: "Logged",
-      });
+      // SQL writes are automatically tracked by the authoritative entity_changes
+      // trigger. The bms.audit registry is read-only; never fabricate an audit
+      // event with a fire-and-forget client insertion.
+      pendingUpload.current = null;
       toast.success(`"${form.doc_name.trim()}" uploaded.`);
-      // 5. Notify caller (caller handles agenda-document link via onCreated)
-      onCreated?.(docId);
-      setSearchParams(p => { const n = new URLSearchParams(p); n.set("view", docId); return n; });
+      try {
+        await onCreated?.(confirmedId);
+      } catch {
+        toast.error(`Document ${confirmedId} was saved, but its agenda link was not confirmed. Retry linking from the document details.`);
+      }
+      setSearchParams(p => { const n = new URLSearchParams(p); n.set("view", confirmedId); return n; });
       resetAndClose();
-    } catch { toast.error("Upload failed. Please try again."); }
-    finally { setBusy(false); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload failed. Please try again.";
+      const partial = pendingUpload.current;
+      toast.error(partial?.stage.metadataSaved
+        ? `${message} Draft ${partial.stage.documentId} remains saved. Retry this same upload without changing its fields.`
+        : message);
+    } finally {
+      uploadBusy.current = false;
+      setBusy(false);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files, form, registry, versionRegistry, auditRegistry, onCreated, setSearchParams]);
+  }, [files, form, registry, versionRegistry, onCreated, setSearchParams]);
 
   // ── Submit: template ──────────────────────────────────────────────────────────
 
@@ -587,9 +621,9 @@ export function DocumentComposerModal({
                 }
               }}
               maxFiles={1}
-              maxSizeMB={50}
+              maxSizeMB={MAX_ORIGINAL_UPLOAD_MB}
               accept={[".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".rtf", ".csv", ".tsv", ".txt"]}
-              helper="PDF · DOCX · DOC · XLSX · XLS · XLSM · PPTX · PPT · ODT · ODS · ODP · RTF · CSV · TSV · TXT — up to 50 MB"
+              helper="PDF · DOCX · DOC · XLSX · XLS · XLSM · PPTX · PPT · ODT · ODS · ODP · RTF · CSV · TSV · TXT — up to 15 MiB"
             />
             {selectedFile && (
               <div className="composer-file-info">
@@ -779,17 +813,19 @@ export function DocumentComposerModal({
               boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
             }}>
               <p style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 8px" }}>
-                Discard changes?
+                {pendingUpload.current?.stage.metadataSaved ? "Leave incomplete draft?" : "Discard changes?"}
               </p>
               <p style={{ fontSize: "0.83rem", color: "var(--color-text-secondary)", margin: "0 0 20px", lineHeight: 1.5 }}>
-                You have unsaved information in this form. Closing now will discard it.
+                {pendingUpload.current?.stage.metadataSaved
+                  ? `Document ${pendingUpload.current.stage.documentId} is saved as an incomplete draft. Closing will leave it on the server. Retry this upload to finish.`
+                  : "You have unsaved information in this form. Closing now will discard it."}
               </p>
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <Button variant="ghost" size="sm" onClick={() => setShowCloseConfirm(false)}>
                   Continue Editing
                 </Button>
                 <Button variant="destructive-subtle" size="sm" onClick={resetAndClose}>
-                  Discard
+                  {pendingUpload.current?.stage.metadataSaved ? "Close (Keep Draft)" : "Discard"}
                 </Button>
               </div>
             </div>
