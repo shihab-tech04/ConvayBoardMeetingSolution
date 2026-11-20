@@ -119,8 +119,9 @@ export function BoardPacksPage() {
         enabled: false, disabledReason: "Archiving requires a server-confirmed lifecycle transition and audit record." },
     ],
     rows,
-    dataLoading: Boolean(reg.loading || meetings.loading),
-    dataError: reg.error || meetings.error,
+    // Read-only pack listing must not depend on separate meeting permissions.
+    dataLoading: Boolean(reg.loading),
+    dataError: reg.error,
     onDataRetry: async () => { await Promise.all([reg.refresh?.(), meetings.refresh?.()]); },
     kpis,
     formFields: BOARD_PACK_FORM_FIELDS,
