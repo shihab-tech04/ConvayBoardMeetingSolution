@@ -774,7 +774,7 @@ export function MeetingRecordPage() {
               </div>
             </div>
           )}
-          {editMinutesId === m.id ? (
+          {editMinutesId === m.id && canEditMinutesContent(m.approval_status, canEditMinutes) ? (
             <div>
               <textarea
                 defaultValue={m.discussion_summary ?? m.quorum_statement ?? ""}
