@@ -13,34 +13,14 @@ import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, KpiDef, ColDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA, dg } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
+import { useNotificationRuleRegistry, type NotificationRule } from "../../data/boardMeetingData";
+import { hasAccess, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import type { FormField } from "../../components/forms/EntryForm";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
 
-const TRIGGER_EVENTS = [
-  "Meeting Scheduled", "Meeting Reminder (24h)", "Meeting Reminder (1h)",
-  "RSVP Deadline Approaching", "Agenda Published", "Board Pack Released",
-  "Minutes Available", "Action Item Due", "Quorum Not Met",
-  "Approval Required", "Resolution Passed", "Meeting Cancelled",
-];
-
 const CHANNELS = ["Email", "SMS", "System Notification", "Portal Alert"];
-const AUDIENCES = ["All Participants", "Quorum Members", "Board Directors", "Company Secretary", "Meeting Organizer"];
 const RULE_STATUSES = ["Active", "Inactive", "Draft"];
-
-const notifRuleRows: TableRow[] = gen(22, i => ({
-  rule_id:       `NR-${String(1000 + i).padStart(4, "0")}`,
-  rule_name:     `${TRIGGER_EVENTS[i % 12]} Notification`,
-  trigger_event: TRIGGER_EVENTS[i % 12],
-  channel:       CHANNELS[i % 4],
-  audience:      AUDIENCES[i % 5],
-  committee:     CIRCLES_DATA[i % 8],
-  delay_minutes: String([0, 5, 15, 30, 60, 1440][i % 6]),
-  template:      `${CHANNELS[i % 4]} Template ${i % 5 + 1}`,
-  status:        RULE_STATUSES[i % 3],
-  created_by:    ["Company Secretary", "System Admin"][i % 2],
-  created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description:   `Sends ${CHANNELS[i % 4].toLowerCase()} when ${TRIGGER_EVENTS[i % 12].toLowerCase()}.`,
-}));
 
 const MSG_TEMPLATE_NAMES = [
   "Meeting Invitation", "Meeting Reminder", "RSVP Request",
@@ -136,17 +116,72 @@ const DELIVERY_LOG_DRAWER_COLS: ColDef[] = [
 
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
-export function NotificationRulesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Rules",  value: String(notifRuleRows.length),                                              tone: "primary"  },
-    { label: "Active",       value: String(notifRuleRows.filter(r => r.status === "Active").length),           tone: "success"  },
-    { label: "Draft",        value: String(notifRuleRows.filter(r => r.status === "Draft").length),            tone: "neutral"  },
-    { label: "Inactive",     value: String(notifRuleRows.filter(r => r.status === "Inactive").length),         tone: "warning"  },
-  ];
+/**
+ * NI-01 registry integration. The existing bms.notifyrules generic registry has
+ * an admin_notifications SQL permission mapping; no new shared RLS/table is made
+ * by this page. Only Draft rules can be created until server-confirmed delivery
+ * activation and event dispatch are implemented. No fake delivery claims.
+ */
+const RULE_FORM_FIELDS: FormField[] = [
+  { key: "rule_name", label: "Rule Name", type: "text", required: true },
+  { key: "trigger_event", label: "Trigger Event", type: "text", required: true },
+  { key: "channels", label: "Channel", type: "text", required: true },
+  { key: "recipients", label: "Audience", type: "text", required: true },
+  { key: "timing", label: "Delay / Timing", type: "text", required: true },
+  { key: "template", label: "Template", type: "text", required: true },
+  { key: "entity_type", label: "Event Entity Type", type: "text", required: true },
+];
 
+const RULE_FIELDS = [
+  "rule_name", "trigger_event", "channels", "recipients", "timing", "template", "entity_type",
+] as const;
+type RuleValues = Pick<NotificationRule, (typeof RULE_FIELDS)[number]>;
+
+function validateRuleValues(input: Record<string, unknown>): RuleValues {
+  const result = {} as RuleValues;
+  for (const key of RULE_FIELDS) {
+    const value = input[key];
+    if (typeof value !== "string" || !value.trim() || value.trim().length > 180) {
+      throw new Error("Enter a valid " + key.replace(/_/g, " ") + " (maximum 180 characters).");
+    }
+    result[key] = value.trim();
+  }
+  return result;
+}
+
+async function confirmNotificationRule(
+  registry: ReturnType<typeof useNotificationRuleRegistry>,
+  id: string,
+  values: RuleValues,
+): Promise<boolean> {
+  // A transport ACK alone must not be presented as a verified saved rule.
+  if (!registry.refresh) return false;
+  await registry.refresh();
+  const authoritative = registry.getById(id);
+  return Boolean(authoritative && RULE_FIELDS.every(field => authoritative[field] === values[field]));
+}
+
+export function NotificationRulesPage() {
+  const registry = useNotificationRuleRegistry();
+  const access = useAccessSnapshot();
+  const canManage = access.loaded && hasAccess("admin_notifications", access);
+  const rows: TableRow[] = registry.items.map(rule => ({
+    ...rule,
+    channel: rule.channels,
+    audience: rule.recipients,
+    delay_minutes: rule.timing,
+    committee: "",
+  }));
+  const kpis: KpiDef[] = [
+    { label: "Total Rules", value: String(rows.length), tone: "primary" },
+    { label: "Active", value: String(rows.filter(row => row.status === "Active").length), tone: "success" },
+    { label: "Draft", value: String(rows.filter(row => row.status === "Draft").length), tone: "neutral" },
+    { label: "Inactive", value: String(rows.filter(row => row.status === "Inactive").length), tone: "warning" },
+  ];
+  const unavailable = "Delivery activation needs a verified event transport, policy and provider acknowledgement.";
   const cfg: PageCfg = {
     title: "Notification Rules",
-    desc:  "Configure automated notification rules that trigger communications based on meeting and governance events.",
+    desc: "Review server-backed notification rules. Draft rules are persisted in Convay; activation and actual message delivery remain unverified.",
     cols: [
       fc("rule_id",       "Rule ID"),
       fc("rule_name",     "Rule Name"),
@@ -157,28 +192,60 @@ export function NotificationRulesPage() {
       BADGE("status",     "Status"),
     ],
     mobileCardMapping: {
-      primary:    "rule_name",
+      primary: "rule_name",
       identifier: "rule_id",
-      meta:       ["trigger_event", "channel", "audience"],
-      status:     "status",
+      meta: ["trigger_event", "channel", "audience"],
+      status: "status",
     },
-    filters:      BASE_FILTERS,
-    actions:      ROW_VIEW,
-    drawerTitle:  "Notification Rule Details",
-    drawerCols:   NOTIF_RULE_DRAWER_COLS,
-    drawerActions: [
-      { id: "edit",       label: "Edit Rule",    icon: Pencil,      color: "#3b82f6" },
-      { id: "activate",   label: "Activate",     icon: CheckCircle, color: "#22c55e" },
-      { id: "deactivate", label: "Deactivate",   icon: Pause,       color: "#f59e0b" },
-      { id: "duplicate",  label: "Duplicate",    icon: Copy,        color: "#8b5cf6" },
-      { id: "archive",    label: "Archive",      icon: Archive,     color: "#ef4444" },
-    ],
-    rows:      notifRuleRows,
+    filters: BASE_FILTERS,
+    actions: ROW_VIEW,
+    drawerTitle: "Notification Rule Details",
+    drawerCols: NOTIF_RULE_DRAWER_COLS,
+    drawerActionsResolver(row) {
+      const editAllowed = canManage && row.status !== "Active";
+      return [
+        { id: "edit", label: "Edit Rule", icon: Pencil, color: "#3b82f6",
+          enabled: editAllowed, disabledReason: editAllowed ? undefined :
+            "You need admin_notifications permission, and active rules must first be safely deactivated." },
+        { id: "activate", label: "Activate", icon: CheckCircle, color: "#22c55e",
+          enabled: false, disabledReason: unavailable },
+        { id: "deactivate", label: "Deactivate", icon: Pause, color: "#f59e0b",
+          enabled: false, disabledReason: unavailable },
+        { id: "duplicate", label: "Duplicate", icon: Copy, color: "#8b5cf6",
+          enabled: canManage, disabledReason: "You need admin_notifications permission." },
+        { id: "archive", label: "Archive", icon: Archive, color: "#ef4444",
+          enabled: false, disabledReason: "Archiving requires approved server-side rule lifecycle and audit policy." },
+      ];
+    },
+    rows,
+    dataLoading: registry.loading,
+    dataError: registry.error,
+    onDataRetry: registry.refresh,
     kpis,
-    entryBtn:  "Create Notification Rule",
+    entryBtn: canManage ? "Create Notification Rule" : undefined,
+    formFields: RULE_FORM_FIELDS,
+    awaitCreateSave: true,
+    async onRowCreate(values) {
+      if (!canManage) return false;
+      const normalized = validateRuleValues(values);
+      const id = crypto.randomUUID();
+      const created: NotificationRule = {
+        id, rule_id: "NR-" + id.slice(0, 8).toUpperCase(),
+        ...normalized, status: "Draft", created_at: "",
+      };
+      const saved = await registry.add(created);
+      return saved && await confirmNotificationRule(registry, id, normalized);
+    },
+    async onRowUpdate(id, values) {
+      if (!canManage) return false;
+      const current = registry.getById(id);
+      if (!current || current.status === "Active") return false;
+      const normalized = validateRuleValues(values);
+      const saved = await registry.update(id, normalized);
+      return saved && await confirmNotificationRule(registry, id, normalized);
+    },
     searchPlaceholder: "Search notification rules",
   };
-
   return <GenPage cfg={cfg} />;
 }
 
