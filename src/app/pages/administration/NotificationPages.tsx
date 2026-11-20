@@ -11,37 +11,15 @@ import {
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, KpiDef, ColDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA, dg } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS, dg } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useNotificationRuleRegistry, type NotificationRule } from "../../data/boardMeetingData";
 import { hasAccess, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import type { FormField } from "../../components/forms/EntryForm";
+import { toast } from "sonner";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
 
-const CHANNELS = ["Email", "SMS", "System Notification", "Portal Alert"];
-const RULE_STATUSES = ["Active", "Inactive", "Draft"];
-
-const MSG_TEMPLATE_NAMES = [
-  "Meeting Invitation", "Meeting Reminder", "RSVP Request",
-  "Agenda Available", "Board Pack Ready", "Minutes Published",
-  "Action Item Alert", "Approval Request", "Quorum Warning",
-  "Meeting Cancelled", "Resolution Passed", "Deadline Alert",
-];
-
-const msgTemplateRows: TableRow[] = gen(24, i => ({
-  template_id:   `MT-${String(5000 + i).padStart(4, "0")}`,
-  template_name: MSG_TEMPLATE_NAMES[i % 12],
-  channel:       CHANNELS[i % 4],
-  subject:       `[BMS] ${MSG_TEMPLATE_NAMES[i % 12]} - {Meeting Title}`,
-  language:      ["English", "Bengali", "Both"][i % 3],
-  committee:     CIRCLES_DATA[i % 8],
-  version:       `v${(i % 3) + 1}.0`,
-  variables:     ["{Name}", "{Date}", "{Venue}", "{Link}"].slice(0, (i % 4) + 1).join(", "),
-  status:        RULE_STATUSES[i % 3],
-  created_by:    ["Company Secretary", "System Admin"][i % 2],
-  created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-}));
 
 /**
  * NI-03 — Delivery logs must come from server-authoritative, provider-backed
@@ -249,17 +227,17 @@ export function NotificationRulesPage() {
   return <GenPage cfg={cfg} />;
 }
 
+/**
+ * NI-02: communication-template admin records require a distinct authenticated,
+ * permission-scoped server registry. The existing bms.templates registry owns
+ * MEETING templates; it must never be treated as notification message content.
+ * Preserve the approved UI but do not show fabricated template rows or counts.
+ */
 export function MessageTemplatesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Templates",  value: String(msgTemplateRows.length),                                           tone: "primary"  },
-    { label: "Active",           value: String(msgTemplateRows.filter(r => r.status === "Active").length),        tone: "success"  },
-    { label: "Email",            value: String(msgTemplateRows.filter(r => r.channel === "Email").length),        tone: "neutral"  },
-    { label: "Notification",     value: String(msgTemplateRows.filter(r => r.channel === "System Notification").length), tone: "primary" },
-  ];
-
+  const unavailable = "Message-template storage, approval policy and source-backed preview are not connected.";
   const cfg: PageCfg = {
     title: "Message Templates",
-    desc:  "Manage message content templates for email, SMS, and system notifications sent throughout the governance lifecycle.",
+    desc: "Server-backed communication message templates are not connected yet. Template content, versions and provider eligibility are unverified; no generated templates are displayed.",
     cols: [
       fc("template_id",   "Template ID"),
       fc("template_name", "Template Name"),
@@ -270,28 +248,35 @@ export function MessageTemplatesPage() {
       BADGE("status",     "Status"),
     ],
     mobileCardMapping: {
-      primary:    "template_name",
+      primary: "template_name",
       identifier: "template_id",
-      meta:       ["channel", "language", "version"],
-      status:     "status",
+      meta: ["channel", "language", "version"],
+      status: "status",
     },
-    filters:      BASE_FILTERS,
-    actions:      ROW_VIEW,
-    drawerTitle:  "Message Template Details",
-    drawerCols:   MSG_TEMPLATE_DRAWER_COLS,
+    filters: BASE_FILTERS,
+    actions: ROW_VIEW,
+    drawerTitle: "Message Template Details",
+    drawerCols: MSG_TEMPLATE_DRAWER_COLS,
     drawerActions: [
-      { id: "edit",      label: "Edit Template",  icon: Pencil,      color: "#3b82f6" },
-      { id: "preview",   label: "Preview",        icon: MessageSquare, color: "#8b5cf6" },
-      { id: "activate",  label: "Activate",       icon: CheckCircle, color: "#22c55e" },
-      { id: "duplicate", label: "Duplicate",      icon: Copy,        color: "#6b7280" },
-      { id: "archive",   label: "Archive",        icon: Archive,     color: "#ef4444" },
+      { id: "edit", label: "Edit Template", icon: Pencil, color: "#3b82f6",
+        enabled: false, disabledReason: unavailable },
+      { id: "preview", label: "Preview", icon: MessageSquare, color: "#8b5cf6",
+        enabled: false, disabledReason: "There is no authenticated saved message content to preview." },
+      { id: "activate", label: "Activate", icon: CheckCircle, color: "#22c55e",
+        enabled: false, disabledReason: unavailable },
+      { id: "duplicate", label: "Duplicate", icon: Copy, color: "#6b7280",
+        enabled: false, disabledReason: unavailable },
+      { id: "archive", label: "Archive", icon: Archive, color: "#ef4444",
+        enabled: false, disabledReason: unavailable },
     ],
-    rows:      msgTemplateRows,
-    kpis,
-    entryBtn:  "Create Message Template",
+    rows: [],
+    kpis: [{ label: "Template evidence", value: "Unverified", tone: "warning" }],
+    entryBtn: "Create Message Template",
+    onEntryBtnClick: () => {
+      toast.info("Message templates cannot be saved until the authenticated template registry is available.");
+    },
     searchPlaceholder: "Search message templates",
   };
-
   return <GenPage cfg={cfg} />;
 }
 
