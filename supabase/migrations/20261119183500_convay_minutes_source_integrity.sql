@@ -18,6 +18,7 @@ declare
   v_new_status text;
   v_next_version text;
   v_history jsonb;
+  v_lifecycle_history jsonb;
   v_source_scope text;
   v_actor_scope text;
   v_is_leader boolean := false;
@@ -27,7 +28,8 @@ declare
   v_safe_workflow_keys text[] := array[
     'approval_status', 'status', 'workflow_status', 'approval_history',
     'approved_by', 'approved_at', 'signed_by', 'signed_at',
-    'archived_by', 'archived_at', 'revision_instructions', 'revision_history', 'updated_at'
+    'archived_by', 'archived_at', 'revision_instructions', 'revision_history',
+    'minutes_lifecycle_history', 'updated_at'
   ];
 begin
   if tg_op = 'DELETE' then
@@ -196,6 +198,11 @@ begin
     if v_new_status <> 'draft' then
       raise exception 'New minutes must begin as Draft' using errcode='23514';
     end if;
+    if (new.payload ?| array['approved_by','approved_at','signed_by','signed_at',
+          'archived_by','archived_at','minutes_lifecycle_history'])
+       then raise exception 'New minutes may not claim approval or signing'
+         using errcode='42501';
+    end if;
     if new.payload->>'version' is distinct from '1.0'
        or (new.payload ? 'revision_history'
            and new.payload->'revision_history' is distinct from '[]'::jsonb) then
@@ -225,6 +232,19 @@ begin
       using errcode='42501';
   end if;
   v_old_status := lower(btrim(coalesce(old.payload->>'approval_status','')));
+
+  -- Ignore no forged signer/approver/archiver identity or backdated timestamp.
+  -- The triggering actor and database clock provide the only accepted proof.
+  if new.payload->'approved_by' is distinct from old.payload->'approved_by'
+     or new.payload->'approved_at' is distinct from old.payload->'approved_at'
+     or new.payload->'signed_by' is distinct from old.payload->'signed_by'
+     or new.payload->'signed_at' is distinct from old.payload->'signed_at'
+     or new.payload->'archived_by' is distinct from old.payload->'archived_by'
+     or new.payload->'archived_at' is distinct from old.payload->'archived_at'
+     or new.payload->'minutes_lifecycle_history' is distinct from old.payload->'minutes_lifecycle_history' then
+    raise exception 'Minutes approval/signature/archive evidence must be server-generated'
+      using errcode='42501';
+  end if;
 
   -- Revision snapshots are stamped from OLD persistent content by this trigger.
   -- Direct REST/batch clients cannot forge or delete previously reviewed text.
@@ -360,6 +380,34 @@ begin
          (old.payload - v_safe_workflow_keys) then
     raise exception 'Reviewed minutes content cannot be changed by a status transition'
       using errcode='42501';
+  end if;
+  if v_new_status is distinct from v_old_status then
+    v_lifecycle_history := coalesce(old.payload->'minutes_lifecycle_history','[]'::jsonb);
+    if jsonb_typeof(v_lifecycle_history)<>'array' then
+      raise exception 'Malformed existing minutes lifecycle history' using errcode='23514';
+    end if;
+    new.payload := jsonb_set(new.payload,'{minutes_lifecycle_history}',
+      v_lifecycle_history || jsonb_build_array(jsonb_build_object(
+        'from',old.payload->>'approval_status',
+        'to',new.payload->>'approval_status',
+        'version',new.payload->>'version',
+        'actor',v_actor::text,
+        'at',clock_timestamp()
+      )),true);
+    if v_new_status='approved' then
+      new.payload := jsonb_set(
+        jsonb_set(new.payload,'{approved_by}',to_jsonb(v_actor::text),true),
+        '{approved_at}',to_jsonb(clock_timestamp()),true);
+    elsif v_new_status='signed' then
+      -- Internal board sign-off metadata only; no claim of qualified e-signing.
+      new.payload := jsonb_set(
+        jsonb_set(new.payload,'{signed_by}',to_jsonb(v_actor::text),true),
+        '{signed_at}',to_jsonb(clock_timestamp()),true);
+    elsif v_new_status='archived' then
+      new.payload := jsonb_set(
+        jsonb_set(new.payload,'{archived_by}',to_jsonb(v_actor::text),true),
+        '{archived_at}',to_jsonb(clock_timestamp()),true);
+    end if;
   end if;
   new.updated_by := v_actor;
   return new;
