@@ -104,5 +104,38 @@ export async function createNextMeeting(
       (ack.outcome !== "created" && ack.outcome !== "already_created")) {
     throw new Error("Server did not confirm the independent next meeting.");
   }
+  // Server ACK alone is not proof of a durable new meeting. Require an
+  // authenticated row-level-policy read of the exact new record, including its
+  // immutable source link, independent identity, Draft status and revision.
+  // A failed readback leaves the stable request key reusable for retry.
+  const readbackResponse = await convayAuth.authenticatedRequest(
+    "/rest/v1/convay_entity_records?entity_key=eq.bms.meetings" +
+    "&record_id=eq." + encodeURIComponent(ack.new_meeting_id) +
+    "&select=record_id,payload,revision&limit=2",
+    { method: "GET" },
+  );
+  const rows: unknown = await readbackResponse.json();
+  if (!Array.isArray(rows) || rows.length !== 1 ||
+      !rows[0] || typeof rows[0] !== "object") {
+    throw new Error("The next meeting could not be verified after saving.");
+  }
+  const saved = rows[0] as Record<string, unknown>;
+  const payload = saved.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("The next meeting could not be verified after saving.");
+  }
+  const meeting = payload as Record<string, unknown>;
+  if (
+    saved.record_id !== ack.new_meeting_id ||
+    meeting.id !== ack.new_meeting_id ||
+    meeting.meeting_id !== ack.new_meeting_id ||
+    meeting.source_meeting_id !== source ||
+    meeting.approval_status !== "Draft" ||
+    typeof saved.revision !== "number" ||
+    !Number.isSafeInteger(saved.revision) ||
+    saved.revision < 1
+  ) {
+    throw new Error("The next meeting source, Draft state or revision did not persist.");
+  }
   return ack as CreateNextMeetingAck;
 }
