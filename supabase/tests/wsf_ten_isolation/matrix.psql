@@ -78,6 +78,38 @@ begin
   raise notice 'TEN-03 CASE 03b foreign tenant INSERT denied PASS';
 end $case03b$;
 
+-- Direct account update to ownership is forbidden even for its own row.
+DO $case04a$
+declare denied boolean:=false;
+begin
+  begin
+    update public.convay_entity_records
+      set tenant_id='66666666-6666-4666-8666-666666666666'
+      where record_id='fixture-a-created';
+  exception when insufficient_privilege then denied:=true; end;
+  if not denied then raise exception 'TEN-03 CASE 04 direct tenant reassignment allowed'; end if;
+  raise notice 'TEN-03 CASE 04 authenticated ownership-column UPDATE denied PASS';
+end $case04a$;
+
+-- Even a privileged SQL code path must not silently reassign ownership.
+RESET ROLE;
+DO $case04b$
+declare denied boolean:=false;
+begin
+  begin
+    update public.convay_entity_records
+      set tenant_id='66666666-6666-4666-8666-666666666666'
+      where record_id='fixture-a-created';
+  exception when insufficient_privilege then denied:=true; end;
+  if not denied then raise exception 'TEN-03 CASE 04 tenant immutability trigger bypassed'; end if;
+  if (select tenant_id from public.convay_entity_records where record_id='fixture-a-created')
+    is distinct from '55555555-5555-4555-8555-555555555555'::uuid then
+      raise exception 'TEN-03 CASE 04 owner changed after denied mutation';
+  end if;
+  raise notice 'TEN-03 CASE 04 privileged tenant reassignment trigger denied PASS';
+end $case04b$;
+SET LOCAL ROLE authenticated;
+
 -- Actor B has IDENTICAL module grants, but must not see/modify A rows.
 SELECT set_config('request.jwt.claim.sub','44444444-4444-4444-8444-444444444444',true);
 SELECT set_config('request.jwt.claims',
@@ -157,6 +189,40 @@ begin
   end if;
   raise notice 'TEN-03 CASE 07c malformed claim denied PASS';
 end $malformed$;
+
+-- Existing per-entity module grants remain required in addition to tenant.
+-- An active tenant member with no READ grant must see zero rows.
+RESET ROLE;
+DELETE FROM convay_private.fixture_grants
+ WHERE actor_id='44444444-4444-4444-8444-444444444444'
+   AND entity_key='bms.meetings' AND action='read';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"66666666-6666-4666-8666-666666666666"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+DO $module$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 removed module grant still disclosed tenant rows';
+  end if;
+  raise notice 'TEN-03 CASE 07d active tenant without module permission denied PASS';
+end $module$;
+RESET ROLE;
+INSERT INTO convay_private.fixture_grants(actor_id,entity_key,action)
+VALUES('44444444-4444-4444-8444-444444444444','bms.meetings','read');
+UPDATE public.user_profiles SET account_status='suspended'
+WHERE user_id='44444444-4444-4444-8444-444444444444';
+SET LOCAL ROLE authenticated;
+DO $profile$
+begin
+  if exists(select 1 from public.convay_entity_records) then
+    raise exception 'TEN-03 suspended profile retained tenant read';
+  end if;
+  raise notice 'TEN-03 CASE 09c suspended user profile denied PASS';
+end $profile$;
+RESET ROLE;
+UPDATE public.user_profiles SET account_status='active'
+WHERE user_id='44444444-4444-4444-8444-444444444444';
+SET LOCAL ROLE authenticated;
 
 -- Restore B JWT then suspend membership under trusted fixture DB owner.
 RESET ROLE;
