@@ -16,8 +16,6 @@ declare
   v_source_status text;
   v_old_status text;
   v_new_status text;
-  v_expected_version text;
-  v_prior_revision_history jsonb;
   v_source_scope text;
   v_actor_scope text;
   v_is_leader boolean := false;
@@ -196,12 +194,6 @@ begin
     if v_new_status <> 'draft' then
       raise exception 'New minutes must begin as Draft' using errcode='23514';
     end if;
-    if new.payload->>'version' is distinct from '1.0'
-       or (new.payload ? 'revision_history'
-           and new.payload->'revision_history' is distinct from '[]'::jsonb) then
-      raise exception 'New minutes must begin at version 1.0 without forged history'
-        using errcode='23514';
-    end if;
     if new.created_by is not null and new.created_by <> v_actor then
       raise exception 'Minutes creator identity may not be impersonated'
         using errcode='42501';
@@ -225,136 +217,6 @@ begin
       using errcode='42501';
   end if;
   v_old_status := lower(btrim(coalesce(old.payload->>'approval_status','')));
-
-  -- Revision history is generated from persisted OLD content by the server,
-  -- never accepted as user-provided proof through direct REST or batch RPC.
-  if new.payload->'revision_history' is distinct from old.payload->'revision_history' then
-    raise exception 'Minutes revision history is server-authored and immutable'
-      using errcode='42501';
-  end if;
-  if new.payload->'revision_instructions' is distinct from old.payload->'revision_instructions'
-     and not (v_new_status='revision requested'
-       and v_old_status in ('under secretary review','under chairperson review','member review')) then
-    raise exception 'Only an authorized review transition can set revision instructions'
-      using errcode='42501';
-  end if;
-
-  if v_new_status='revision requested' and v_old_status <> v_new_status then
-    if v_old_status not in ('under secretary review','under chairperson review','member review')
-       or not v_reviewer then
-      raise exception 'Only authorized reviewers can return review-stage minutes'
-        using errcode='42501';
-    end if;
-    if length(btrim(coalesce(new.payload->>'revision_instructions',''))) < 10 then
-      raise exception 'Revision requests require substantive instructions'
-        using errcode='23514';
-    end if;
-    if new.payload->'version' is distinct from old.payload->'version' then
-      raise exception 'Requesting a revision cannot change the minutes version'
-        using errcode='42501';
-    end if;
-    v_prior_revision_history := coalesce(old.payload->'revision_history','[]'::jsonb);
-    if jsonb_typeof(v_prior_revision_history) <> 'array' then
-      raise exception 'Existing minutes revision history is malformed'
-        using errcode='23514';
-    end if;
-    new.payload := jsonb_set(new.payload,'{revision_history}',
-      v_prior_revision_history || jsonb_build_array(jsonb_build_object(
-        'version',old.payload->>'version',
-        'source_status',old.payload->>'approval_status',
-        'requested_by',v_actor::text,
-        'requested_at',clock_timestamp(),
-        'instructions',new.payload->>'revision_instructions',
-        'content',jsonb_build_object(
-          'minutes_template',old.payload->>'minutes_template',
-          'minute_taker',old.payload->>'minute_taker',
-          'co_authors',old.payload->>'co_authors',
-          'quorum_statement',old.payload->>'quorum_statement',
-          'discussion_summary',old.payload->>'discussion_summary',
-          'next_meeting_date',old.payload->>'next_meeting_date',
-          'closing_time',old.payload->>'closing_time'
-        )
-      )),true);
-  elsif v_old_status='revision requested' and v_new_status='under secretary review' then
-    -- A returned edit gets a fresh version while the old snapshot remains
-    -- immutable; optimistic clients cannot invent a skipped or stale version.
-    if coalesce(old.payload->>'version','') !~ '^(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,3})  if v_old_status in ('approved','signed','archived') then
-    if not v_reviewer then
-      raise exception 'Final minutes transitions require min_approve'
-        using errcode='42501';
-    end if;
-    if not ((v_old_status='approved' and v_new_status in ('signed','archived'))
-        or (v_old_status='signed' and v_new_status='archived')) then
-      raise exception 'Approved, signed, and archived minutes cannot be edited'
-        using errcode='42501';
-    end if;
-  elsif v_old_status in ('draft','revision requested') then
-    if not v_editor then
-      raise exception 'Editing draft minutes requires min_create'
-        using errcode='42501';
-    end if;
-    if old.created_by is distinct from v_actor
-       and v_profile.account_role <> 'super_admin' then
-      raise exception 'Draft minutes may be edited only by their author'
-        using errcode='42501';
-    end if;
-  elsif not v_reviewer then
-    raise exception 'Review-stage changes require min_approve' using errcode='42501';
-  end if;
-
-  if v_old_status not in ('draft','revision requested')
-     and (new.payload - v_safe_workflow_keys) is distinct from
-         (old.payload - v_safe_workflow_keys) then
-    raise exception 'Reviewed minutes content cannot be changed by a status transition'
-      using errcode='42501';
-  end if;
-  new.updated_by := v_actor;
-  return new;
-end;
-$fn$;
-
--- Keep this helper inaccessible as a direct API function; the triggers
--- run it internally for both registry RPC calls and direct table writes.
-revoke all on function convay_private.enforce_minutes_source_integrity()
-  from public, anon, authenticated;
-
-drop trigger if exists convay_a0_minutes_before_insert on public.convay_entity_records;
-create trigger convay_a0_minutes_before_insert
-before insert on public.convay_entity_records
-for each row when (new.entity_key = 'bms.minutes')
-execute function convay_private.enforce_minutes_source_integrity();
-
-drop trigger if exists convay_a0_minutes_before_update on public.convay_entity_records;
-create trigger convay_a0_minutes_before_update
-before update on public.convay_entity_records
-for each row when (new.entity_key in ('bms.minutes','bms.meetings') or old.entity_key in ('bms.minutes','bms.meetings'))
-execute function convay_private.enforce_minutes_source_integrity();
-
-drop trigger if exists convay_a0_minutes_before_delete on public.convay_entity_records;
-create trigger convay_a0_minutes_before_delete
-before delete on public.convay_entity_records
-for each row when (old.entity_key in ('bms.minutes','bms.meetings'))
-execute function convay_private.enforce_minutes_source_integrity();
- then
-      raise exception 'Existing minutes version is not suitable for resubmission'
-        using errcode='23514';
-    end if;
-    if split_part(old.payload->>'version','.',2)::integer >= 9999 then
-      raise exception 'Minutes revision limit reached' using errcode='23514';
-    end if;
-    v_expected_version := split_part(old.payload->>'version','.',1) || '.' ||
-      (split_part(old.payload->>'version','.',2)::integer + 1)::text;
-    if new.payload->>'version' is distinct from v_expected_version then
-      raise exception 'Returned minutes require the next sequential revision version'
-        using errcode='23514';
-    end if;
-  elsif v_old_status='revision requested' and v_new_status <> v_old_status then
-    raise exception 'Returned minutes must resubmit to Secretary Review'
-      using errcode='42501';
-  elsif new.payload->'version' is distinct from old.payload->'version' then
-    raise exception 'Minutes version changes require authorized resubmission'
-      using errcode='42501';
-  end if;
   if v_old_status in ('approved','signed','archived') then
     if not v_reviewer then
       raise exception 'Final minutes transitions require min_approve'
