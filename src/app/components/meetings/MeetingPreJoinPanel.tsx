@@ -53,7 +53,7 @@ function formatTime12h(raw?: string): string {
   if (!raw) return "";
   // Only treat supported 24-hour SQL times as verified meeting details.
   // parseInt alone accepted malformed values like "25:99" or "abc:30".
-  const match = /^(\\d{1,2}):(\\d{2})(?::(\\d{2}))?$/.exec(raw.trim());
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(raw.trim());
   if (!match) return "";
   const hour = Number(match[1]);
   const minute = Number(match[2]);
