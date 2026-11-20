@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolveMinutesSource, validateMinutesRevisionRequest } from "../app/pages/archive-reports/minutesSourceIntegrity";
+import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus } from "../app/pages/archive-reports/minutesSourceIntegrity";
 
 const sourceMeeting = {
   id: "meeting-uuid-1", meeting_id: "MTG-2026-0001", meeting_title: "Annual Board Meeting",
@@ -37,6 +37,13 @@ describe("MN-01 minutes source integrity", () => {
       expect(() => validateMinutesRevisionRequest("Under Secretary Review", instructions)).toThrow(/10 characters/);
     }
   });
+  it("permits draft and returned-for-revision editing but protects finalized minutes", () => {
+    expect(isEditableMinutesStatus("Draft")).toBe(true);
+    expect(isEditableMinutesStatus("Revision Requested")).toBe(true);
+    for (const status of ["Under Secretary Review", "Under Chairperson Review", "Member Review", "Approved", "Signed", "Archived"]) {
+      expect(isEditableMinutesStatus(status)).toBe(false);
+    }
+  });
   it("connects the revision action to awaited SQL and the shared permission gate", () => {
     const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
     expect(page).toContain('requestRevisionPermission: "min_approve"');
@@ -50,7 +57,7 @@ describe("MN-01 minutes source integrity", () => {
     expect(page).toContain('access.effective_permissions.includes("min_create")');
     expect(page).toContain('const saved = await registry.add(');
     expect(page).toContain('if (saved !== true) throw new Error(');
-    expect(page).toContain('original.approval_status !== "Draft"');
+    expect(page).toContain("!isEditableMinutesStatus(original.approval_status)");
     expect(page).toContain('const saved = await registry.update(id, {');
   });
 });
