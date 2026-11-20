@@ -236,12 +236,57 @@ begin
       and payload->'revision_history'->0->'content'->>'discussion_summary'='Recorded first version'
       and payload->>'revision_instructions'='Correct the recorded attendance'
   ) then raise exception 'Returned minutes resubmission lost version or history'; end if;
-  -- Restore Root and ensure final minutes content and linked source are immutable.
+  -- MN-03+ policy: no shortcut to approval, trusted actor/time stamps.
   perform set_config('request.jwt.claim.sub',v_actor::text,true);
+  v_denied_write := false;
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.minutes','record_id',v_mins,'action','update',
+      'payload',jsonb_build_object('approval_status','Signed')
+    )));
+  exception when others then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Secretary review skipped directly to Signed'; end if;
+
+  v_denied_write := false;
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.minutes','record_id',v_mins,'action','update',
+      'payload',jsonb_build_object('signed_by',v_denied::text,
+        'signed_at','2000-01-01T00:00:00Z')
+    )));
+  exception when others then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Forged signer metadata was accepted'; end if;
+
+  perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+    'entity_key','bms.minutes','record_id',v_mins,'action','update',
+    'payload',jsonb_build_object('approval_status','Under Chairperson Review')
+  )));
+  perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+    'entity_key','bms.minutes','record_id',v_mins,'action','update',
+    'payload',jsonb_build_object('approval_status','Member Review')
+  )));
+  v_denied_write := false;
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.minutes','record_id',v_mins,'action','update',
+      'payload',jsonb_build_object('approval_status','Archived')
+    )));
+  exception when others then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Unapproved minutes were archived'; end if;
   perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
     'entity_key','bms.minutes','record_id',v_mins,'action','update',
     'payload',jsonb_build_object('approval_status','Approved')
   )));
+  if not exists(select 1 from public.convay_entity_records
+    where entity_key='bms.minutes' and record_id=v_mins
+      and payload->>'approved_by'=v_actor::text
+      and payload->>'approved_at' is not null
+      and jsonb_array_length(payload->'minutes_lifecycle_history')=6
+  ) then raise exception 'Approval actor/time or workflow evidence not stamped'; end if;
+
   v_denied_write := false;
   begin
     perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
@@ -251,6 +296,36 @@ begin
   exception when others then v_denied_write := true;
   end;
   if not v_denied_write then raise exception 'Approved minutes can be rewritten'; end if;
+  perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+    'entity_key','bms.minutes','record_id',v_mins,'action','update',
+    'payload',jsonb_build_object('approval_status','Signed')
+  )));
+  if not exists(select 1 from public.convay_entity_records
+    where entity_key='bms.minutes' and record_id=v_mins
+      and payload->>'signed_by'=v_actor::text
+      and payload->>'signed_at' is not null
+      and jsonb_array_length(payload->'minutes_lifecycle_history')=7
+  ) then raise exception 'Signed actor/time or lifecycle evidence missing'; end if;
+  perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+    'entity_key','bms.minutes','record_id',v_mins,'action','update',
+    'payload',jsonb_build_object('approval_status','Archived')
+  )));
+  if not exists(select 1 from public.convay_entity_records
+    where entity_key='bms.minutes' and record_id=v_mins
+      and payload->>'archived_by'=v_actor::text
+      and payload->>'archived_at' is not null
+      and jsonb_array_length(payload->'minutes_lifecycle_history')=8
+  ) then raise exception 'Archive actor/time or lifecycle evidence missing'; end if;
+  v_denied_write := false;
+  begin
+    perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
+      'entity_key','bms.minutes','record_id',v_mins,'action','update',
+      'payload',jsonb_build_object('notes','Falsified archived notes')
+    )));
+  exception when others then v_denied_write := true;
+  end;
+  if not v_denied_write then raise exception 'Archived minutes notes were rewritten'; end if;
+
   v_denied_write := false;
   begin
     perform public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
