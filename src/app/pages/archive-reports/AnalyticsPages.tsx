@@ -295,8 +295,12 @@ export function DecisionsActionsAnalyticsPage() {
 export function FinancialResourceImpactPage() {
   const decisionReg = useDecisionRegistry();
 
-  const withImpact = decisionReg.items.filter(
-    d => d.financial_impact && d.financial_impact !== "N/A" && d.financial_impact !== ""
+  // Only SQL-confirmed, meaningful impact values enter this report.
+  // Ignore whitespace and all case variants of the unsupported N/A sentinel.
+  const withImpact = decisionReg.items.filter(d =>
+    typeof d.financial_impact === "string" &&
+    d.financial_impact.trim().length > 0 &&
+    d.financial_impact.trim().toLowerCase() !== "n/a"
   );
 
   const rows: TableRow[] = withImpact.map(d => ({
@@ -340,12 +344,15 @@ export function FinancialResourceImpactPage() {
       amount:     "financial_impact",
       date:       "effective_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildDecisionRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Decision Details",
     drawerCols:  DECISION_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(decisionReg.loading),
+    dataError: decisionReg.error ?? null,
+    onDataRetry: decisionReg.refresh,
+    kpis: decisionReg.loading || decisionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
