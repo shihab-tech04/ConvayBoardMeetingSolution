@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { normalizeRecordedQuorum } from "./recordedQuorumStatus";
 import { useParams, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { convayAuth } from "../../services/supabase/convayAuth";
@@ -354,7 +355,7 @@ export function MeetingRecordPage() {
                 <TD>{q.event_type}</TD>
                 <TD>{q.quorum_present}</TD>
                 <TD>{q.quorum_required}</TD>
-                <TD><StatusPill value={q.quorum_met === "Yes" ? "Met" : "Not Met"} /></TD>
+                <TD><StatusPill value={normalizeRecordedQuorum(q.quorum_met)} /></TD>
                 <TD>{q.recorded_by}</TD>
               </tr>
             ))}
