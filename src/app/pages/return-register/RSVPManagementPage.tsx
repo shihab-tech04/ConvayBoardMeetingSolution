@@ -7,11 +7,17 @@ import { RSVP_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { useRSVPRegistry, useMeetingRegistry, useParticipantRegistry, generateId } from "../../data/boardMeetingData";
 import { RSVP_FORM_FIELDS } from "../boardMeetingFormFields";
 import { patchFormOptions } from "../../utils/patchFormOptions";
+import { meetingRegisterSourceState } from "./meetingRegisterReadiness";
+import { resolveRSVPIdentity } from "./rsvpIdentity";
 
 export function RSVPManagementPage() {
-  const { items: rsvpRecords, add: addRSVP } = useRSVPRegistry();
+  const rsvpReg = useRSVPRegistry();
+  const { items: rsvpRecords, add: addRSVP } = rsvpReg;
   const meetingReg = useMeetingRegistry();
   const participantReg = useParticipantRegistry();
+  const sources = [rsvpReg, meetingReg, participantReg];
+  const { dataLoading, dataError } = meetingRegisterSourceState(sources);
+  const retrySources = async () => { await Promise.all(sources.map(source => source.refresh?.())); };
   const dynamicFields = patchFormOptions(RSVP_FORM_FIELDS, {
     meeting_id:       meetingReg.items.map(m => m.meeting_id),
     meeting_title:    meetingReg.items.map(m => m.meeting_id + " — " + m.meeting_title),
@@ -65,19 +71,19 @@ export function RSVPManagementPage() {
       { id: "assign_alternate",   label: "Assign Alternate",   icon: UserPlus,    color: "#6b7280" },
     ],
     rows,
-    kpis,
+    dataLoading,
+    dataError,
+    onDataRetry: retrySources,
+    kpis: dataLoading || dataError ? [] : kpis,
     entryBtn:      "Record RSVP",
     formFields:    dynamicFields,
     onRowCreate: (values) => {
+      if (dataLoading || dataError) throw new Error("Meeting and participant data is unavailable. Retry loading before recording an RSVP.");
+      const identity = resolveRSVPIdentity(values, meetingReg.items, participantReg.items);
       const rsvpId = generateId("RSV", rsvpRecords.map(r => r.rsvp_id));
       return addRSVP({
         id: rsvpId, rsvp_id: rsvpId,
-        meeting_id:       String(values.meeting_id       ?? ""),
-        meeting_title:    String(values.meeting_title    ?? ""),
-        participant_id:   String(values.participant_id   ?? ""),
-        participant_name: String(values.participant_name ?? ""),
-        response:         String(values.response         ?? "Pending"),
-        response_date:    String(values.response_date    ?? new Date().toISOString().slice(0, 10)),
+        ...identity,
         decline_reason:   String(values.decline_reason   ?? ""),
         proxy_nominee:    String(values.proxy_nominee    ?? ""),
         notes:            String(values.notes            ?? ""),
