@@ -1258,7 +1258,7 @@ export function OnlineReturnRegisterPage() {
             }
           }}
         />
-      )
+      )}
       {lifecycleConfirmation && (
         <SConfirmModal
           title={lifecycleConfirmation.action === "schedule_meeting" ? "Schedule Meeting" : "Publish Meeting"}
