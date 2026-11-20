@@ -9,7 +9,8 @@ import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIden
 import { normalizeMeetingSchedule } from "./meetingSchedule";
 import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
-import { deleteDraftMeeting } from "./meetingDraftDeletion";
+import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDeletion";
+import { DRAFT_DELETION_UNAVAILABLE_REASON, guardMeetingDrawerAction } from "./meetingDeletionReleaseGate";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
 import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
@@ -179,9 +180,11 @@ export function OnlineReturnRegisterPage() {
   // ── Resolved meeting actions (status-aware, permission-aware) ───────────────
   const { resolve: resolveMeetingActions } = useResolvedActions("meeting");
 
-  // MT-27: Preserve one request key across retries of the same deletion intent.
+  // MT-27 staged UX: stable request ID and actual server revision captured
+  // BEFORE confirmation. Production action stays disabled until WS0 activates
+  // and verifies the tenant-authorized Draft deletion RPC.
   const [draftDeletion, setDraftDeletion] = useState<{
-    recordId: string; title: string; requestId: string;
+    recordId: string; title: string; requestId: string; expectedRevision: number;
   } | null>(null);
   const [draftDeletionError, setDraftDeletionError] = useState("");
   const draftDeletionInFlight = useRef(false);
@@ -191,7 +194,11 @@ export function OnlineReturnRegisterPage() {
     draftDeletionInFlight.current = true;
     setDraftDeletionError("");
     try {
-      await deleteDraftMeeting(draftDeletion.recordId, draftDeletion.requestId);
+      await deleteDraftMeeting(
+        draftDeletion.recordId,
+        draftDeletion.requestId,
+        draftDeletion.expectedRevision,
+      );
       setDraftDeletion(null);
       toast.success("Draft meeting deleted.");
       try {
@@ -348,20 +355,33 @@ export function OnlineReturnRegisterPage() {
       if (saved === true || import.meta.env.MODE === "test") toast.success("Meeting archived.");
       return;
     }
+    if (actionId === "delete") {
+      // Never re-open the unsafe generic registry DELETE route.
+      toast.error(DRAFT_DELETION_UNAVAILABLE_REASON);
+      return;
+    }
     if (actionId === "delete_draft") {
-      // This UI check is defense-in-depth only. The server owns authorization.
-      const status = String(row.approval_status ?? row.status ?? "");
+      // Currently UI-disabled. For later server-authorized activation only.
       const recordId = String(row.id ?? row.meeting_id ?? "").trim();
-      if (status !== "Draft" || !recordId) {
+      const statuses = [row.approval_status, row.status]
+        .map(status => String(status ?? "").trim().toLowerCase())
+        .filter(Boolean);
+      if (!recordId || !statuses.length || statuses.some(status => status !== "draft")) {
         toast.error("Only a saved Draft meeting can be deleted.");
         return;
       }
-      setDraftDeletionError("");
-      setDraftDeletion({
-        recordId,
-        title: String(row.meeting_title ?? "this draft"),
-        requestId: crypto.randomUUID(),
-      });
+      try {
+        const saved = await loadDraftDeletionSnapshot(recordId);
+        setDraftDeletionError("");
+        setDraftDeletion({
+          recordId: saved.recordId,
+          title: saved.title || String(row.meeting_title ?? "this draft"),
+          requestId: crypto.randomUUID(),
+          expectedRevision: saved.revision,
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Unable to verify the Draft. Refresh and retry.");
+      }
       return;
     }
 
@@ -685,7 +705,13 @@ export function OnlineReturnRegisterPage() {
       resolveMeetingActions(row)
         .filter(a => a.visible)
         .sort((a, b) => a.priority - b.priority)
-        .map(a => ({ id: a.id === "delete" ? "delete_draft" : a.id, label: a.label, icon: a.icon, color: toneToColor[a.tone], enabled: a.enabled, disabledReason: a.disabledReason })),
+        .map(a => {
+          const gated = guardMeetingDrawerAction({
+            id: a.id, label: a.label, icon: a.icon, color: toneToColor[a.tone],
+            enabled: a.enabled, disabledReason: a.disabledReason,
+          });
+          return { ...gated, id: a.id === "delete" ? "delete_draft" : a.id };
+        }),
     drawerTitle:   "Meeting Details",
     drawerCols:    MEETING_DRAWER_COLS,
     rows: tableRows,
@@ -1248,7 +1274,8 @@ export function OnlineReturnRegisterPage() {
         <SConfirmModal
           danger
           title="Delete Draft Meeting"
-          message={`Permanently delete ${draftDeletion.title}? This cannot be undone.${draftDeletionError ? ` Error: ${draftDeletionError}` : ""}`}
+          message={"Permanently delete " + draftDeletion.title + "? This cannot be undone." +
+            (draftDeletionError ? " Error: " + draftDeletionError : "")}
           confirmLabel="Delete Draft"
           onConfirm={() => { void confirmDraftDeletion(); }}
           onClose={() => {

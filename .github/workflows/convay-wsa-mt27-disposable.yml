@@ -1,0 +1,55 @@
+name: Convay WS-A MT-27 — disposable PostgreSQL Draft deletion matrix
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/convay-wsa-mt27-disposable.yml'
+      - 'supabase/tests/wsa_mt27/**'
+      - 'supabase/tests/wsf_ten_foundation/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mt27-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout without persistent credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Launch isolated PostgreSQL 17 (not Supabase production)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-wsa-mt27-pg \
+            -e POSTGRES_PASSWORD=synthetic-ci-only \
+            -e POSTGRES_DB=convay_wsa_mt27_fixture \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for n in $(seq 1 45); do
+            if docker exec convay-wsa-mt27-pg pg_isready -U postgres -d convay_wsa_mt27_fixture >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker logs convay-wsa-mt27-pg
+          exit 1
+      - name: Synthetic baseline without real customer data
+        run: |
+          docker exec convay-wsa-mt27-pg psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsa_mt27_fixture \
+            -f /workspace/supabase/tests/wsf_ten_foundation/bootstrap.sql
+      - name: Test MT-27 denial matrix and rollback
+        run: |
+          docker exec convay-wsa-mt27-pg psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsa_mt27_fixture \
+            -f /workspace/supabase/tests/wsa_mt27/matrix.psql
+      - name: Verify full transaction rollback
+        run: |
+          docker exec convay-wsa-mt27-pg psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsa_mt27_fixture \
+            -tA -c "select case when to_regclass('convay_private.mt27_delete_receipts') is null and (select count(*) from public.convay_entity_records)=1 then 'MT-27 ROLLBACK PASS' else 'MT-27 ROLLBACK FAIL' end;" | grep -Fx 'MT-27 ROLLBACK PASS'
+      - name: Destroy disposable database
+        if: always()
+        run: docker rm -f convay-wsa-mt27-pg || true

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { Eye, Shield, UserCheck, UserPlus, UserX, Users } from "lucide-react";
 import { toast } from "sonner";
@@ -10,13 +10,15 @@ import { AppTextField } from "../../components/forms/AppTextField";
 import { AppSelectField } from "../../components/forms/AppSelectField";
 import { AppPasswordField } from "../../components/forms/AppPasswordField";
 import { AppCheckbox } from "../../components/forms/AppCheckbox";
-import { useAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
+import { useAccessSnapshot, readAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
 import { ResponsiveOverlay } from "../../components/shared/ResponsiveOverlay";
 import { UnifiedDataTable } from "../../components/tables";
 import { fc, BADGE } from "../modulePageUtils";
 import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
 import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./userBusinessFields";
+import { createLatestUserDirectoryRead } from "./userDirectoryRead";
+import { requireUserMutationAck } from "./userMutationAck";
 
 type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
@@ -68,19 +70,40 @@ export function SupabaseUserManagementPage() {
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [assignError, setAssignError] = useState("");
 
-  const loadUsers = async () => {
-    setLoading(true);
-    setLoadError("");
-    try {
-      const result = await convayAuth.users("list");
-      setUsers(result.users ?? []);
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Unable to load users");
-    } finally {
+  // UAM-01: fail closed on denied/failed reads, and never publish another
+  // account's late response after logout, permissions refresh or retry.
+  const directoryRead = useRef(createLatestUserDirectoryRead<ConvayProfile>());
+  const loadUsers = async (): Promise<boolean> => {
+    const currentAccess = readAccessSnapshot();
+    if (!currentAccess.loaded || !currentAccess.is_super_admin) {
+      directoryRead.current.invalidate();
+      setUsers([]);
       setLoading(false);
+      setLoadError("Super Admin access required");
+      return false;
     }
+    return directoryRead.current.load(
+      () => convayAuth.users("list"),
+      update => {
+        setUsers(update.users);
+        setLoading(update.phase === "loading");
+        setLoadError(update.error);
+      },
+    );
   };
-  useEffect(() => { void loadUsers(); }, []);
+  useEffect(() => {
+    if (access.loaded && access.is_super_admin) {
+      void loadUsers();
+    } else {
+      directoryRead.current.invalidate();
+      setUsers([]);
+      setLoading(false);
+      setLoadError("");
+    }
+    return () => { directoryRead.current.invalidate(); };
+    // Reload only when effective Super Admin access changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [access.loaded, access.is_super_admin]);
 
   const selected = users.find(u => u.user_id === selectedId) ?? null;
   const editing = users.find(u => u.user_id === editId) ?? null;
@@ -187,23 +210,28 @@ export function SupabaseUserManagementPage() {
     setFormError("");
     try {
       if (mode === "invite") {
-        await convayAuth.users("invite", {
+        const confirmed = await convayAuth.users("invite", {
           name: form.name.trim(), username: form.username.trim() || undefined,
           email: form.email.trim(),
           phone: form.phone.trim() || undefined,
           ...userBusinessFields(form),
         });
+        requireUserMutationAck("invite", confirmed, { email: form.email.trim() });
         toast.success("Invitation sent. The account stays inactive until the user verifies their email and sets a password.");
       } else if (mode === "edit" && editing) {
-        await convayAuth.users("update", {
+        const confirmed = await convayAuth.users("update", {
           user_id: editing.user_id, name: form.name.trim(), username: form.username.trim(),
           phone: form.phone.trim(), ...userBusinessFields(form),
         });
+        requireUserMutationAck("update", confirmed, {
+          userId: editing.user_id, displayName: form.name.trim(),
+        });
         toast.success("User updated");
       } else if (mode === "password" && editing) {
-        await convayAuth.users("set_password", {
+        const confirmed = await convayAuth.users("set_password", {
           user_id: editing.user_id, password: form.password,
         });
+        requireUserMutationAck("set_password", confirmed, { userId: editing.user_id });
         toast.success("Password updated");
       } else {
         throw new Error("User not found");
@@ -225,10 +253,12 @@ export function SupabaseUserManagementPage() {
     setLoadError("");
     try {
       if (confirm.action === "delete") {
-        await convayAuth.users("delete", { user_id: confirm.id });
+        const confirmed = await convayAuth.users("delete", { user_id: confirm.id });
+        requireUserMutationAck("delete", confirmed, { userId: confirm.id });
         toast.success("User removed");
       } else {
-        await convayAuth.users("set_status", { user_id: confirm.id, status: confirm.action });
+        const confirmed = await convayAuth.users("set_status", { user_id: confirm.id, status: confirm.action });
+        requireUserMutationAck("set_status", confirmed, { userId: confirm.id, status: confirm.action });
         toast.success("Account status updated");
       }
       setConfirm(null);

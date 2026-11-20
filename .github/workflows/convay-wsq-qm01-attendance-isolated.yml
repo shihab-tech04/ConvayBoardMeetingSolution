@@ -1,0 +1,70 @@
+name: Convay WS-Q QM-01 — disposable PostgreSQL 17 attendance contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/convay-wsq-qm01-attendance-isolated.yml'
+      - 'supabase/tests/qm01_attendance_bootstrap.sql'
+      - 'supabase/tests/qm01_attendance_idempotency.sql'
+      - 'supabase/migrations/20261106062035_convay_quick_meetings.sql'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qm01-attendance-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate without persisting Git credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Start disposable PostgreSQL 17 with no production connections
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-qm01-attendance-db \
+            -e POSTGRES_PASSWORD=qm01-disposable-test-only \
+            -e POSTGRES_DB=convay_qm01_isolated_20261120 \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            postgres:17-alpine
+          for attempt in $(seq 1 45); do
+            if docker exec convay-qm01-attendance-db pg_isready -U postgres -d convay_qm01_isolated_20261120 >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs convay-qm01-attendance-db
+          exit 1
+
+      - name: Create only synthetic Auth table and isolated browser roles
+        run: |
+          docker exec convay-qm01-attendance-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_qm01_isolated_20261120 \
+            -f /workspace/supabase/tests/qm01_attendance_bootstrap.sql
+
+      - name: Apply QM-only five-table candidate migration in disposable PG17
+        run: |
+          docker exec convay-qm01-attendance-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_qm01_isolated_20261120 \
+            -f /workspace/supabase/migrations/20261106062035_convay_quick_meetings.sql
+
+      - name: Exercise real SQL functions and rollback-only host and guest tests
+        run: |
+          docker exec convay-qm01-attendance-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_qm01_isolated_20261120 \
+            -f /workspace/supabase/tests/qm01_attendance_idempotency.sql
+
+      - name: Verify rollback left no synthetic attendance or quick meeting records
+        run: |
+          docker exec convay-qm01-attendance-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_qm01_isolated_20261120 \
+            -c "DO \$\$ BEGIN IF EXISTS (SELECT 1 FROM public.convay_quick_meeting_attendance) OR EXISTS (SELECT 1 FROM public.convay_quick_meetings) THEN RAISE EXCEPTION 'QM-01 fixture rollback did not cleanly restore baseline'; END IF; END \$\$;"
+
+      - name: Always destroy the disposable database
+        if: always()
+        run: docker rm -f convay-qm01-attendance-db || true

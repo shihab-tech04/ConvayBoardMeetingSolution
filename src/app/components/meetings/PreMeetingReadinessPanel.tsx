@@ -10,7 +10,7 @@
  *  - Start the meeting only when blockers are resolved (or override with reason)
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import {
   CheckCircle, XCircle, AlertTriangle, Users, Layers, FileText,
   X, ChevronDown, ChevronUp,
@@ -131,6 +131,19 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
 
   const [overrideReason, setOverrideReason] = useState("");
   const [showOverride, setShowOverride] = useState(false);
+  const [savingAttendance, setSavingAttendance] = useState(false);
+  const [attendanceError, setAttendanceError] = useState("");
+  const attendanceSaveInFlight = useRef(false);
+  const attendanceEditVersion = useRef(0);
+  const startRequested = useRef(false);
+  const [startingMeeting, setStartingMeeting] = useState(false);
+  const stillMounted = useRef(true);
+  const latestAttendance = useRef(attendanceMap);
+  latestAttendance.current = attendanceMap;
+  useEffect(() => {
+    stillMounted.current = true;
+    return () => { stillMounted.current = false; };
+  }, []);
 
   // ── Participant categories ─────────────────────────────────────────────────
   const quorumLinks  = myLinks.filter(l => l.member_category === "quorum" || l.quorum_eligible);
@@ -186,46 +199,107 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
 
   // ── Attendance toggle ─────────────────────────────────────────────────────
   const toggleAttendance = (userId: string) => {
+    if (attendanceSaveInFlight.current || startRequested.current) return;
+    attendanceEditVersion.current += 1;
     const current = attendanceMap[userId] ?? "Not Joined";
     const next: ReadinessAttendance = PRESENT_STATES.includes(current) ? "Not Joined" : "Present";
     setAttendanceMap(prev => ({ ...prev, [userId]: next }));
   };
 
   const setAttendanceStatus = (userId: string, status: ReadinessAttendance) => {
+    if (attendanceSaveInFlight.current || startRequested.current) return;
+    attendanceEditVersion.current += 1;
     setAttendanceMap(prev => ({ ...prev, [userId]: status }));
   };
 
   // ── Save attendance to registry ───────────────────────────────────────────
-  const saveAttendance = useCallback(() => {
-    const now = new Date().toISOString();
-    for (const [userId, status] of Object.entries(attendanceMap)) {
-      const link = myLinks.find(l => l.user_id === userId);
-      const user = resolveUser(userId);
-      const existing = attendanceItems.find(a => a.meeting_id === meetingId && a.participant_id === userId);
-      const checkIn  = PRESENT_STATES.includes(status) ? now : "";
-      if (existing) {
-        updateAttendanceRec(existing.id, { check_in_time: checkIn || existing.check_in_time } as never);
-      } else if (PRESENT_STATES.includes(status)) {
-        const aid = `ATT-${meetingId}-${userId}`;
-        addAttendanceRec({
-          id: aid, attendance_id: aid,
-          meeting_id: meetingId,
-          meeting_title: meeting?.meeting_title ?? "",
-          participant_id: userId,
-          participant_name: user?.name ?? userId,
-          designation: user?.designation ?? "",
-          role: link?.participant_type ?? "Member",
-          check_in_time: checkIn,
-          check_out_time: "",
-          attendance_mode: "In-Person",
-          quorum_eligible: link?.quorum_eligible ? "Yes" : "No",
-          signed: "No",
-          notes: "",
-          created_at: now,
-        } as never);
+  // This UI guard awaits real SQL-backed registry ACKs. It does not replace
+  // the WS0-owned atomic, actor-scoped attendance/quorum backend command.
+  const saveAttendance = useCallback(async (): Promise<boolean> => {
+    if (attendanceSaveInFlight.current) return false;
+    attendanceSaveInFlight.current = true;
+    setSavingAttendance(true);
+    setAttendanceError("");
+    const requested = attendanceMap;
+    const editVersion = attendanceEditVersion.current;
+    try {
+      const now = new Date().toISOString();
+      for (const [userId, status] of Object.entries(requested)) {
+        const link = myLinks.find(l => l.user_id === userId);
+        const user = resolveUser(userId);
+        const existing = attendanceItems.find(a => a.meeting_id === meetingId && a.participant_id === userId);
+        const checkIn = PRESENT_STATES.includes(status) ? now : "";
+        let accepted: boolean | Promise<boolean> = true;
+        if (existing) {
+          accepted = updateAttendanceRec(existing.id, { check_in_time: checkIn || existing.check_in_time } as never);
+        } else if (PRESENT_STATES.includes(status)) {
+          const aid = `ATT-${meetingId}-${userId}`;
+          accepted = addAttendanceRec({
+            id: aid, attendance_id: aid,
+            meeting_id: meetingId,
+            meeting_title: meeting?.meeting_title ?? "",
+            participant_id: userId,
+            participant_name: user?.name ?? userId,
+            designation: user?.designation ?? "",
+            role: link?.participant_type ?? "Member",
+            check_in_time: checkIn,
+            check_out_time: "",
+            attendance_mode: "In-Person",
+            quorum_eligible: link?.quorum_eligible ? "Yes" : "No",
+            signed: "No",
+            notes: "",
+            created_at: now,
+          } as never);
+        }
+        if (await accepted !== true) {
+          throw new Error("Attendance could not be saved. Review the records and retry.");
+        }
       }
+      // A selection changed while the write was pending. It must not be used
+      // to start a meeting from a stale attendance/quorum calculation.
+      if (attendanceEditVersion.current !== editVersion ||
+          JSON.stringify(latestAttendance.current) !== JSON.stringify(requested)) {
+        throw new Error("Attendance changed during saving. Save again before starting.");
+      }
+      return stillMounted.current;
+    } catch (cause) {
+      if (stillMounted.current) setAttendanceError(
+        cause instanceof Error ? cause.message : "Attendance could not be saved. Meeting was not started."
+      );
+      return false;
+    } finally {
+      attendanceSaveInFlight.current = false;
+      if (stillMounted.current) setSavingAttendance(false);
     }
   }, [attendanceMap, myLinks, meetingId, meeting, resolveUser, attendanceItems, addAttendanceRec, updateAttendanceRec]);
+
+  const startAfterAttendanceSave = async () => {
+    if (attendanceSaveInFlight.current || startRequested.current) return;
+    // The same readiness blockers apply to every start attempt, not just to
+    // the disabled state of the button.
+    if (hasCriticalBlocker && (!showOverride || !overrideReason.trim())) return;
+    const requested = attendanceMap;
+    const editVersion = attendanceEditVersion.current;
+    startRequested.current = true;
+    let started = false;
+    try {
+      if (!await saveAttendance()) return;
+      if (!stillMounted.current || attendanceEditVersion.current !== editVersion ||
+          JSON.stringify(latestAttendance.current) !== JSON.stringify(requested)) return;
+      onStartMeeting(requested);
+      started = true;
+      setStartingMeeting(true);
+    } catch {
+      if (stillMounted.current) {
+        setStartingMeeting(false);
+        setAttendanceError("Meeting start could not be requested. Refresh and retry.");
+      }
+    } finally {
+      // Keep the button guarded after a successful start request until the
+      // parent closes the readiness screen; failure paths are retryable.
+      if (!started) startRequested.current = false;
+    }
+  };
 
   // ── Status color ──────────────────────────────────────────────────────────
   const approvalStatusColor = (s: string) =>
@@ -251,7 +325,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
               </span>
             </div>
           </div>
-          <button type="button" onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted-foreground)", padding: "0.25rem" }}>
+          <button type="button" onClick={() => { if (!attendanceSaveInFlight.current && !startRequested.current) onClose(); }} disabled={savingAttendance || startingMeeting} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted-foreground)", padding: "0.25rem" }}>
             <X size={18} />
           </button>
         </div>
@@ -444,18 +518,18 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
 
       {/* ── FOOTER ────────────────────────────────────────────────────────── */}
       <div style={{ padding: "0.75rem 1.5rem", borderTop: "1px solid var(--border)", background: "var(--card)", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-        <SecondaryButton onClick={onClose}>Close</SecondaryButton>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <SecondaryButton onClick={saveAttendance}>Save Attendance</SecondaryButton>
+        <SecondaryButton onClick={onClose} disabled={savingAttendance || startingMeeting}>Close</SecondaryButton>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+          {attendanceError && <span role="alert" style={{ fontSize: "0.72rem", color: "#ef4444", maxWidth: 320 }}>{attendanceError}</span>}
+          <SecondaryButton onClick={() => { void saveAttendance(); }} disabled={savingAttendance || startingMeeting}>
+            {savingAttendance ? "Saving…" : "Save Attendance"}
+          </SecondaryButton>
           <PrimaryButton
-            onClick={() => {
-              saveAttendance();
-              onStartMeeting(attendanceMap);
-            }}
-            disabled={hasCriticalBlocker && (!showOverride || !overrideReason.trim())}
+            onClick={() => { void startAfterAttendanceSave(); }}
+            disabled={savingAttendance || startingMeeting || (hasCriticalBlocker && (!showOverride || !overrideReason.trim()))}
             title={hasCriticalBlocker && !showOverride ? "Resolve blockers or provide an override reason" : undefined}
           >
-            Start Meeting
+            {savingAttendance ? "Saving attendance…" : startingMeeting ? "Starting meeting…" : "Start Meeting"}
           </PrimaryButton>
         </div>
       </div>

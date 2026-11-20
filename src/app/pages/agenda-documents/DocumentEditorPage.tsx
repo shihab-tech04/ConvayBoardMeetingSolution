@@ -44,6 +44,7 @@ import {
 import { documentContentStore } from "../../services/repositories/documentContentStore";
 import { getEditorProvider, type EditorCapabilities } from "../../components/documents/editor/DocumentEditorProvider";
 import { runScopedEditorLoad } from "./editorLoadRecovery";
+import { requireDocumentCommentAck } from "./documentCommentAck";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -286,10 +287,28 @@ function EditorLeftPanel({ panel, editor, onClose }: { panel: LeftPanel; editor:
 
 function RightPanelComments({ doc, editor }: { doc: BoardDocument; editor: ReturnType<typeof useEditor> }) {
   const threadReg = useDocumentCommentRegistry();
-  const auditReg  = useAuditEventRegistry();
-  const [body,    setBody]    = useState("");
+  const [body, setBody] = useState("");
+  const [posting, setPosting] = useState(false);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const postBusy = useRef(false);
+  const resolveBusy = useRef(false);
+  const currentDocId = useRef("");
+  const pendingPost = useRef<{
+    key: string;
+    id: string;
+    createdAt: string;
+    selectedText?: string;
+  } | null>(null);
 
   const docId = doc.doc_id ?? doc.id;
+  currentDocId.current = docId;
+  useEffect(() => {
+    // A pending action belongs to its original document, not the next route.
+    pendingPost.current = null;
+    setBody("");
+    setPosting(false);
+    setResolvingId(null);
+  }, [docId]);
 
   const threads = useMemo(
     () => threadReg.items
@@ -298,53 +317,67 @@ function RightPanelComments({ doc, editor }: { doc: BoardDocument; editor: Retur
     [threadReg.items, docId],
   );
 
-  const handlePost = () => {
-    if (!body.trim()) return;
-    // Capture any active selection text from the editor as anchor context
+  const handlePost = async () => {
+    const message = body.trim();
+    if (postBusy.current || !message) return;
+    const key = JSON.stringify({ docId, message });
+    const prior = pendingPost.current;
+    if (prior && prior.key !== key) {
+      toast.error("A previous comment was not confirmed. Refresh comments before posting another.");
+      return;
+    }
     const selectedText = editor?.state.selection.empty
       ? undefined
       : editor?.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, " ").trim().slice(0, 120) || undefined;
-
-    const now  = new Date().toISOString();
-    const newId = `CT-${Date.now()}`;
-    threadReg.add({
-      id: newId, thread_id: newId,
-      document_id: docId,
-      selected_text: selectedText,
-      status: "open",
-      created_by: "current_user",
-      created_at: now,
-      body: body.trim(),
-      replies: [],
-      mentions: [],
-    });
-    const aud = newAuditId();
-    auditReg.add({
-      id: aud, event_id: aud,
-      entity_type: "Document", entity_id: docId,
-      action: "Comment added",
-      actor: "current_user", actor_role: "User",
-      timestamp: now, ip_address: "",
-      details: body.trim().slice(0, 100),
-      approval_status: "Logged",
-    });
-    setBody("");
-    toast.success("Comment posted.");
+    // Reuse the same record ID on an ambiguous retry to prevent duplicate posts.
+    const pending = prior ?? {
+      key,
+      id: `CT-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: new Date().toISOString(),
+      selectedText,
+    };
+    pendingPost.current = pending;
+    postBusy.current = true;
+    setPosting(true);
+    try {
+      await requireDocumentCommentAck(() => threadReg.add({
+        id: pending.id, thread_id: pending.id,
+        document_id: docId, selected_text: pending.selectedText,
+        status: "open", created_by: "current_user",
+        created_at: pending.createdAt, body: message, replies: [], mentions: [],
+      }), "post");
+      if (currentDocId.current !== docId) return;
+      pendingPost.current = null;
+      setBody(current => current.trim() === message ? "" : current);
+      toast.success("Comment posted.");
+    } catch (error) {
+      if (currentDocId.current === docId) {
+        toast.error(error instanceof Error ? error.message : "Comment was not confirmed. Refresh before retrying.");
+      }
+    } finally {
+      postBusy.current = false;
+      if (currentDocId.current === docId) setPosting(false);
+    }
   };
 
-  const handleResolve = (thread: DocumentCommentThread) => {
-    threadReg.update(thread.id, { status: "resolved" });
-    const aud = newAuditId();
-    auditReg.add({
-      id: aud, event_id: aud,
-      entity_type: "Document", entity_id: docId,
-      action: "Comment resolved",
-      actor: "current_user", actor_role: "User",
-      timestamp: new Date().toISOString(), ip_address: "",
-      details: thread.body.slice(0, 100),
-      approval_status: "Logged",
-    });
-    toast.success("Resolved.");
+  const handleResolve = async (thread: DocumentCommentThread) => {
+    if (resolveBusy.current) return;
+    resolveBusy.current = true;
+    setResolvingId(thread.id);
+    try {
+      await requireDocumentCommentAck(
+        () => threadReg.update(thread.id, { status: "resolved" }),
+        "resolve",
+      );
+      if (currentDocId.current === docId) toast.success("Resolved.");
+    } catch (error) {
+      if (currentDocId.current === docId) {
+        toast.error(error instanceof Error ? error.message : "Resolution was not confirmed. Refresh before retrying.");
+      }
+    } finally {
+      resolveBusy.current = false;
+      if (currentDocId.current === docId) setResolvingId(null);
+    }
   };
 
   return (
@@ -352,7 +385,7 @@ function RightPanelComments({ doc, editor }: { doc: BoardDocument; editor: Retur
       <div className="doc-editor__comment-input">
         <AppTextArea id="editor-comment" label="Add comment" value={body} onChange={setBody} rows={2} placeholder="Write a comment… (select text first to anchor)" />
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.375rem" }}>
-          <Button variant="primary" size="sm" leadingIcon={Send} onClick={handlePost}>Post</Button>
+          <Button variant="primary" size="sm" leadingIcon={Send} loading={posting} disabled={posting} onClick={() => { void handlePost(); }}>Post</Button>
         </div>
       </div>
       {threads.length === 0 ? (
@@ -382,7 +415,7 @@ function RightPanelComments({ doc, editor }: { doc: BoardDocument; editor: Retur
                   ))}
                 </div>
               )}
-              <button type="button" className="doc-editor__text-action" onClick={() => handleResolve(thread)}>
+              <button type="button" className="doc-editor__text-action" disabled={resolvingId !== null} onClick={() => { void handleResolve(thread); }}>
                 <CheckCircle size={10} strokeWidth={2} /> Resolve
               </button>
             </div>

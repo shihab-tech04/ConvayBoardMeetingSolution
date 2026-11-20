@@ -30,7 +30,7 @@ import { MeetingPreJoinPanel, type PreJoinRole } from "../../components/meetings
 import { PreMeetingReadinessPanel } from "../../components/meetings/PreMeetingReadinessPanel";
 import { DocumentWorkspaceRouter } from "../../components/documents/DocumentWorkspaceRouter";
 import { getEditorProvider } from "../../components/documents/editor/DocumentEditorProvider";
-import type { BoardDocument, Decision, Resolution, ActionItem } from "../../data/boardMeetingData";
+import type { BoardDocument, Decision, Resolution, ActionItem, Minutes, LiveMeetingSession } from "../../data/boardMeetingData";
 import { AppModal } from "../../components/modals/AppModal";
 import { EntryForm } from "../../components/forms/EntryForm";
 import { PrimaryButton } from "../../components/buttons/PrimaryButton";
@@ -41,9 +41,11 @@ import { MOTION_FORM_FIELDS, MINUTES_FORM_FIELDS } from "../boardMeetingFormFiel
 import type { EntryFormValue } from "../../components/forms/EntryForm";
 import { getAgendaDescription } from "../../utils/agendaDescription";
 import { convayAuth } from "../../services/supabase/convayAuth";
+import { commitVerifiedMinutesCapture } from "./regularMeetingMinutesCaptureState";
 import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
+import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -402,7 +404,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: allDocuments }                                          = useDocumentRegistry();
   const { items: docCommentThreads, add: addDocThread, update: updateDocThread } = useDocumentCommentRegistry();
   const { items: interactionItems, add: addInteraction }                = useMeetingInteractionRegistry();
-  const { items: liveSessions, add: addSession, update: updateSession, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
+  const { items: liveSessions, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
   const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = useAttendanceRegistry();
   const { add: addQuorumEvent }                                          = useQuorumEventRegistry();
   const { items: govBodies }                                             = useGovernanceRegistry();
@@ -614,7 +616,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       toast.error("The live session has not loaded. Refresh before changing meeting status.");
       return false;
     }
-    const sessionStatus = nextStatus === "in-progress" ? "active" : "paused";
+    // Verify the server-backed session is in a state that permits this exact
+    // transition. A stale or repeated command must never manufacture an event.
+    let sessionStatus: "active" | "paused";
+    try {
+      sessionStatus = requestedLiveSessionStatus(session.session_status, nextStatus);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Refresh the session before continuing.");
+      return false;
+    }
     statusRequestPending.current = true;
     setStatusBusy(true);
     try {
@@ -639,30 +649,22 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting, meetingId, canControlMeeting, liveSessions, refreshMeetings, refreshLiveSessions]);
 
-  // ── Sync canonical session status on mount (canonical > localStorage) ─────
-  // Only runs once. If the Live Session registry already has a record for this
-  // meeting, use its status as the authoritative source so that refresh and
-  // resume correctly restore the running session rather than re-reading a
-  // stale localStorage snapshot.
-  // Meeting comments, motions and votes start empty. Only explicit participant
-  // actions may create governance evidence; never manufacture records on load.
-
-  const hasSyncedCanonical = useRef(false);
+  // ── Reconcile canonical live-session state after EACH server change ────────
+  // An open second client must observe pause/resume/end when registry data
+  // refreshes. Do not freeze the projection after the first snapshot, and do
+  // not allow browser-local cache to resurrect a server-ended meeting.
+  // No governance records are created by this read-only projection.
+  const lastCanonicalStatusKey = useRef("");
   useEffect(() => {
-    if (hasSyncedCanonical.current || !meetingId || !meeting) return;
+    if (!meetingId || !meeting) return;
     const canonical = liveSessions.find(item => item.meeting_id === meetingId);
     if (!canonical) return;
-    const mapping: Record<string, MeetingCtrlStatus> = {
-      active: "in-progress", paused: "paused", ended: "ended", not_started: "not-started",
-    };
-    const baseStatus = mapping[canonical.session_status ?? ""];
-    if (!baseStatus) return;
-    hasSyncedCanonical.current = true;
-    const persistedStatus = meeting.approval_status;
-    const restoredStatus = baseStatus === "paused" && persistedStatus === "On Break" ? "on-break"
-      : baseStatus === "paused" && persistedStatus === "Adjourned" ? "adjourned"
-      : baseStatus;
-    setCtrlStatusRaw(restoredStatus);
+    const next = canonicalLiveControlStatus(canonical.session_status, meeting.approval_status);
+    if (!next) return;
+    const key = canonicalLiveStatusKey(meetingId, canonical.id, canonical.session_status, meeting.approval_status);
+    if (key === lastCanonicalStatusKey.current) return;
+    lastCanonicalStatusKey.current = key;
+    setCtrlStatusRaw(next);
   }, [meetingId, meeting, liveSessions]);
 
   // ── Persist to localStorage on every state change ─────────────────────────
@@ -686,13 +688,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [myMicOn, setMyMicOn]         = useState(true);
   const [myCamOn, setMyCamOn]         = useState(true);
   const [isSharing, setIsSharing]     = useState(false);
-  const [isRecording, setIsRecording]               = useState(false);
-  const [isRecordingPaused, setIsRecordingPaused]   = useState(false);
-  const [isTranscribing, setIsTranscribing]         = useState(false);
-  const [isTranscribingPaused, setIsTranscribingPaused] = useState(false);
-  const [isMinutesCapture, setIsMinutesCapture]     = useState(false);
-  const [isMinutesPaused, setIsMinutesPaused]       = useState(false);
-  const [recordingStartedAt, setRecordingStartedAt] = useState<string | null>(null);
+  // LM-06: only server-confirmed capture may appear active or complete.
+  const confirmedMinutesSession = liveSessions.find(item => item.meeting_id === meetingId);
+  const isMinutesCapture = confirmedMinutesSession?.minutes_capture_status === "active";
+  const minutesCompleted = confirmedMinutesSession?.minutes_capture_status === "completed";
+  const [isMinutesPaused, setIsMinutesPaused] = useState(false); // local note-taking preference only
+  const [minutesCaptureBusy, setMinutesCaptureBusy] = useState(false);
+  const minutesRequestPending = useRef(false);
   const [isLocked, setIsLocked]       = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewMode, setViewMode]       = useState<ViewMode>("speaker");
@@ -1315,112 +1317,80 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     }
   };
 
-  // ── Session / recording / transcription persistence ───────────────────────
-  const getOrCreateSession = (): string => {
-    if (!meetingId) return "";
-    const existing = liveSessions.find(s => s.meeting_id === meetingId);
-    if (existing) return existing.id;
-    const sid = mkId("SES");
-    addSession({
-      id: sid, meeting_id: meetingId,
-      started_at: nowISO(), started_by: currentUser.id,
-      session_status: "active",
-      recording_status: "not_started",
-      transcription_status: "not_started",
-      minutes_capture_status: "not_started",
-      created_at: nowISO(),
-    } as never);
-    return sid;
-  };
+  // LM-04/05: no recording or transcription provider has been activated.
+  // A client-only toggle cannot create a media recording, transcript or audit proof.
+  // Record/Captions controls below report the integration as unavailable instead.
+  // Do not add session writes here without an authenticated provider operation,
+  // durable server ACK and exact meeting/actor/tenant authorization.
 
-  const toggleRecording = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isRecording) {
-      setRecordingStartedAt(now);
-      setIsRecordingPaused(false);
-      if (sid) updateSession(sid, { recording_status: "active" } as never);
-      addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Recording started", metadata: { event: "recording_start", time: now }, created_at: now } as never);
-      toast.success("Recording started");
-    } else {
-      if (sid) updateSession(sid, { recording_status: "ended" } as never);
-      const dur = recordingStartedAt ? Math.round((Date.now() - new Date(recordingStartedAt).getTime()) / 1000) : 0;
-      addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Recording stopped", metadata: { event: "recording_stop", started_at: recordingStartedAt, ended_at: now, duration_seconds: dur }, created_at: now } as never);
-      setRecordingStartedAt(null);
-      setIsRecordingPaused(false);
-      toast("Recording stopped");
+  const toggleMinutesCapture = async () => {
+    if (!meetingId || minutesRequestPending.current) return;
+    if (!canRecordMeeting || !canDraftMinutes || !hasGrant("mtg_join")) {
+      toast.error("You do not have permission to change minutes capture.");
+      return;
     }
-    setIsRecording(v => !v);
-  };
-
-  const pauseResumeRecording = () => {
-    if (!meetingId || !isRecording) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isRecordingPaused;
-    if (sid) updateSession(sid, { recording_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Recording paused" : "Recording resumed", metadata: { event: nextPaused ? "recording_pause" : "recording_resume", time: now }, created_at: now } as never);
-    setIsRecordingPaused(nextPaused);
-    toast(nextPaused ? "Recording paused" : "Recording resumed");
-  };
-
-  const toggleTranscription = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isTranscribing) {
-      setIsTranscribingPaused(false);
-      if (sid) updateSession(sid, { transcription_status: "active" } as never);
-      addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Transcription started", metadata: { event: "transcription_start", time: now }, created_at: now } as never);
-      toast.success("Transcription started");
-    } else {
-      if (sid) updateSession(sid, { transcription_status: "ended" } as never);
-      addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Transcription stopped", metadata: { event: "transcription_stop", time: now }, created_at: now } as never);
-      setIsTranscribingPaused(false);
-      toast("Transcription stopped");
+    const session = liveSessions.find(item => item.meeting_id === meetingId);
+    if (!session) {
+      toast.error("Start the meeting and reload its live session before capturing minutes.");
+      return;
     }
-    setIsTranscribing(v => !v);
-  };
-
-  const pauseResumeTranscription = () => {
-    if (!meetingId || !isTranscribing) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isTranscribingPaused;
-    if (sid) updateSession(sid, { transcription_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Transcription paused" : "Transcription resumed", metadata: { event: nextPaused ? "transcription_pause" : "transcription_resume", time: now }, created_at: now } as never);
-    setIsTranscribingPaused(nextPaused);
-    toast(nextPaused ? "Transcription paused" : "Transcription resumed");
-  };
-
-  const toggleMinutesCapture = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isMinutesCapture) {
+    if (session.minutes_capture_status === "completed") {
+      toast.info("Minutes capture was already completed.");
+      return;
+    }
+    const action = session.minutes_capture_status === "active" ? "complete" : "start";
+    minutesRequestPending.current = true;
+    setMinutesCaptureBusy(true);
+    try {
+      let confirmedSavedMinutes = false;
+      if (action === "complete") {
+        // A client-side note or unanswered save is not evidence of persisted minutes.
+        const persisted = await convayAuth.registry<Minutes>("bms.minutes", "list");
+        confirmedSavedMinutes = persisted.records.some(item =>
+          item.payload.meeting_id === meetingId && !!item.payload.discussion_summary?.trim()
+        );
+      }
+      await commitVerifiedMinutesCapture({
+        meetingId,
+        actorId: currentUser.id,
+        session: {
+          id: session.id,
+          meeting_id: session.meeting_id,
+          session_status: session.session_status,
+          minutes_capture_status: session.minutes_capture_status,
+        },
+        action,
+        confirmedSavedMinutes,
+        at: nowISO(),
+        applyBatch: operations => convayAuth.applyBatch(operations),
+        readSessions: async () => (await convayAuth.registry<LiveMeetingSession>(
+          "bms.liveSessions", "list"
+        )).records.map(item => item.payload),
+      });
+      try { await refreshLiveSessions?.(); }
+      catch { toast.info("Minutes state saved; refresh to display the latest status."); }
       setIsMinutesPaused(false);
-      if (sid) updateSession(sid, { minutes_capture_status: "active" } as never);
-      addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Minutes capture started", metadata: { event: "minutes_start", time: now }, created_at: now } as never);
-      toast.success("Minutes capture started");
-    } else {
-      if (sid) updateSession(sid, { minutes_capture_status: "ended" } as never);
-      addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Minutes capture stopped", metadata: { event: "minutes_stop", time: now }, created_at: now } as never);
-      setIsMinutesPaused(false);
-      toast("Minutes capture stopped");
+      toast.success(action === "start" ? "Minutes capture started" : "Minutes capture completed");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Minutes capture was not saved.");
+      void refreshLiveSessions?.()?.catch(() => undefined);
+    } finally {
+      minutesRequestPending.current = false;
+      setMinutesCaptureBusy(false);
     }
-    setIsMinutesCapture(v => !v);
   };
 
+  // Pausing the note-taking interface is local only. The canonical LM-06
+  // states are not_started / active / completed; do not write fake "paused".
   const pauseResumeMinutes = () => {
-    if (!meetingId || !isMinutesCapture) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isMinutesPaused;
-    if (sid) updateSession(sid, { minutes_capture_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Minutes capture paused" : "Minutes capture resumed", metadata: { event: nextPaused ? "minutes_pause" : "minutes_resume", time: now }, created_at: now } as never);
-    setIsMinutesPaused(nextPaused);
-    toast(nextPaused ? "Minutes capture paused" : "Minutes capture resumed");
+    if (!isMinutesCapture || minutesRequestPending.current) return;
+    setIsMinutesPaused(previous => {
+      const paused = !previous;
+      toast.info(paused
+        ? "Local note-taking paused. Server minutes capture remains active."
+        : "Local note-taking resumed.");
+      return paused;
+    });
   };
 
   // ── Temporary agenda creation ─────────────────────────────────────────────
@@ -2548,11 +2518,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 <MessageSquare size={18} />
               </DockButton>
             </span>
-            <DockButton active={isMinutesCapture} label={isMinutesCapture ? "Stop Min" : "Minutes"} onClick={toggleMinutesCapture}>
+            <DockButton active={isMinutesCapture} label={minutesCaptureBusy ? "Saving..." : minutesCompleted ? "Min Done" : isMinutesCapture ? "Finish Min" : "Minutes"} onClick={() => { void toggleMinutesCapture(); }}>
               <FileText size={18} />
             </DockButton>
             {isMinutesCapture && (
-              <DockButton active={!isMinutesPaused} label={isMinutesPaused ? "Resume" : "Pause Min"} onClick={pauseResumeMinutes}>
+              <DockButton active={!isMinutesPaused} label={isMinutesPaused ? "Resume Notes" : "Pause Notes"} onClick={pauseResumeMinutes}>
                 {isMinutesPaused ? <Play size={18} /> : <Pause size={18} />}
               </DockButton>
             )}
