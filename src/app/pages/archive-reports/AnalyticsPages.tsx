@@ -2,6 +2,7 @@ import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
+import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
 import {
   MEETING_DRAWER_COLS,
   GOV_BODY_DRAWER_COLS,
@@ -9,6 +10,7 @@ import {
 } from "../boardMeetingDrawerSchemas";
 import {
   useMeetingRegistry,
+  useQuorumEventRegistry,
   useDecisionRegistry,
   useActionItemRegistry,
   useResolutionRegistry,
@@ -19,6 +21,7 @@ import {
 
 export function MeetingPerformanceAnalyticsPage() {
   const registry = useMeetingRegistry();
+  const quorumReg = useQuorumEventRegistry();
 
   const rows: TableRow[] = registry.items.map(m => ({
     id:               m.id,
@@ -31,6 +34,7 @@ export function MeetingPerformanceAnalyticsPage() {
     agenda_count:     m.agenda_count,
     participant_count: m.participant_count,
     quorum_forecast:  m.quorum_forecast,
+    quorum_observed:  latestRecordedQuorumStatus(m.meeting_id, quorumReg.items),
     readiness:        m.readiness,
     approval_status:  m.approval_status,
   }));
@@ -38,7 +42,7 @@ export function MeetingPerformanceAnalyticsPage() {
   const completed  = rows.filter(r => r.approval_status === "Completed" || r.approval_status === "Minutes Approved").length;
   const cancelled  = rows.filter(r => r.approval_status === "Cancelled").length;
   const scheduled  = rows.filter(r => r.approval_status === "Scheduled").length;
-  const quorumMet  = rows.filter(r => r.quorum_forecast === "Met" || r.quorum_forecast === "Yes").length;
+  const quorumMet  = rows.filter(r => r.quorum_observed === "Met").length;
 
   const kpis: KpiDef[] = [
     { label: "Total Meetings", value: String(rows.length),  tone: "primary" },
@@ -57,13 +61,13 @@ export function MeetingPerformanceAnalyticsPage() {
       fc("meeting_date",     "Date",         { headerKey: "headers.date" }),
       fc("agenda_count",     "Agenda Items", { headerKey: "headers.totalEntry" }),
       fc("participant_count","Participants", { headerKey: "headers.type" }),
-      fc("quorum_forecast",  "Quorum",       { headerKey: "headers.reason" }),
+      fc("quorum_observed",  "Quorum",       { headerKey: "headers.reason" }),
       BADGE("approval_status", "Status"),
     ],
     mobileCardMapping: {
       primary:    "meeting_title",
       identifier: "meeting_id",
-      meta:       ["committee", "meeting_type", "quorum_forecast"],
+      meta:       ["committee", "meeting_type", "quorum_observed"],
       status:     "approval_status",
       date:       "meeting_date",
     },
@@ -72,6 +76,11 @@ export function MeetingPerformanceAnalyticsPage() {
     drawerTitle: "Meeting Details",
     drawerCols:  MEETING_DRAWER_COLS,
     rows,
+    dataLoading: Boolean(registry.loading || quorumReg.loading),
+    dataError: registry.error ?? quorumReg.error ?? null,
+    onDataRetry: async () => {
+      await Promise.all([registry.refresh?.(), quorumReg.refresh?.()]);
+    },
     kpis,
   };
   return <GenPage cfg={cfg} />;
