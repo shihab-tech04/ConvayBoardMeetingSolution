@@ -5,7 +5,7 @@ const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
 const ACTOR = "33333333-3333-4333-8333-333333333333";
 const OTHER = "44444444-4444-4444-8444-444444444444";
-const nowMs = Date.parse("2026-11-20T06:00:00Z");
+const nowMs = 1795154400000; // fixed UTC epoch: independent of global Date mocks
 const base = (): TenantAccessInput => ({
   session: { actorId: ACTOR, active: true, anonymous: false },
   tenant: { id: A, state: "active" },
