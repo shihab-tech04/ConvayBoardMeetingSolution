@@ -1,0 +1,54 @@
+name: Convay WS-F TEN-04 — disposable PostgreSQL 17 private Storage RLS matrix
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/convay-wsf-ten-storage-isolated.yml'
+      - 'supabase/tests/wsf_ten_storage/**'
+      - 'supabase/tests/wsf_ten_foundation/**'
+      - 'supabase/tests/wsf_ten_isolation/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ten-storage-disposable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start disposable PostgreSQL 17 — no production connection
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-wsf-ten04-storage-db \
+            -e POSTGRES_PASSWORD=isolated-fixture-not-a-secret \
+            -e POSTGRES_DB=convay_wsf_storage_fixture \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            postgres:17-alpine
+          for attempt in $(seq 1 45); do
+            if docker exec convay-wsf-ten04-storage-db pg_isready -U postgres -d convay_wsf_storage_fixture >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs convay-wsf-ten04-storage-db
+          exit 1
+      - name: Bootstrap synthetic legacy SQL/Auth registry
+        run: |
+          docker exec convay-wsf-ten04-storage-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsf_storage_fixture \
+            -f /workspace/supabase/tests/wsf_ten_foundation/bootstrap.sql
+      - name: Execute real PostgreSQL Storage RLS role, bytes, ACL and rollback tests
+        run: |
+          docker exec convay-wsf-ten04-storage-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsf_storage_fixture \
+            -f /workspace/supabase/tests/wsf_ten_storage/storage_matrix.psql
+      - name: Destroy isolated database
+        if: always()
+        run: docker rm -f convay-wsf-ten04-storage-db || true
