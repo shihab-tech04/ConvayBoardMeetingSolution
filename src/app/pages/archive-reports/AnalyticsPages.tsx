@@ -85,7 +85,8 @@ export function MeetingPerformanceAnalyticsPage() {
     onDataRetry: async () => {
       await Promise.all([registry.refresh?.(), quorumReg.refresh?.()]);
     },
-    kpis,
+    // Never present zero meeting/quorum metrics before both authorized reads succeed.
+    kpis: registry.loading || quorumReg.loading || registry.error || quorumReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
