@@ -23,7 +23,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { normalizeBoardDocument } from "../../utils/normalizeBoardDocument";
 import { normalizeDocumentPage } from "./documentLibraryPageNumber";
 import { matchesDocumentGovernanceBody, type GovernanceMeeting } from "./documentLibraryGovernanceFilter";
-import { matchesDocumentWorkflowStatus } from "./documentLibraryWorkflowFilter";
+import { matchesDocumentWorkflowStatus, matchesAnyDocumentWorkflowStatus } from "./documentLibraryWorkflowFilter";
 import { matchesExactDocumentLinkReference } from "../../components/documents/documentLinkedRecordReference";
 import { matchesSelectedDocumentMeeting } from "./documentLibraryMeetingFilter";
 import type { ColDef, FilterDef, RowAction, TableRow } from "../modulePageUtils";
@@ -125,9 +125,9 @@ function matchesTab(
     case "unassigned":      return !isLinked;
     case "linked-agenda":   return isLinked;
     case "my-documents":    return isOwnDocument(row, user);
-    case "needs-attention": return row.approval_status === "Under Review" || row.approval_status === "Changes Requested";
-    case "published":       return row.approval_status === "Published";
-    case "archived":        return row.approval_status === "Archived";
+    case "needs-attention": return matchesAnyDocumentWorkflowStatus(row, ["Under Review", "Changes Requested"]);
+    case "published":       return matchesDocumentWorkflowStatus(row, "Published");
+    case "archived":        return matchesDocumentWorkflowStatus(row, "Archived");
     default:                return true;
   }
 }
@@ -312,8 +312,8 @@ export function DocumentLibraryPage() {
 
   // ── Summary card counts ──
   const totalCount          = searchFiltered.length;
-  const needsAttentionCount = searchFiltered.filter(d => d.approval_status === "Under Review" || d.approval_status === "Changes Requested").length;
-  const publishedCount      = searchFiltered.filter(d => d.approval_status === "Published").length;
+  const needsAttentionCount = searchFiltered.filter(d => matchesAnyDocumentWorkflowStatus(d, ["Under Review", "Changes Requested"])).length;
+  const publishedCount      = searchFiltered.filter(d => matchesDocumentWorkflowStatus(d, "Published")).length;
   const commentCount        = searchFiltered.reduce((s, d) => s + (d.unresolved_comment_count ?? 0), 0);
 
   // ── Tab definitions (7 primary tabs) ──
@@ -324,9 +324,9 @@ export function DocumentLibraryPage() {
       { id: "unassigned",      label: "Unassigned",         count: cnt(d => !linkedDocIds.has(d.doc_id ?? d.id)) },
       { id: "linked-agenda",   label: "Attached to Agenda", count: cnt(d => linkedDocIds.has(d.doc_id ?? d.id)) },
       { id: "my-documents",    label: "My Documents",       count: cnt(d => isOwnDocument(d, currentUser)) },
-      { id: "needs-attention", label: "Needs My Attention", count: cnt(d => d.approval_status === "Under Review" || d.approval_status === "Changes Requested") },
-      { id: "published",       label: "Published",          count: cnt(d => d.approval_status === "Published") },
-      { id: "archived",        label: "Archived",           count: cnt(d => d.approval_status === "Archived") },
+      { id: "needs-attention", label: "Needs My Attention", count: cnt(d => matchesAnyDocumentWorkflowStatus(d, ["Under Review", "Changes Requested"])) },
+      { id: "published",       label: "Published",          count: cnt(d => matchesDocumentWorkflowStatus(d, "Published")) },
+      { id: "archived",        label: "Archived",           count: cnt(d => matchesDocumentWorkflowStatus(d, "Archived")) },
     ];
   }, [searchFiltered, linkedDocIds]);
 
