@@ -15,12 +15,15 @@
  * Does NOT use <iframe>, <object>, or <embed> for PDFs.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, Download } from "lucide-react";
 import type { DocumentSource } from "./documentSource";
 import { getSourceFileName, getSourceMimeType } from "./documentSource";
 import { PdfViewerCore } from "./pdf/PdfViewerCore";
+import { startScopedDocumentImageLoad } from "./documentImageLoad";
+import { resolveDocumentFile } from "./documentSource";
+import { toast } from "sonner";
 
 // ── Format helpers ────────────────────────────────────────────────────────────
 
@@ -146,28 +149,24 @@ export function UnifiedDocumentViewer({
 function ImageViewer({ source, title, onClose }: {
   source: DocumentSource; title: string; onClose: () => void;
 }) {
-  const urlRef = useRef<string | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    let objectUrl: string | null = null;
-
-    async function load() {
-      const { resolveDocumentFile } = await import("./documentSource");
-      try {
-        const file = await resolveDocumentFile(source);
-        objectUrl = URL.createObjectURL(file);
-        urlRef.current = objectUrl;
-        const img = document.getElementById("unified-viewer-image") as HTMLImageElement | null;
-        if (img) img.src = objectUrl;
-      } catch { /* image won't load — img will show alt text */ }
-    }
-
-    void load();
-    return () => {
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    setImageUrl(null);
+    setLoadError(false);
+    // Never update a newly mounted viewer with the bytes of a closed or
+    // superseded document. Every created object URL is revoked on teardown.
+    const pending = startScopedDocumentImageLoad(
+      () => resolveDocumentFile(source),
+      file => URL.createObjectURL(file),
+      url => URL.revokeObjectURL(url),
+      url => setImageUrl(url),
+      () => setLoadError(true),
+    );
+    return pending.cancel;
+  }, [source, retry]);
 
   return (
     <div className="unified-doc-viewer__image-shell">
@@ -183,13 +182,21 @@ function ImageViewer({ source, title, onClose }: {
         </button>
       </div>
       <div className="unified-doc-viewer__image-body">
-        {/* src filled in by the useEffect above once the blob URL is ready */}
-        <img
-          id="unified-viewer-image"
-          src=""
-          alt={title}
-          className="unified-doc-viewer__image"
-        />
+        {loadError ? (
+          <div role="alert">
+            The requested image could not be loaded. Check your access and try again.
+            <button type="button" onClick={() => setRetry(value => value + 1)}>Retry</button>
+          </div>
+        ) : imageUrl ? (
+          <img
+            src={imageUrl}
+            alt={title}
+            className="unified-doc-viewer__image"
+            onError={() => setLoadError(true)}
+          />
+        ) : (
+          <div role="status">Loading document image…</div>
+        )}
       </div>
     </div>
   );
@@ -206,13 +213,15 @@ function UnsupportedViewer({
   downloadName?: string;
   onClose: () => void;
 }) {
+  const [downloading, setDownloading] = useState(false);
   async function handleDownload() {
-    if (!documentId) return;
+    if (!documentId || downloading) return;
+    setDownloading(true);
     try {
       const { documentContentStore } = await import("../../services/repositories/documentContentStore");
       // Never load latest when the viewer was opened for a frozen version.
       const file = await documentContentStore.getOriginalFile(documentId, versionId);
-      if (!file) return;
+      if (!file) throw new Error("Original file unavailable");
       const url = URL.createObjectURL(file);
       const a   = document.createElement("a");
       a.href     = url;
@@ -221,7 +230,11 @@ function UnsupportedViewer({
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 15_000);
-    } catch { /* silently ignore */ }
+    } catch {
+      toast.error("Unable to download this document version. Check access and retry.");
+    } finally {
+      setDownloading(false);
+    }
   }
 
   return (
@@ -241,7 +254,8 @@ function UnsupportedViewer({
       {documentId && (
         <button
           type="button"
-          onClick={handleDownload}
+          onClick={() => { void handleDownload(); }}
+          disabled={downloading}
           style={{
             marginTop: "1.25rem", display: "inline-flex", alignItems: "center",
             gap: 6, padding: "9px 20px", borderRadius: 8,
