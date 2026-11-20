@@ -1,4 +1,5 @@
 import { convayAuth } from "../../services/supabase/convayAuth";
+import { validateMeetingSchedule } from "./meetingSchedule";
 
 /**
  * MT-26: client-side prefill only. Database must independently validate source,
@@ -80,6 +81,16 @@ export async function createNextMeeting(
   for (const field of requiredKeys) {
     if (!next[field]) throw new Error("Missing " + field + ".");
   }
+
+  // MT-26 must enforce the same approved schedule constraints as MT-06
+  // before a future server-authorized next-meeting request is sent.
+  const scheduleBlockers = validateMeetingSchedule({
+    meeting_date: next.meeting_date,
+    start_time: next.start_time,
+    end_time: next.end_time,
+    time_zone: next.time_zone,
+  });
+  if (scheduleBlockers.length) throw new Error(scheduleBlockers[0]);
 
   const response = await convayAuth.authenticatedRequest(
     "/rest/v1/rpc/convay_create_next_meeting",

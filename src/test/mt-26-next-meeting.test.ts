@@ -11,7 +11,7 @@ beforeEach(() => send.mockReset());
 const next = {
   meeting_title: "Next Meeting", committee: "Board", meeting_type: "Regular",
   meeting_date: "2026-12-18", start_time: "10:00", end_time: "12:00",
-  time_zone: "Asia/Dhaka", mode: "Physical",
+  time_zone: "Asia/Dhaka (GMT+6)", mode: "Physical",
 };
 const command = {
   sourceMeetingId: "MTG-2026-001", sourceRevision: 3, requestId: "intent-1", next,
@@ -92,6 +92,20 @@ describe("MT-26 Create Next Meeting fail-closed source contract", () => {
     await expect(createNextMeeting({
       ...command, next: { ...next, meeting_date: "" },
     })).rejects.toThrow("Missing meeting_date");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("denies invalid next meeting schedules without calling the absent backend RPC", async () => {
+    for (const changes of [
+      { meeting_date: "2026-02-30" },
+      { start_time: "14:00", end_time: "13:00" },
+      { start_time: "25:00" },
+      { time_zone: "Unapproved/Zone" },
+    ]) {
+      await expect(createNextMeeting({
+        ...command, next: { ...next, ...changes },
+      })).rejects.toThrow();
+    }
     expect(send).not.toHaveBeenCalled();
   });
 
