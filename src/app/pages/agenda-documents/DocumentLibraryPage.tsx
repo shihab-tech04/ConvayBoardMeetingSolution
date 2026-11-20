@@ -23,6 +23,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { normalizeBoardDocument } from "../../utils/normalizeBoardDocument";
 import { normalizeDocumentPage } from "./documentLibraryPageNumber";
 import { matchesDocumentGovernanceBody, type GovernanceMeeting } from "./documentLibraryGovernanceFilter";
+import { matchesDocumentWorkflowStatus } from "./documentLibraryWorkflowFilter";
 import type { ColDef, FilterDef, RowAction, TableRow } from "../modulePageUtils";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -89,7 +90,7 @@ function matchesFilters(
   }
   if (applied.owner && !String(row.owner).toLowerCase().includes(applied.owner.toLowerCase())) return false;
   if (applied.confidentiality && applied.confidentiality !== "All" && row.confidentiality !== applied.confidentiality) return false;
-  if (applied.workflow_status && applied.workflow_status !== "All" && row.approval_status !== applied.workflow_status) return false;
+  if (!matchesDocumentWorkflowStatus(row, applied.workflow_status ?? "")) return false;
   if (applied.access && applied.access !== "All Accessible" && user) {
     const isOwned = isOwnDocument(row, user);
     if (applied.access === "Owned by Me"   &&  isOwned === false) return false;
