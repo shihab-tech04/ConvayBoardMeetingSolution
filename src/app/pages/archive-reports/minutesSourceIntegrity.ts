@@ -53,3 +53,8 @@ export function validateMinutesRevisionRequest(status: string, instructions: unk
   }
   return reason;
 }
+
+/** Authors can repair returned minutes; finalized records remain read-only. */
+export function isEditableMinutesStatus(status: string): boolean {
+  return status === "Draft" || status === "Revision Requested";
+}
