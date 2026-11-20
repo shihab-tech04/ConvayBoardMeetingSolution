@@ -80,3 +80,30 @@ export function buildMinutesReviewSubmission(status: string, version: string) {
     version: status === "Revision Requested" ? `${major}.${minor + 1}` : version,
   };
 }
+
+/**
+ * State-checked minutes lifecycle commands. These are a UI preflight;
+ * the trusted database must independently validate the current state, actor,
+ * source meeting and audit evidence before accepting a transition.
+ */
+export type MinutesLifecycleAction =
+  | "forward_review" | "approve_minutes" | "sign_minutes" | "archive_minutes";
+
+export function isMinutesLifecycleAction(action: string): action is MinutesLifecycleAction {
+  return action === "forward_review" || action === "approve_minutes" ||
+    action === "sign_minutes" || action === "archive_minutes";
+}
+
+export function buildMinutesLifecycleTransition(status: string, action: MinutesLifecycleAction) {
+  const target = action === "forward_review"
+    ? status === "Under Secretary Review" ? "Under Chairperson Review"
+      : status === "Under Chairperson Review" ? "Member Review" : null
+    : action === "approve_minutes" && status === "Member Review" ? "Approved"
+    : action === "sign_minutes" && status === "Approved" ? "Signed"
+    : action === "archive_minutes" && status === "Signed" ? "Archived"
+    : null;
+  if (!target) {
+    throw new Error("This minutes action is not permitted in the current review stage. Refresh and retry.");
+  }
+  return { approval_status: target };
+}
