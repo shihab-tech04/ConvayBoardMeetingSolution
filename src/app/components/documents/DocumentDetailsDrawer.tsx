@@ -42,7 +42,8 @@ import {
   type BoardPackDocumentLink,
 } from "../../data/documentWorkspaceData";
 import { useUserRegistry } from "../../hooks/useUserRegistry";
-import { usePermissionRegistry } from "../../hooks/usePermissionRegistry";
+import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { documentActionGranted, documentActionSessionUnchanged } from "./documentActionAccess";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getDocumentRepository } from "../../services/repositories/documentRepository";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
@@ -83,10 +84,12 @@ function newAuditId(): string { return `AUD-${Date.now()}-${Math.random().toStri
 // ── Permission hook ────────────────────────────────────────────────────────────
 
 function useDocPermissions() {
-  const reg = usePermissionRegistry();
+  // Subscribe for instant UI updates. Each action reads the CURRENT SQL-backed
+  // actor snapshot instead of the global catalogue of defined permissions.
+  const access = useAccessSnapshot();
   return useCallback(
-    (permId: string) => reg.flatPermissions.some(p => p.id === permId && p.status === "Active"),
-    [reg.flatPermissions],
+    (permId: string) => documentActionGranted(permId, readAccessSnapshot()),
+    [access],
   );
 }
 
@@ -257,6 +260,11 @@ function AccessTab({
 
   const handleAdd = async () => {
     if (!repo || !selUser) { toast.error("Select a user to add."); return; }
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_share", readAccessSnapshot())) {
+      toast.error("You do not have permission to share this document.");
+      return;
+    }
     setSaving(true);
     try {
       await repo.grantAccess({
@@ -266,20 +274,34 @@ function AccessTab({
         permission: ROLE_PERM_MAP[selRole] ?? "view",
         granted_by: "current_user",
       });
+      if (!documentActionSessionUnchanged("doc_share", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or access changed. Refresh the document access list.");
+      }
+      await reload();
       toast.success("Access granted.");
       setShowForm(false); setSelUser(""); setSelRole("Viewer");
-      await reload();
-    } catch { toast.error("Failed to grant access."); }
-    finally { setSaving(false); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to grant access.");
+    } finally { setSaving(false); }
   };
 
   const handleRevoke = async (entryId: string, name: string) => {
     if (!repo) return;
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_share", readAccessSnapshot())) {
+      toast.error("You do not have permission to revoke document access.");
+      return;
+    }
     try {
       await repo.revokeAccess(entryId);
-      toast.success(`Access removed for ${name}.`);
+      if (!documentActionSessionUnchanged("doc_share", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or access changed. Refresh the document access list.");
+      }
       await reload();
-    } catch { toast.error("Failed to remove access."); }
+      toast.success(`Access removed for ${name}.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to remove access.");
+    }
   };
 
   const userOptions = useMemo(
@@ -1665,14 +1687,24 @@ export function DocumentDetailsDrawer({ open, onClose, document: doc }: Document
 
   const handleDownload = useCallback(async () => {
     if (!doc?.file_name) return;
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_download", accessAtStart)) {
+      toast.error("You do not have permission to download this document.");
+      return;
+    }
     try {
       const file = await documentContentStore.getOriginalFile(docId);
+      if (!documentActionSessionUnchanged("doc_download", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or document access changed. Download again after refreshing.");
+      }
       if (!file) { toast.error("Original file not found."); return; }
       const url = URL.createObjectURL(file);
       const a   = document.createElement("a");
       a.href = url; a.download = doc.file_name; a.click();
       URL.revokeObjectURL(url);
-    } catch { toast.error("Download failed."); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Download failed.");
+    }
   }, [doc, docId]);
 
   // ── Workspace type and action labels ───────────────────────────────────────
