@@ -29,7 +29,7 @@ describe("DC-06 document library Workflow Status filtering", () => {
   });
   it("is actually wired into the library filter, not only unused code", () => {
     const src=readFileSync("src/app/pages/agenda-documents/DocumentLibraryPage.tsx","utf8");
-    expect(src).toContain("matchesDocumentWorkflowStatus(row, applied.workflow_status)");
+    expect(src).toContain('matchesDocumentWorkflowStatus(row, applied.workflow_status ?? "")');
     expect(src).not.toContain("row.approval_status !== applied.workflow_status");
     expect(src).toContain('label: "Workflow Status"');
   });
