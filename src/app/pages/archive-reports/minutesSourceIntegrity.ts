@@ -8,8 +8,25 @@ export interface MinutesSourceMeeting {
   meeting_id: string;
   meeting_title: string;
   meeting_date?: string;
+  committee?: string;
+  meeting_type?: string;
+  mode?: string;
+  venue?: string;
+  time_zone?: string;
+  confidentiality?: string;
   approval_status: string;
 }
+
+/** Immutable, source-derived details attached to a minutes version. */
+export interface MinutesMeetingContext {
+  committee: string;
+  meeting_type: string;
+  mode: string;
+  venue: string;
+  time_zone: string;
+  confidentiality: string;
+}
+
 
 const CAN_DRAFT_FROM = new Set(["Completed", "Closed", "Awaiting Minutes"]);
 
@@ -17,7 +34,7 @@ export function resolveMinutesSource(
   meetingId: unknown,
   meetingTitle: unknown,
   meetings: readonly MinutesSourceMeeting[],
-): Pick<MinutesSourceMeeting, "meeting_id" | "meeting_title" | "meeting_date"> {
+): Pick<MinutesSourceMeeting, "meeting_id" | "meeting_title" | "meeting_date"> & { meeting_context: MinutesMeetingContext } {
   const requestedId = typeof meetingId === "string" ? meetingId.trim() : "";
   const requestedTitle = typeof meetingTitle === "string" ? meetingTitle.trim() : "";
   if (!requestedId) throw new Error("Select a completed meeting before creating minutes.");
@@ -28,13 +45,21 @@ export function resolveMinutesSource(
   if (!CAN_DRAFT_FROM.has(source.approval_status)) {
     throw new Error("Minutes can only be drafted for a completed or closed meeting awaiting minutes.");
   }
-  if (!requestedTitle || requestedTitle !== source.meeting_title.trim()) {
+  if (requestedTitle && requestedTitle !== source.meeting_title.trim()) {
     throw new Error("Meeting title does not match the selected meeting. Use the current title from the meeting register.");
   }
   return {
     meeting_id: source.meeting_id,
     meeting_title: source.meeting_title,
     meeting_date: source.meeting_date,
+    meeting_context: {
+      committee: source.committee ?? "",
+      meeting_type: source.meeting_type ?? "",
+      mode: source.mode ?? "",
+      venue: source.venue ?? "",
+      time_zone: source.time_zone ?? "",
+      confidentiality: source.confidentiality ?? "",
+    },
   };
 }
 
