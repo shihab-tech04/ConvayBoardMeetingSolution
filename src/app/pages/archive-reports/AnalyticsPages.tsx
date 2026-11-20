@@ -241,13 +241,13 @@ export function DecisionsActionsAnalyticsPage() {
       effective_date:        d.effective_date,
       financial_impact:      d.financial_impact,
       linked_actions:        String(linked.length),
-      completed_actions:     String(linked.filter(a => isActionClosed(a)).length),
+      completed_actions:     String(linked.filter(a => isActionClosed({ ...a })).length),
       implementation_status: d.implementation_status,
       approval_status:       d.approval_status,
     };
   });
 
-  const overdueActions = countOverdueActions(actionReg.items, todayInLocalTime(new Date()));
+  const overdueActions = countOverdueActions(actionReg.items.map(a => ({ ...a })), todayInLocalTime(new Date()));
 
   const kpis: KpiDef[] = [
     { label: "Total Decisions", value: String(decisionReg.items.length),                                                     tone: "primary" },
