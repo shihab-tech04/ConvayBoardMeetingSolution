@@ -55,7 +55,7 @@ export type TenantAccessDecision =
   | { allowed: true; mode: "membership" | "audited_root"; tenantId: string }
   | { allowed: false; code: TenantDenialCode };
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: unknown): value is string =>
   typeof value === "string" && UUID_RE.test(value);
 const sameUuid = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
