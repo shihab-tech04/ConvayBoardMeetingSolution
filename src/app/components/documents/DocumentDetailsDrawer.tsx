@@ -57,6 +57,7 @@ import type { DocumentRepository, DocumentAccessEntry } from "../../services/typ
 import { getDocumentWorkspaceType } from "../../utils/documentFormat";
 import { canRestoreVersion, isLockedVersion } from "./documentVersionLock";
 import { documentAcknowledgementLabel, formatDocumentBytes as formatBytes, formatDocumentDate as formatDate } from "./documentDetailFormatting";
+import { confirmDocumentAcknowledgement, isCurrentVersionAcknowledged } from "./documentAcknowledgementAck";
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -1373,36 +1374,74 @@ function BoardPacksTab({ doc, can }: { doc: BoardDocument; can: (id: string) => 
 // ── AcknowledgementsTab ────────────────────────────────────────────────────────
 
 function AcknowledgementsTab({ doc }: { doc: BoardDocument }) {
-  const docId       = doc.doc_id ?? doc.id;
-  const ackReg      = useDocumentAcknowledgementRegistry();
-  const auditReg    = useAuditEventRegistry();
+  const docId = doc.doc_id ?? doc.id;
+  const versionId = doc.version?.trim() || "1.0";
+  const ackReg = useDocumentAcknowledgementRegistry();
   const currentUser = useCurrentUser();
+  const actorName = currentUser.name.trim();
+  const [ackSaving, setAckSaving] = useState(false);
+  const activeRequest = useRef<string | null>(null);
+  const pendingAck = useRef<{
+    key: string; id: string; timestamp: string;
+  } | null>(null);
+  const requestKey = [docId, versionId, actorName].join("\u0000");
+  const currentKey = useRef(requestKey);
+  currentKey.current = requestKey;
+  useEffect(() => {
+    pendingAck.current = null;
+    activeRequest.current = null;
+    setAckSaving(false);
+  }, [requestKey]);
 
   const acks = ackReg.items.filter(a => a.document_id === docId);
-  const alreadyAcked = acks.some(
-    a => a.acknowledged_by.toLowerCase() === currentUser.name.toLowerCase(),
-  );
+  const alreadyAcked = isCurrentVersionAcknowledged(acks, docId, actorName, versionId);
 
-  const handleAcknowledge = () => {
-    if (alreadyAcked) { toast.info("You have already acknowledged this document."); return; }
-    const ackId = `ACK-${Date.now()}`;
-    ackReg.add({
-      id: ackId, ack_id: ackId,
-      document_id: docId,
-      document_name: doc.doc_name,
-      acknowledged_by: currentUser.name,
-      acknowledged_at: new Date().toISOString(),
-      version_id: doc.version,
-    });
-    auditReg.add({
-      id: `AUD-${Date.now()}`, event_id: `AUD-${Date.now()}`,
-      entity_type: "Document", entity_id: docId,
-      action: "Document Acknowledged", actor: currentUser.name, actor_role: "User",
-      timestamp: new Date().toISOString(), ip_address: "",
-      details: `Version ${doc.version ?? "1.0"} explicitly acknowledged`,
-      approval_status: "Logged",
-    });
-    toast.success("Document acknowledged.");
+  const handleAcknowledge = async () => {
+    if (activeRequest.current || ackSaving || ackReg.loading || ackReg.error) return;
+    if (alreadyAcked) {
+      toast.info("You have already acknowledged this document version.");
+      return;
+    }
+    const accessAtStart = readAccessSnapshot();
+    if (!actorName || !documentActionGranted("doc_view", accessAtStart)) {
+      toast.error("You do not have permission to acknowledge this document.");
+      return;
+    }
+    const pending = pendingAck.current?.key === requestKey
+      ? pendingAck.current
+      : { key: requestKey,
+          id: `ACK-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: new Date().toISOString() };
+    pendingAck.current = pending;
+    activeRequest.current = requestKey;
+    setAckSaving(true);
+    try {
+      await confirmDocumentAcknowledgement(
+        () => ackReg.add({
+          id: pending.id, ack_id: pending.id,
+          document_id: docId, document_name: doc.doc_name,
+          acknowledged_by: actorName, acknowledged_at: pending.timestamp,
+          version_id: versionId,
+        }),
+        async () => { await ackReg.refresh?.(); },
+        () => ackReg.getById(pending.id),
+        { id: pending.id, documentId: docId, actorName, versionId },
+      );
+      if (!documentActionSessionUnchanged("doc_view", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your session changed. Refresh acknowledgements before continuing.");
+      }
+      if (currentKey.current !== requestKey) return;
+      pendingAck.current = null;
+      toast.success("Document acknowledged.");
+    } catch (error) {
+      if (currentKey.current === requestKey) {
+        toast.error(error instanceof Error
+          ? error.message : "Acknowledgement not confirmed. Refresh before retrying.");
+      }
+    } finally {
+      if (activeRequest.current === requestKey) activeRequest.current = null;
+      if (currentKey.current === requestKey) setAckSaving(false);
+    }
   };
 
   return (
@@ -1412,10 +1451,20 @@ function AcknowledgementsTab({ doc }: { doc: BoardDocument }) {
           This document requires explicit acknowledgement. Viewing does not count as acknowledgement.
         </div>
       )}
+      {ackReg.error && (
+        <div className="doc-drawer__empty" role="alert">
+          Unable to load acknowledgements. Refresh the document before continuing.
+        </div>
+      )}
 
       {doc.acknowledgement_required === "Yes" && !alreadyAcked && (
         <div style={{ marginBottom: "1rem" }}>
-          <Button variant="primary" size="sm" leadingIcon={CheckSquare} onClick={handleAcknowledge}>
+          <Button
+            variant="primary" size="sm" leadingIcon={CheckSquare}
+            loading={ackSaving}
+            disabled={ackSaving || Boolean(ackReg.loading || ackReg.error)}
+            onClick={() => { void handleAcknowledge(); }}
+          >
             Acknowledge Document
           </Button>
         </div>
@@ -1424,7 +1473,7 @@ function AcknowledgementsTab({ doc }: { doc: BoardDocument }) {
       {alreadyAcked && (
         <div className="doc-drawer__ack-self">
           <CheckCircle size={13} strokeWidth={2} style={{ color: "var(--color-success,#16a34a)" }} />
-          <span>You have acknowledged this document</span>
+          <span>You have acknowledged this document version</span>
         </div>
       )}
 
