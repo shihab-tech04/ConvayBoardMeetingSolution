@@ -7,6 +7,8 @@ import { handleExportDisabled } from "../../utils/exportDisabled";
 import { type SystemRole } from "../../data/mockData";
 import { usePermissionRegistry } from "../../hooks/usePermissionRegistry";
 import { useRoleRegistry } from "../../hooks/useRoleRegistry";
+import { readAccessSnapshot } from "../../services/supabase/convayAccess";
+import { roleDeletionImpact } from "../../hooks/roleDeletionImpact";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import { StatusBadge } from "../../components/badges/StatusBadge";
 import { CollapsibleKpiSection } from "../../components/cards/CollapsibleKpiSection";
@@ -158,6 +160,17 @@ export function RoleManagementPage() {
     setDetailsOpen(true);
   };
 
+  const requestRoleDelete = (roleId: string) => {
+    // The server's SQL-backed join/counts decide whether this is actionable.
+    const impact = roleDeletionImpact(readAccessSnapshot(), roleId);
+    if (impact.status !== "ready") {
+      toast.error(impact.message);
+      return;
+    }
+    setConfirmDeleteRole(roleId);
+    setDetailsOpen(false);
+  };
+
   const handleDelete = async (roleId: string) => {
     try {
       await deleteRole(roleId);
@@ -177,7 +190,7 @@ export function RoleManagementPage() {
         <Button variant="secondary" size="md" leadingIcon={Copy} onClick={() => { void handleDuplicate(selectedRole); setDetailsOpen(false); }}>{"Duplicate Role"}</Button>
       </div>
       <div className="user-drawer-footer__divider" />
-      <Button variant="destructive" size="md" fullWidth leadingIcon={Trash2} onClick={() => { setConfirmDeleteRole(selectedRole.id); setDetailsOpen(false); }}>{"Delete"}</Button>
+      <Button variant="destructive" size="md" fullWidth leadingIcon={Trash2} onClick={() => requestRoleDelete(selectedRole.id)}>{"Delete"}</Button>
     </div>
   ) : undefined;
 
@@ -313,9 +326,23 @@ export function RoleManagementPage() {
       {confirmDeleteRole && (
         <SConfirmModal
           title={"Delete Role"}
-          message={`Delete Role "${roles.find((r) => r.id === confirmDeleteRole)?.name}"? users are currently assigned this role. They will lose access to associated permissions.`}
+          message={(() => {
+            const impact = roleDeletionImpact(readAccessSnapshot(), confirmDeleteRole);
+            return impact.status === "ready"
+              ? `Delete Role "${roles.find(r => r.id === confirmDeleteRole)?.name ?? "selected role"}"? No users are assigned. This role and its permission grants will be removed.`
+              : impact.message;
+          })()}
           confirmLabel={"Delete Role"}
-          onConfirm={() => { void handleDelete(confirmDeleteRole); }}
+          onConfirm={() => {
+            // Re-check again inside deleteRole() against a new server snapshot.
+            const impact = roleDeletionImpact(readAccessSnapshot(), confirmDeleteRole);
+            if (impact.status !== "ready") {
+              toast.error(impact.message);
+              setConfirmDeleteRole(null);
+              return;
+            }
+            void handleDelete(confirmDeleteRole);
+          }}
           onClose={() => setConfirmDeleteRole(null)}
           danger
         />
