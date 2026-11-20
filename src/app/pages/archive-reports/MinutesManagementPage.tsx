@@ -243,6 +243,8 @@ export function MinutesManagementPage() {
     },
     kpis,
     entryBtn: canWriteMinutes ? "Create Minutes" : undefined,
+    // Keep the create form open until the authoritative SQL save succeeds.
+    awaitCreateSave: true,
     formFields: dynamicFields,
     onCustomAction(actionId, row) {
       if (actionId === "export_minutes") {
