@@ -14,7 +14,7 @@ describe("AR-01 and AR-02: archive navigation and truthful record states", () =>
     expect(archiveRecordPath("MTG / 7?")).toBe("/meetings/MTG%20%2F%207%3F/record");
   });
   it("fails closed instead of navigating to a missing or unsafe record ID", () => {
-    for (const value of [null, undefined, "", "  ", ".", "..", "\\u0000"]) {
+    for (const value of [null, undefined, "", "  ", ".", "..", String.fromCharCode(0)]) {
       expect(() => archiveRecordPath(value)).toThrow(/ID/);
     }
   });
