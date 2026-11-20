@@ -22,6 +22,7 @@ import {
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { normalizeBoardDocument } from "../../utils/normalizeBoardDocument";
 import { normalizeDocumentPage } from "./documentLibraryPageNumber";
+import { matchesDocumentGovernanceBody, type GovernanceMeeting } from "./documentLibraryGovernanceFilter";
 import type { ColDef, FilterDef, RowAction, TableRow } from "../modulePageUtils";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -74,8 +75,10 @@ function matchesFilters(
   row: BoardDocument,
   applied: Record<string, string>,
   user?: { name?: string; employeeId?: string },
+  meetings: readonly GovernanceMeeting[] = [],
 ): boolean {
   if (applied.doc_type && applied.doc_type !== "All Types" && row.doc_type !== applied.doc_type) return false;
+  if (applied.governance_body && !matchesDocumentGovernanceBody(row.related_meeting, applied.governance_body, meetings)) return false;
   if (applied.file_format && applied.file_format !== "All") {
     const ext = String(row.file_name ?? row.file_format ?? "").toLowerCase().split(".").pop() ?? "";
     if (ext.toUpperCase() !== applied.file_format) return false;
@@ -248,8 +251,8 @@ export function DocumentLibraryPage() {
 
   // Stage 1: search + filter (no tab) — used for tab counts
   const searchFiltered = useMemo(
-    () => items.filter(d => matchesSearch(d, q) && matchesFilters(d, appliedFilters, currentUser)),
-    [items, q, appliedFilters, currentUser],
+    () => items.filter(d => matchesSearch(d, q) && matchesFilters(d, appliedFilters, currentUser, meetingReg.items)),
+    [items, q, appliedFilters, currentUser, meetingReg.items],
   );
 
   // Stage 2: apply active tab
