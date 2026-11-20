@@ -791,6 +791,15 @@ export interface Minutes {
   approval_status: string;
   created_at: string;
   meeting_date?: string;
+  /** MN-02 server-authoritative source meeting snapshot; no client editing. */
+  meeting_context?: {
+    committee: string;
+    meeting_type: string;
+    mode: string;
+    venue: string;
+    time_zone: string;
+    confidentiality: string;
+  };
 }
 
 // ─── BoardPack Interface ───────────────────────────────────────────────────────
