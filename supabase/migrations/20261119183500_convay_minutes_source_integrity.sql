@@ -18,6 +18,7 @@ declare
   v_new_status text;
   v_next_version text;
   v_history jsonb;
+  v_expected_context jsonb;
   v_lifecycle_history jsonb;
   v_source_scope text;
   v_actor_scope text;
@@ -119,6 +120,16 @@ begin
       using errcode='23503';
   end if;
 
+  -- MN-02: derive source context from the locked meeting row, not the form.
+  v_expected_context := jsonb_build_object(
+    'committee',coalesce(v_meeting.payload->>'committee',''),
+    'meeting_type',coalesce(v_meeting.payload->>'meeting_type',''),
+    'mode',coalesce(v_meeting.payload->>'mode',''),
+    'venue',coalesce(v_meeting.payload->>'venue',''),
+    'time_zone',coalesce(v_meeting.payload->>'time_zone',''),
+    'confidentiality',coalesce(v_meeting.payload->>'confidentiality','')
+  );
+
   v_source_scope := coalesce(
     nullif(btrim(v_meeting.payload->>'tenant_id'), ''),
     nullif(btrim(v_meeting.payload->>'organization_id'), '')
@@ -195,6 +206,13 @@ begin
       raise exception 'Source meeting must be completed or awaiting minutes'
         using errcode='23514';
     end if;
+    -- Even a permitted author cannot supply a different source context.
+    if new.payload ? 'meeting_context'
+       and new.payload->'meeting_context' is distinct from v_expected_context then
+      raise exception 'Client minutes context does not match authoritative meeting'
+        using errcode='42501';
+    end if;
+    new.payload := jsonb_set(new.payload,'{meeting_context}',v_expected_context,true);
     if v_new_status <> 'draft' then
       raise exception 'New minutes must begin as Draft' using errcode='23514';
     end if;
@@ -227,6 +245,7 @@ begin
      or new.payload->>'minutes_id' is distinct from old.payload->>'minutes_id'
      or new.payload->>'meeting_title' is distinct from old.payload->>'meeting_title'
      or new.payload->>'meeting_date' is distinct from old.payload->>'meeting_date'
+     or new.payload->'meeting_context' is distinct from old.payload->'meeting_context'
      or new.payload->'tenant_id' is distinct from old.payload->'tenant_id' then
     raise exception 'Existing minutes source and identity are immutable'
       using errcode='42501';
