@@ -5,6 +5,7 @@ import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
 import { buildGovernanceReportFilters } from "./governanceReportView";
 import { buildDecisionRegisterFilters } from "./decisionRegisterView";
+import { hasReportableFinancialImpact } from "./financialImpactReportView";
 import { countOverdueActions, isActionClosed, todayInLocalTime } from "./actionRegisterView";
 import {
   MEETING_DRAWER_COLS,
@@ -295,9 +296,8 @@ export function DecisionsActionsAnalyticsPage() {
 export function FinancialResourceImpactPage() {
   const decisionReg = useDecisionRegistry();
 
-  const withImpact = decisionReg.items.filter(
-    d => d.financial_impact && d.financial_impact !== "N/A" && d.financial_impact !== ""
-  );
+  // Only SQL-confirmed, meaningful impact values enter this report.
+  const withImpact = decisionReg.items.filter(d => hasReportableFinancialImpact(d.financial_impact));
 
   const rows: TableRow[] = withImpact.map(d => ({
     id:                    d.id,
@@ -340,12 +340,15 @@ export function FinancialResourceImpactPage() {
       amount:     "financial_impact",
       date:       "effective_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildDecisionRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Decision Details",
     drawerCols:  DECISION_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(decisionReg.loading),
+    dataError: decisionReg.error ?? null,
+    onDataRetry: decisionReg.refresh,
+    kpis: decisionReg.loading || decisionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
