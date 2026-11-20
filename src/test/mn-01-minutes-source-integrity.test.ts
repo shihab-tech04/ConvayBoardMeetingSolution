@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission } from "../app/pages/archive-reports/minutesSourceIntegrity";
+import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition } from "../app/pages/archive-reports/minutesSourceIntegrity";
 
 const sourceMeeting = {
   id: "meeting-uuid-1", meeting_id: "MTG-2026-0001", meeting_title: "Annual Board Meeting",
@@ -79,6 +79,46 @@ describe("MN-01 minutes source integrity", () => {
     expect(page).toContain("validateMinutesRevisionRequest(original.approval_status, instructions)");
     expect(page).toContain("const saved = await registry.update(id, revisionPatch)");
     expect(page).toContain('if (saved !== true) throw new Error(');
+  });
+  it("allows only ordered reviewer transitions and distinct approval, sign, archive", () => {
+    expect(buildMinutesLifecycleTransition("Under Secretary Review", "forward_review"))
+      .toEqual({ approval_status: "Under Chairperson Review" });
+    expect(buildMinutesLifecycleTransition("Under Chairperson Review", "forward_review"))
+      .toEqual({ approval_status: "Member Review" });
+    expect(buildMinutesLifecycleTransition("Member Review", "approve_minutes"))
+      .toEqual({ approval_status: "Approved" });
+    expect(buildMinutesLifecycleTransition("Approved", "sign_minutes"))
+      .toEqual({ approval_status: "Signed" });
+    expect(buildMinutesLifecycleTransition("Signed", "archive_minutes"))
+      .toEqual({ approval_status: "Archived" });
+    expect(() => buildMinutesLifecycleTransition("Draft", "approve_minutes")).toThrow(/review stage/);
+    expect(() => buildMinutesLifecycleTransition("Under Secretary Review", "archive_minutes")).toThrow(/review stage/);
+    expect(() => buildMinutesLifecycleTransition("Approved", "archive_minutes")).toThrow(/review stage/);
+    expect(() => buildMinutesLifecycleTransition("Archived", "sign_minutes")).toThrow(/review stage/);
+  });
+  it("connects minutes lifecycle actions through confirmed SQL and hides invalid generic publishing", () => {
+    const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
+    expect(page).toContain("drawerActionsResolver(row)");
+    for (const action of ["forward_review", "approve_minutes", "sign_minutes", "archive_minutes"]) {
+      expect(page).toContain('id: "' + action + '"');
+    }
+    expect(page).not.toContain('id: "publish"');
+    expect(page).not.toContain('id: "archive"');
+    expect(page).toContain("buildMinutesLifecycleTransition(current.approval_status, workflowRequest.action)");
+    expect(page).toContain("const saved = await registry.update(id, patch)");
+    expect(page).toContain("const readback = registry.getById(id)");
+    expect(page).toContain('effective_permissions.includes("min_approve")');
+  });
+  it("requires server-assigned reviewer, approver, signer and archivist identity", () => {
+    const sql = readFileSync("supabase/migrations/20261119183500_convay_minutes_source_integrity.sql", "utf8");
+    expect(sql).toContain("Invalid minutes lifecycle transition");
+    expect(sql).toContain("Only assigned secretary may forward minutes");
+    expect(sql).toContain("Only assigned chairperson may forward minutes");
+    expect(sql).toContain("Minutes approval/signature/archive evidence must be server-generated");
+    expect(sql).toContain("'minutes_lifecycle_history'");
+    for (const field of ["approved_by", "signed_by", "archived_by"]) {
+      expect(sql).toContain("'{"+ field +"}'");
+    }
   });
   it("keeps Additional Notes in both SQL create and SQL edit payloads", () => {
     const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
