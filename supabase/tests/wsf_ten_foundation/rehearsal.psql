@@ -1,0 +1,154 @@
+\set ON_ERROR_STOP on
+-- WS-F TEN-00: real PostgreSQL 17 execution against synthetic disposable
+-- schema only. Transactional DDL/constraint/rollback rehearsal. NOT a
+-- production restore, direct REST/RLS/Storage/Edge tenant isolation test.
+BEGIN;
+
+DO $pre$
+BEGIN
+  IF to_regclass('auth.users') IS NULL
+    OR to_regclass('public.convay_entity_records') IS NULL
+    OR to_regnamespace('convay_private') IS NULL
+    OR to_regclass('convay_private.tenants') IS NOT NULL THEN
+      RAISE EXCEPTION 'TEN-00 preflight: unexpected fixture schema';
+  END IF;
+  IF (SELECT count(*) FROM public.convay_entity_records) <> 1 THEN
+    RAISE EXCEPTION 'TEN-00 preflight: source record count changed';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='convay_entity_records'
+      AND column_name='tenant_id') THEN
+    RAISE EXCEPTION 'TEN-00 preflight: tenant_id already exists';
+  END IF;
+END
+$pre$;
+
+\ir foundation.sql
+
+DO $check$
+DECLARE
+  actor uuid := '33333333-3333-4333-8333-333333333333'::uuid;
+  ta uuid;
+  tb uuid;
+BEGIN
+  IF to_regclass('convay_private.tenants') IS NULL
+    OR to_regclass('convay_private.tenant_memberships') IS NULL THEN
+    RAISE EXCEPTION 'TEN-00: private tenant tables absent';
+  END IF;
+  IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid='convay_private.tenants'::regclass)
+    OR NOT (SELECT relrowsecurity FROM pg_class WHERE oid='convay_private.tenant_memberships'::regclass) THEN
+    RAISE EXCEPTION 'TEN-00: private RLS disabled';
+  END IF;
+  IF has_table_privilege('authenticated','convay_private.tenants','SELECT')
+    OR has_table_privilege('authenticated','convay_private.tenant_memberships','INSERT')
+    OR has_table_privilege('anon','convay_private.tenants','SELECT') THEN
+    RAISE EXCEPTION 'TEN-00: private tables exposed';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='convay_entity_records'
+      AND column_name='tenant_id' AND data_type='uuid'
+      AND is_nullable='YES' AND column_default IS NULL) THEN
+    RAISE EXCEPTION 'TEN-00: staging tenant column shape invalid';
+  END IF;
+  IF has_column_privilege('authenticated','public.convay_entity_records','tenant_id','INSERT')
+    OR has_column_privilege('authenticated','public.convay_entity_records','tenant_id','UPDATE') THEN
+    RAISE EXCEPTION 'TEN-00: caller can edit tenant ownership';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE
+      conrelid='public.convay_entity_records'::regclass
+      AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (entity_key, record_id)') THEN
+    RAISE EXCEPTION 'TEN-00: legacy primary key changed';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE
+      conrelid='public.convay_entity_records'::regclass
+      AND conname='convay_entity_records_tenant_fk' AND contype='f'
+      AND NOT convalidated) THEN
+    RAISE EXCEPTION 'TEN-00: expected staged foreign key absent';
+  END IF;
+  IF (SELECT count(*) FROM public.convay_entity_records
+      WHERE record_id='fixture-meeting-1' AND tenant_id IS NULL) <> 1 THEN
+    RAISE EXCEPTION 'TEN-00: existing row not preserved';
+  END IF;
+  INSERT INTO convay_private.tenants(display_name)
+    VALUES ('Isolated tenant A') RETURNING id INTO ta;
+  INSERT INTO convay_private.tenants(display_name)
+    VALUES ('Isolated tenant B') RETURNING id INTO tb;
+  IF ta=tb THEN RAISE EXCEPTION 'TEN-00: duplicate tenant UUID'; END IF;
+  INSERT INTO convay_private.tenant_memberships(tenant_id,user_id)
+    VALUES (ta,actor);
+  IF (SELECT count(*) FROM convay_private.tenant_memberships
+      WHERE tenant_id=ta AND user_id=actor AND membership_state='active' AND revision=1) <> 1 THEN
+    RAISE EXCEPTION 'TEN-00: membership defaults invalid';
+  END IF;
+
+  BEGIN
+    INSERT INTO convay_private.tenant_memberships(tenant_id,user_id) VALUES (ta,actor);
+    RAISE EXCEPTION 'TEN-00: duplicate membership wrongly accepted';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO convay_private.tenant_memberships(tenant_id,user_id)
+      VALUES (gen_random_uuid(),actor);
+    RAISE EXCEPTION 'TEN-00: invalid tenant FK wrongly accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO convay_private.tenant_memberships(tenant_id,user_id)
+      VALUES (tb,gen_random_uuid());
+    RAISE EXCEPTION 'TEN-00: invalid actor FK wrongly accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE convay_private.tenant_memberships
+      SET membership_state='revoked'
+      WHERE tenant_id=ta AND user_id=actor;
+    RAISE EXCEPTION 'TEN-00: revoked without timestamp wrongly accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  UPDATE convay_private.tenant_memberships
+    SET membership_state='revoked', revoked_at=now(), revision=revision+1,
+        changed_at=now()
+    WHERE tenant_id=ta AND user_id=actor;
+  IF (SELECT revision FROM convay_private.tenant_memberships
+      WHERE tenant_id=ta AND user_id=actor) <> 2 THEN
+    RAISE EXCEPTION 'TEN-00: revocation increment missing';
+  END IF;
+  BEGIN
+    UPDATE convay_private.tenant_memberships
+      SET membership_state='active' WHERE tenant_id=ta AND user_id=actor;
+    RAISE EXCEPTION 'TEN-00: reactivation with stale timestamp accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE convay_private.tenants
+      SET lifecycle_state='unknown' WHERE id=ta;
+    RAISE EXCEPTION 'TEN-00: unknown tenant state accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+
+  RAISE NOTICE 'TEN-00: PostgreSQL constraints, RLS table defaults, legacy row, FK, denied membership mutations PASS (disposable fixture only)';
+END
+$check$;
+
+ROLLBACK;
+
+DO $post$
+BEGIN
+  IF to_regclass('convay_private.tenants') IS NOT NULL
+    OR to_regclass('convay_private.tenant_memberships') IS NOT NULL THEN
+    RAISE EXCEPTION 'TEN-00 rollback: tenant tables survived';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='convay_entity_records'
+      AND column_name='tenant_id') THEN
+    RAISE EXCEPTION 'TEN-00 rollback: tenant column survived';
+  END IF;
+  IF (SELECT count(*) FROM public.convay_entity_records
+      WHERE entity_key='bms.meetings'
+        AND record_id='fixture-meeting-1'
+        AND payload->>'status'='Draft') <> 1 THEN
+    RAISE EXCEPTION 'TEN-00 rollback: original fixture record changed';
+  END IF;
+  RAISE NOTICE 'TEN-00: SQL DDL rollback + existing fixture record preserved PASS; real SaaS authorization remains UNVERIFIED';
+END
+$post$;
