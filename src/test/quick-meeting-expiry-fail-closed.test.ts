@@ -44,6 +44,17 @@ describe("QM-01 malformed expiry fail-closed boundary", () => {
     expect(checkQuickMeetingLink(meeting, { ...link, revoked_at: new Date(now - 1000).toISOString() }, now)).toMatchObject({ allowed: false, status: 410 });
   });
 
+  it("rejects empty and nonfinite expiry inputs on either record", () => {
+    expect(checkQuickMeetingLink({ ...meeting, expires_at: "" }, link, now)).toMatchObject(expired);
+    expect(checkQuickMeetingLink({ ...meeting, expires_at: "NaN" }, link, now)).toMatchObject(expired);
+    expect(checkQuickMeetingLink(meeting, { ...link, expires_at: "" }, now)).toMatchObject(expired);
+    expect(checkQuickMeetingLink(meeting, { ...link, expires_at: "Infinity" }, now)).toMatchObject(expired);
+  });
+
+  it("preserves ended-meeting denial even when the link has not expired", () => {
+    expect(checkQuickMeetingLink({ ...meeting, status: "ended" }, link, now)).toMatchObject(expired);
+  });
+
   it("propagates malformed expiry denial to the guest-admission gate", () => {
     expect(checkQuickGuestAdmission({ meeting, link: { ...link, expires_at: "corrupted" }, participantCount: 0, identityAlreadyPresent: false, now })).toMatchObject(expired);
   });
