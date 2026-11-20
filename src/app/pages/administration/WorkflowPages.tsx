@@ -12,8 +12,9 @@ import {
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, KpiDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA, NAMES } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
+import { unverifiedWorkflowHistoryView } from "./workflowHistoryEvidence";
 import {
   WORKFLOW_DRAWER_COLS,
   APPROVAL_RULE_DRAWER_COLS,
@@ -85,21 +86,8 @@ const revisionRuleRows: TableRow[] = gen(20, i => ({
     "Applied when minutes require further review before sign-off."][i % 2],
 }));
 
-const workflowHistoryRows: TableRow[] = gen(36, i => ({
-  history_id:    `WH-${String(4000 + i).padStart(4, "0")}`,
-  workflow_name: workflowRows[i % 28].workflow_name,
-  entity_type:   ["Meeting", "Agenda", "Minutes", "Resolution", "Board Pack", "Document"][i % 6],
-  entity_title:  NAMES[i % 10],
-  action:        ["Initiated", "Approved", "Rejected", "Escalated", "Completed", "Cancelled"][i % 6],
-  step_name:     ["Step 1: Secretary Review", "Step 2: Chairman Sign-off", "Step 3: Board Approval"][i % 3],
-  actor:         ["Md. Rafiqul Islam", "Mr. Abdul Awal Mintoo", "Ms. Nasrin Sultana", "System"][i % 4],
-  action_date:   `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  duration:      `${(i % 24) + 1}h ${(i % 60)}m`,
-  committee:     CIRCLES_DATA[i % 8],
-  status:        ["Completed", "In Progress", "Pending", "Cancelled"][i % 4],
-  workflow_name_key: `WF-${String(1000 + (i % 28)).padStart(4, "0")}`,
-  notes:         ["On schedule", "Required escalation", "Completed within SLA", ""][i % 4],
-}));
+// AD-04: No authenticated, append-only workflow event journal is currently
+// available. Never substitute dated sample approvals or counts as real audit data.
 
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
@@ -244,16 +232,12 @@ export function ReviewRevisionRulesPage() {
 }
 
 export function WorkflowHistoryPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Events",   value: String(workflowHistoryRows.length),                                                  tone: "primary"  },
-    { label: "Completed",      value: String(workflowHistoryRows.filter(r => r.status === "Completed").length),            tone: "success"  },
-    { label: "In Progress",    value: String(workflowHistoryRows.filter(r => r.status === "In Progress").length),          tone: "warning"  },
-    { label: "Cancelled",      value: String(workflowHistoryRows.filter(r => r.status === "Cancelled").length),            tone: "error"    },
-  ];
+  const evidence = unverifiedWorkflowHistoryView();
+  const kpis: KpiDef[] = evidence.kpis;
 
   const cfg: PageCfg = {
     title: "Workflow History",
-    desc:  "Audit log of all workflow executions, approvals, rejections, and escalations across governance processes.",
+    desc:  evidence.description,
     cols: [
       fc("history_id",    "Event ID"),
       fc("workflow_name", "Workflow"),
@@ -276,10 +260,10 @@ export function WorkflowHistoryPage() {
     drawerTitle:  "Workflow Event Details",
     drawerCols:   WORKFLOW_HISTORY_DRAWER_COLS,
     drawerActions: [
-      { id: "view_workflow", label: "View Workflow",  icon: GitBranch,  color: "#3b82f6" },
-      { id: "download",      label: "Export Event",   icon: Download,   color: "#6b7280" },
+      { id: "view_workflow", label: "View Workflow",  icon: GitBranch,  color: "#3b82f6", enabled: false, disabledReason: evidence.disabledReason },
+      { id: "download",      label: "Export Event",   icon: Download,   color: "#6b7280", enabled: false, disabledReason: evidence.disabledReason },
     ],
-    rows:      workflowHistoryRows,
+    rows:      evidence.rows,
     kpis,
     searchPlaceholder: "Search workflow history",
   };
