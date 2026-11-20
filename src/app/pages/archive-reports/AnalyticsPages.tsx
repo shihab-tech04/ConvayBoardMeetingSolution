@@ -3,6 +3,7 @@ import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
+import { buildGovernanceReportFilters } from "./governanceReportView";
 import {
   MEETING_DRAWER_COLS,
   GOV_BODY_DRAWER_COLS,
@@ -205,12 +206,17 @@ export function GovernanceReportPage() {
       status:     "status",
       date:       "establishment_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildGovernanceReportFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Governance Body Details",
     drawerCols:  GOV_BODY_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(meetingReg.loading || governanceReg.loading || resolutionReg.loading),
+    dataError: meetingReg.error ?? governanceReg.error ?? resolutionReg.error ?? null,
+    onDataRetry: async () => {
+      await Promise.all([meetingReg.refresh?.(), governanceReg.refresh?.(), resolutionReg.refresh?.()]);
+    },
+    kpis: meetingReg.loading || governanceReg.loading || resolutionReg.loading || meetingReg.error || governanceReg.error || resolutionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
