@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition } from "../app/pages/archive-reports/minutesSourceIntegrity";
+import { resolveMinutesSource, eligibleMinutesSourceMeetings, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition } from "../app/pages/archive-reports/minutesSourceIntegrity";
 
 const sourceMeeting = {
   id: "meeting-uuid-1", meeting_id: "MTG-2026-0001", meeting_title: "Annual Board Meeting",
@@ -46,6 +46,20 @@ describe("MN-01 minutes source integrity", () => {
     expect(() => resolveMinutesSource("", "Annual Board Meeting", [sourceMeeting])).toThrow();
     expect(() => resolveMinutesSource("MTG-other-tenant", "Annual Board Meeting", [sourceMeeting])).toThrow();
     expect(() => resolveMinutesSource("MTG-2026-0001", "Wrong Meeting", [sourceMeeting])).toThrow();
+  });
+  it("does not offer unfinished or finalized source meetings in the draft selector", () => {
+    const meetings = [
+      { ...sourceMeeting, approval_status: "Completed" },
+      { ...sourceMeeting, meeting_id: "MTG-2", approval_status: "Closed" },
+      { ...sourceMeeting, meeting_id: "MTG-3", approval_status: "Awaiting Minutes" },
+      { ...sourceMeeting, meeting_id: "MTG-4", approval_status: "Draft" },
+      { ...sourceMeeting, meeting_id: "MTG-5", approval_status: "In Progress" },
+      { ...sourceMeeting, meeting_id: "MTG-6", approval_status: "Minutes Approved" },
+    ];
+    expect(eligibleMinutesSourceMeetings(meetings).map(m => m.meeting_id))
+      .toEqual(["MTG-2026-0001", "MTG-2", "MTG-3"]);
+    const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
+    expect(page).toContain("eligibleMinutesSourceMeetings(meetingReg.items).map");
   });
   it("rejects unfinished and already approved meeting contexts", () => {
     for (const status of ["Draft", "In Progress", "Paused", "Minutes Approved"]) {
