@@ -8,7 +8,7 @@ import { useMinutesRegistry, useMeetingRegistry, generateId } from "../../data/b
 import { MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import { patchFormOptions } from "../../utils/patchFormOptions";
 import { useAccessSnapshot } from "../../services/supabase/convayAccess";
-import { resolveMinutesSource } from "./minutesSourceIntegrity";
+import { resolveMinutesSource, validateMinutesRevisionRequest } from "./minutesSourceIntegrity";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
 
@@ -91,11 +91,7 @@ export function MinutesManagementPage() {
       }
       const original = registry.items.find(item => item.id === id);
       if (!original) throw new Error("Minutes record not found. Refresh and retry.");
-      if (!["Under Secretary Review", "Under Chairperson Review", "Member Review"].includes(original.approval_status)) {
-        throw new Error("A revision may only be requested during minutes review.");
-      }
-      const reason = instructions.trim();
-      if (reason.length < 10) throw new Error("Provide revision instructions of at least 10 characters.");
+      const reason = validateMinutesRevisionRequest(original.approval_status, instructions);
       // The SQL/RLS registry must confirm the transition. Keeping the typed
       // patch as a variable preserves existing Minutes fields and contracts.
       const revisionPatch = { approval_status: "Revision Requested", revision_instructions: reason };
