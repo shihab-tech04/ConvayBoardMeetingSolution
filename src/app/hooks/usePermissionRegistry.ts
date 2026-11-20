@@ -7,6 +7,7 @@ import { useCallback, useMemo } from "react";
 import { PERM_GROUPS, type PermGroupDef, type PermissionItem } from "../data/permissions";
 import { convayAuth } from "../services/supabase/convayAuth";
 import { useAccessSnapshot, reloadAccessSnapshot, type AccessPermission } from "../services/supabase/convayAccess";
+import { requirePermissionMutationReadback, requirePermissionDeletionReadback } from "./accessMutationReadback";
 export const PERM_STORAGE_KEY = "nbr.permissionRegistry.customPermissions";
 export const BASE_OVERRIDE_KEY = "nbr.permissionRegistry.baseOverrides";
 export const PERM_EVENT = "nbr:permissions-updated";
@@ -67,40 +68,51 @@ export function usePermissionRegistry() {
   const customPermissions = useMemo(() => snapshot.permissions.filter(p => p.is_custom).map(toCustom), [snapshot.permissions]);
 
   const addPermission = useCallback(async (perm: Omit<CustomPermission, "isCustom" | "createdAt" | "updatedAt">) => {
-    await convayAuth.access("permission_create", {
+    const payload = {
       id: perm.id, label: perm.label, group_id: perm.groupId, endpoint: perm.endpoint,
       method: perm.method, service_name: perm.serviceName,
       access_label: perm.accessLabel, status: perm.status,
-    });
-    await reloadAccessSnapshot();
+    };
+    const result = await convayAuth.access<unknown>("permission_create", payload);
+    const verified = await reloadAccessSnapshot();
+    requirePermissionMutationReadback(result, verified, { ...payload, is_custom: true });
   }, []);
   const updatePermission = useCallback(async (id: string, patch: Partial<Omit<CustomPermission, "id" | "isCustom" | "createdAt">>) => {
     const existing = snapshot.permissions.find(p => p.id === id);
     if (!existing) throw new Error("Permission not found");
-    await convayAuth.access("permission_update", {
+    const payload = {
       id, label: patch.label ?? existing.label, group_id: patch.groupId ?? existing.group_id,
       endpoint: patch.endpoint ?? existing.endpoint, method: patch.method ?? existing.method,
       service_name: patch.serviceName ?? existing.service_name,
       access_label: patch.accessLabel ?? existing.access_label,
       status: patch.status ?? existing.status,
+    };
+    const result = await convayAuth.access<unknown>("permission_update", payload);
+    const verified = await reloadAccessSnapshot();
+    requirePermissionMutationReadback(result, verified, {
+      ...payload, is_custom: existing.is_custom,
     });
-    await reloadAccessSnapshot();
   }, [snapshot.permissions]);
   const deleteCustomPermission = useCallback(async (id: string) => {
-    await convayAuth.access("permission_delete", { id });
-    await reloadAccessSnapshot();
+    const result = await convayAuth.access<unknown>("permission_delete", { id });
+    const verified = await reloadAccessSnapshot();
+    requirePermissionDeletionReadback(result, verified, id);
   }, []);
   const updateBasePermission = useCallback(async (id: string, patch: Omit<BaseOverride, "id" | "updatedAt">) => {
     const existing = snapshot.permissions.find(p => p.id === id);
     if (!existing) throw new Error("Permission not found");
-    await convayAuth.access("permission_update", {
+    const payload = {
       id, label: existing.label, group_id: existing.group_id,
       endpoint: patch.endpoint ?? existing.endpoint, method: patch.method ?? existing.method,
       service_name: patch.serviceName ?? existing.service_name,
       access_label: patch.accessLabel ?? existing.access_label,
       status: patch.status ?? existing.status,
+    };
+    const result = await convayAuth.access<unknown>("permission_update", payload);
+    const verified = await reloadAccessSnapshot();
+    requirePermissionMutationReadback(result, verified, {
+      ...payload, is_custom: false,
     });
-    await reloadAccessSnapshot();
   }, [snapshot.permissions]);
 
   return {
