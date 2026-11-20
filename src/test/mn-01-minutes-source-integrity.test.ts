@@ -5,12 +5,42 @@ import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutes
 const sourceMeeting = {
   id: "meeting-uuid-1", meeting_id: "MTG-2026-0001", meeting_title: "Annual Board Meeting",
   meeting_date: "2026-11-01", approval_status: "Awaiting Minutes",
+  committee: "Board of Directors", meeting_type: "Annual", mode: "Hybrid",
+  venue: "Board Room", time_zone: "Asia/Dhaka", confidentiality: "Internal",
 };
 
 describe("MN-01 minutes source integrity", () => {
   it("carries the authoritative meeting ID/title/date into a new draft", () => {
     expect(resolveMinutesSource("MTG-2026-0001", "Annual Board Meeting", [sourceMeeting]))
-      .toEqual({ meeting_id: "MTG-2026-0001", meeting_title: "Annual Board Meeting", meeting_date: "2026-11-01" });
+      .toEqual({
+        meeting_id: "MTG-2026-0001",
+        meeting_title: "Annual Board Meeting",
+        meeting_date: "2026-11-01",
+        meeting_context: {
+          committee: "Board of Directors", meeting_type: "Annual", mode: "Hybrid",
+          venue: "Board Room", time_zone: "Asia/Dhaka", confidentiality: "Internal",
+        },
+      });
+  });
+  it("derives the meeting title and authoritative context without user retyping", () => {
+    const result = resolveMinutesSource("MTG-2026-0001", "", [sourceMeeting]);
+    expect(result.meeting_title).toBe("Annual Board Meeting");
+    expect(result.meeting_context.venue).toBe("Board Room");
+    expect(result.meeting_context.committee).toBe("Board of Directors");
+  });
+  it("keeps approved minutes form groups while selecting a known meeting", () => {
+    const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
+    expect(page).toContain('type: "select" as const');
+    expect(page).toContain('readOnly: true');
+    expect(page).toContain("meeting_context:    meeting.meeting_context");
+    expect(page).toContain('dg("Source Meeting Context", [');
+    expect(page).toContain("...MINUTES_DRAWER_COLS");
+  });
+  it("requires the SQL guard to derive context and reject forged clients", () => {
+    const sql = readFileSync("supabase/migrations/20261119183500_convay_minutes_source_integrity.sql", "utf8");
+    expect(sql).toContain("v_expected_context := jsonb_build_object(");
+    expect(sql).toContain("Client minutes context does not match authoritative meeting");
+    expect(sql).toContain("new.payload->'meeting_context' is distinct from old.payload->'meeting_context'");
   });
   it("rejects incorrect, inaccessible and mismatched meeting references", () => {
     expect(() => resolveMinutesSource("", "Annual Board Meeting", [sourceMeeting])).toThrow();
