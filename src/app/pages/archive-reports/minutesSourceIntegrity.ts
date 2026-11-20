@@ -30,6 +30,11 @@ export interface MinutesMeetingContext {
 
 const CAN_DRAFT_FROM = new Set(["Completed", "Closed", "Awaiting Minutes"]);
 
+/** Show only valid source-meeting choices; SQL independently enforces this. */
+export function eligibleMinutesSourceMeetings<T extends MinutesSourceMeeting>(meetings: readonly T[]): T[] {
+  return meetings.filter(meeting => CAN_DRAFT_FROM.has(meeting.approval_status));
+}
+
 export function resolveMinutesSource(
   meetingId: unknown,
   meetingTitle: unknown,
