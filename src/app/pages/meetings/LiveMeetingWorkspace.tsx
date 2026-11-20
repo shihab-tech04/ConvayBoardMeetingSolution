@@ -44,6 +44,7 @@ import { convayAuth } from "../../services/supabase/convayAuth";
 import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
+import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -614,7 +615,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       toast.error("The live session has not loaded. Refresh before changing meeting status.");
       return false;
     }
-    const sessionStatus = nextStatus === "in-progress" ? "active" : "paused";
+    // Verify the server-backed session is in a state that permits this exact
+    // transition. A stale or repeated command must never manufacture an event.
+    let sessionStatus: "active" | "paused";
+    try {
+      sessionStatus = requestedLiveSessionStatus(session.session_status, nextStatus);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Refresh the session before continuing.");
+      return false;
+    }
     statusRequestPending.current = true;
     setStatusBusy(true);
     try {
@@ -639,30 +648,22 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting, meetingId, canControlMeeting, liveSessions, refreshMeetings, refreshLiveSessions]);
 
-  // ── Sync canonical session status on mount (canonical > localStorage) ─────
-  // Only runs once. If the Live Session registry already has a record for this
-  // meeting, use its status as the authoritative source so that refresh and
-  // resume correctly restore the running session rather than re-reading a
-  // stale localStorage snapshot.
-  // Meeting comments, motions and votes start empty. Only explicit participant
-  // actions may create governance evidence; never manufacture records on load.
-
-  const hasSyncedCanonical = useRef(false);
+  // ── Reconcile canonical live-session state after EACH server change ────────
+  // An open second client must observe pause/resume/end when registry data
+  // refreshes. Do not freeze the projection after the first snapshot, and do
+  // not allow browser-local cache to resurrect a server-ended meeting.
+  // No governance records are created by this read-only projection.
+  const lastCanonicalStatusKey = useRef("");
   useEffect(() => {
-    if (hasSyncedCanonical.current || !meetingId || !meeting) return;
+    if (!meetingId || !meeting) return;
     const canonical = liveSessions.find(item => item.meeting_id === meetingId);
     if (!canonical) return;
-    const mapping: Record<string, MeetingCtrlStatus> = {
-      active: "in-progress", paused: "paused", ended: "ended", not_started: "not-started",
-    };
-    const baseStatus = mapping[canonical.session_status ?? ""];
-    if (!baseStatus) return;
-    hasSyncedCanonical.current = true;
-    const persistedStatus = meeting.approval_status;
-    const restoredStatus = baseStatus === "paused" && persistedStatus === "On Break" ? "on-break"
-      : baseStatus === "paused" && persistedStatus === "Adjourned" ? "adjourned"
-      : baseStatus;
-    setCtrlStatusRaw(restoredStatus);
+    const next = canonicalLiveControlStatus(canonical.session_status, meeting.approval_status);
+    if (!next) return;
+    const key = canonicalLiveStatusKey(meetingId, canonical.id, canonical.session_status, meeting.approval_status);
+    if (key === lastCanonicalStatusKey.current) return;
+    lastCanonicalStatusKey.current = key;
+    setCtrlStatusRaw(next);
   }, [meetingId, meeting, liveSessions]);
 
   // ── Persist to localStorage on every state change ─────────────────────────
