@@ -153,6 +153,38 @@ export function MeetingRecordPage() {
 
   const meeting = meetingReg.items.find(m => m.id === meetingId || m.meeting_id === meetingId);
 
+  // A pending/failed SQL list is not evidence that a meeting does not exist.
+  if (meetingReg.loading) {
+    return (
+      <div role="status" aria-live="polite" style={{ padding: "3rem", textAlign: "center" }}>
+        <RefreshCw size={40} aria-hidden="true" style={{ margin: "0 auto 1rem", display: "block" }} />
+        <h2 style={{ fontSize: "1.2rem", fontWeight: 700 }}>Loading Meeting Record</h2>
+        <p style={{ color: "var(--color-muted-foreground)" }}>Retrieving the latest authorized meeting record.</p>
+      </div>
+    );
+  }
+
+  if (meetingReg.error) {
+    return (
+      <div role="alert" style={{ padding: "3rem", textAlign: "center" }}>
+        <AlertCircle size={48} aria-hidden="true" style={{ margin: "0 auto 1rem", color: "#ef4444", display: "block" }} />
+        <h2 style={{ fontSize: "1.2rem", fontWeight: 700, marginBottom: "0.5rem" }}>Meeting Record Unavailable</h2>
+        <p style={{ color: "var(--color-muted-foreground)", marginBottom: "1.5rem" }}>
+          The meeting register could not be loaded. This does not mean the meeting was deleted.
+        </p>
+        <button
+          type="button"
+          onClick={() => { void Promise.resolve(meetingReg.refresh?.()).catch(error =>
+            toast.error(error instanceof Error ? error.message : "Unable to load the meeting record.")
+          ); }}
+          style={{ padding: "0.5rem 1.25rem", borderRadius: 8, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}
+        >
+          Retry Loading
+        </button>
+      </div>
+    );
+  }
+
   if (!meeting) {
     return (
       <div style={{ padding: "3rem", textAlign: "center" }}>
