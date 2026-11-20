@@ -40,7 +40,14 @@ export function resolveLifecycleStage(
   if (status === "scheduled" || status === "published") {
     const date = String(rawDate ?? "").slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { stage: "Preparation Required" };
-    const { tomorrow } = calendarDateWindows(now);
+    // ISO-looking input can still be an impossible calendar date (e.g. Feb 30).
+    // Do not infer start readiness from invalid or stale published records.
+    const calendarDate = new Date(`${date}T00:00:00.000Z`);
+    if (!Number.isFinite(calendarDate.getTime()) || calendarDate.toISOString().slice(0, 10) !== date) {
+      return { stage: "Preparation Required" };
+    }
+    const { today, tomorrow } = calendarDateWindows(now);
+    if (date < today) return { stage: "Preparation Required" };
     return { stage: date <= tomorrow ? "Ready to Start" : "Upcoming Meeting" };
   }
 
