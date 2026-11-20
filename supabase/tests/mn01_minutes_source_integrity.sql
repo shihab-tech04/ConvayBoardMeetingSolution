@@ -58,7 +58,7 @@ begin
   v_payload := jsonb_build_object(
     'id',v_mins,'minutes_id',v_mins,'meeting_id',v_mid,
     'meeting_title','Synthetic board meeting','meeting_date','2026-11-19',
-    'minute_taker','Synthetic minute taker','discussion_summary','Recorded first version','approval_status','Draft','version','1.0'
+    'minute_taker','Synthetic minute taker','discussion_summary','Recorded first version','notes','Original confidential notes','approval_status','Draft','version','1.0'
   );
   if public.convay_apply_entity_batch(jsonb_build_array(jsonb_build_object(
     'entity_key','bms.minutes','action','create','payload',v_payload
@@ -198,6 +198,7 @@ begin
       and jsonb_array_length(payload->'revision_history')=1
       and payload->'revision_history'->0->>'version'='1.0'
       and payload->'revision_history'->0->'content'->>'discussion_summary'='Recorded first version'
+      and payload->'revision_history'->0->'content'->>'notes'='Original confidential notes'
       and payload->'revision_history'->0->>'instructions'='Correct the recorded attendance'
       and payload->'revision_history'->0->>'requested_by'=v_actor::text
   ) then raise exception 'Trusted immutable revision snapshot missing'; end if;
