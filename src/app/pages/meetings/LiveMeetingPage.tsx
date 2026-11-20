@@ -30,6 +30,7 @@ export function LiveMeetingPage() {
       confirmOnClose="Leave the live meeting session?"
     >
       <LiveMeetingWorkspace
+        key={meetingId ?? ""}
         meetingId={meetingId ?? ""}
         entryAction={entryAction}
         onClose={handleClose}
