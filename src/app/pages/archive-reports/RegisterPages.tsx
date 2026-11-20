@@ -2,6 +2,10 @@ import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
+import { buildDecisionRegisterFilters } from "./decisionRegisterView";
+import { buildActionRegisterFilters, isActionClosed, isActionOpen, countOverdueActions, todayInLocalTime } from "./actionRegisterView";
+import { buildAttendanceRegisterFilters } from "./attendanceRegisterView";
+import { buildConflictRegisterFilters } from "./conflictRegisterView";
 import {
   RESOLUTION_DRAWER_COLS,
   DECISION_DRAWER_COLS,
@@ -91,12 +95,16 @@ export function DecisionRegisterPage() {
       status:     "implementation_status",
       date:       "effective_date",
     },
-    filters: BASE_FILTERS,
+    filters: buildDecisionRegisterFilters(rows),
+    dataLoading: registry.loading,
+    dataError: registry.error,
+    onDataRetry: registry.refresh,
     actions: ROW_VIEW,
     drawerTitle: "Decision Details",
     drawerCols: DECISION_DRAWER_COLS,
     rows,
-    kpis,
+    kpis: registry.loading || registry.error ? [] : kpis,
+    searchPlaceholder: "Search decisions",
   };
   return <GenPage cfg={cfg} />;
 }
@@ -105,16 +113,16 @@ export function DecisionRegisterPage() {
 
 export function ActionRegisterPage() {
   const registry = useActionItemRegistry();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInLocalTime(new Date());
 
   const rows: TableRow[] = registry.items.map(a => ({ ...a, id: a.id }));
 
-  const overdue = rows.filter(r => r.due_date && String(r.due_date) < today && r.implementation_status !== "Completed").length;
+  const overdue = countOverdueActions(rows, today);
 
   const kpis: KpiDef[] = [
     { label: "Total Actions",  value: String(rows.length),                                                         tone: "primary" },
-    { label: "Open",           value: String(rows.filter(r => r.implementation_status !== "Completed").length),    tone: "warning" },
-    { label: "Completed",      value: String(rows.filter(r => r.implementation_status === "Completed").length),    tone: "success" },
+    { label: "Open",           value: String(rows.filter(r => isActionOpen(r)).length),    tone: "warning" },
+    { label: "Completed",      value: String(rows.filter(r => isActionClosed(r)).length),    tone: "success" },
     { label: "Overdue",        value: String(overdue),                                                             tone: "error"   },
   ];
 
@@ -136,12 +144,16 @@ export function ActionRegisterPage() {
       status:     "implementation_status",
       date:       "due_date",
     },
-    filters: BASE_FILTERS,
+    filters: buildActionRegisterFilters(rows),
+    dataLoading: registry.loading,
+    dataError: registry.error,
+    onDataRetry: registry.refresh,
     actions: ROW_VIEW,
     drawerTitle: "Action Item Details",
     drawerCols: ACTION_DRAWER_COLS,
     rows,
-    kpis,
+    kpis: registry.loading || registry.error ? [] : kpis,
+    searchPlaceholder: "Search actions",
   };
   return <GenPage cfg={cfg} />;
 }
@@ -178,12 +190,16 @@ export function AttendanceRegisterPage() {
       status:     "signed",
       date:       "check_in_time",
     },
-    filters: BASE_FILTERS,
+    filters: buildAttendanceRegisterFilters(rows),
+    dataLoading: registry.loading,
+    dataError: registry.error,
+    onDataRetry: registry.refresh,
     actions: ROW_VIEW,
     drawerTitle: "Attendance Details",
     drawerCols: ATTENDANCE_DRAWER_COLS,
     rows,
-    kpis,
+    kpis: registry.loading || registry.error ? [] : kpis,
+    searchPlaceholder: "Search attendance records",
   };
   return <GenPage cfg={cfg} />;
 }
@@ -220,12 +236,16 @@ export function ConflictRegisterPage() {
       status:     "review_status",
       date:       "created_at",
     },
-    filters: BASE_FILTERS,
+    filters: buildConflictRegisterFilters(rows),
+    dataLoading: registry.loading,
+    dataError: registry.error,
+    onDataRetry: registry.refresh,
     actions: ROW_VIEW,
     drawerTitle: "Conflict of Interest Details",
     drawerCols: CONFLICT_DRAWER_COLS,
     rows,
-    kpis,
+    kpis: registry.loading || registry.error ? [] : kpis,
+    searchPlaceholder: "Search conflict declarations",
   };
   return <GenPage cfg={cfg} />;
 }
