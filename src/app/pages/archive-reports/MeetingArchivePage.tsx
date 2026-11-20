@@ -57,7 +57,8 @@ export function MeetingArchivePage() {
     dataLoading: Boolean(registry.loading),
     dataError: registry.error ?? null,
     onDataRetry: async () => { await registry.refresh?.(); },
-    kpis,
+    // A failed or pending authorized SQL read is not proof of an empty archive.
+    kpis: registry.loading || registry.error ? [] : kpis,
     onCustomAction(actionId, row) {
       if (actionId === "view_record") {
         try {
