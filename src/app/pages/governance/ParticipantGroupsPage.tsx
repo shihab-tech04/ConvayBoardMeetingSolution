@@ -20,7 +20,7 @@ export function ParticipantGroupsPage() {
   const govRegistry = useGovernanceRegistry();
   const pendingCreate = useRef<{ signature: string; id: string; created_at: string } | null>(null);
   const gateway: ParticipantGroupGateway = {
-    list: async () => (await convayAuth.registry<ParticipantGroup>("bms.participantgroups", "list")).records.map(row => row.payload),
+    list: async () => (await convayAuth.registry<ParticipantGroup>("bms.partgroups", "list")).records.map(row => row.payload),
     create: async group => (await registry.add(group)) === true,
     update: async (id, patch) => (await registry.update(id, patch)) === true,
   };
