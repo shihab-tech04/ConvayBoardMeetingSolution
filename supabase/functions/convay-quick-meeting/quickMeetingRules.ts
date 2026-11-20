@@ -36,6 +36,24 @@ export function isQuickMeetingActive(meeting: Pick<QuickMeetingAccessRecord, "st
   return meeting.status === "active" && Number.isFinite(expiresAt) && expiresAt > now;
 }
 
+/** A mintable media JWT must expire no later than the authoritative meeting expiry.
+ * Reject sub-second deadlines instead of producing a zero/negative lifetime JWT.
+ * This bounds NEW joins; it does not terminate already-connected participants.
+ */
+export function quickMeetingTokenLifetimeSeconds(
+  expiresAt: string,
+  now = Date.now(),
+  maximumSeconds = 120,
+  linkExpiresAt?: string,
+): number | null {
+  const meetingDeadline = Date.parse(expiresAt);
+  const linkDeadline = linkExpiresAt === undefined ? meetingDeadline : Date.parse(linkExpiresAt);
+  if (!Number.isFinite(meetingDeadline) || !Number.isFinite(linkDeadline)
+    || !Number.isFinite(now) || !Number.isInteger(maximumSeconds) || maximumSeconds < 1) return null;
+  const remainingSeconds = Math.floor((Math.min(meetingDeadline, linkDeadline) - now) / 1000);
+  return remainingSeconds >= 1 ? Math.min(maximumSeconds, remainingSeconds) : null;
+}
+
 export function checkQuickMeetingLink(meeting: QuickMeetingAccessRecord, link: QuickMeetingLinkAccessRecord, now = Date.now()): QuickMeetingAdmissionDecision {
   if (meeting.meeting_kind !== "quick" || meeting.access_mode !== "link") return reject(404, "This quick meeting link is unavailable.");
   if (meeting.status !== "active") return reject(410, "This quick meeting has ended.");
