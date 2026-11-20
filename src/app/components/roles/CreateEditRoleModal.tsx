@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import { Shield, AlertCircle, Check, Lock, ShieldOff } from "lucide-react";
 import { ExpandableText } from "../shared/SafeText";
 import { AppTextField } from "../forms/AppTextField";
@@ -12,6 +12,7 @@ import { PermissionsPanel } from "./PermissionsPanel";
 import { RolePreviewCard } from "./RolePreviewCard";
 import { AppModal } from "../modals/AppModal";
 import { Button } from "../buttons/Button";
+import { shouldHydrateRoleDraft } from "./roleDraftHydration";
 
 interface CreateEditRoleModalProps {
   open: boolean;
@@ -34,6 +35,9 @@ export function CreateEditRoleModal({
 
   // ── State ────────────────────────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
+  const hydratedRoleKey = useRef<string | null>(null);
+  const requestClose = () => { if (!saveInFlight.current) onClose(); };
   const [saveError, setSaveError] = useState("");
   const [step, setStep]                       = useState(0);
   const [name, setName]                       = useState("");
@@ -44,8 +48,11 @@ export function CreateEditRoleModal({
   const [level, setLevel]                     = useState("Custom");
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) { hydratedRoleKey.current = null; return; }
     const role = roleId ? (roles.find((r) => r.id === roleId) ?? null) : null;
+    if (!shouldHydrateRoleDraft({ open, roleId, roleExists: !!role, hydratedKey: hydratedRoleKey.current })) return;
+    hydratedRoleKey.current = roleId ?? "__new__";
+    setSaveError("");
     setStep(0);
     setName(role?.name ?? "");
     setDescription(role?.description ?? "");
@@ -56,7 +63,8 @@ export function CreateEditRoleModal({
 
   // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = async () => {
-    if (saving) return;
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
     setSaving(true);
     setSaveError("");
     try {
@@ -74,7 +82,7 @@ export function CreateEditRoleModal({
     onClose();
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Unable to save role");
-    } finally { setSaving(false); }
+    } finally { saveInFlight.current = false; setSaving(false); }
   };
 
   const canNext = name.trim().length > 0;
@@ -82,13 +90,13 @@ export function CreateEditRoleModal({
   // ── Footer ────────────────────────────────────────────────────────────────
   const footer = (
     <div className="crm-footer">
-      <Button variant="ghost" size="lg" onClick={onClose}>{"Cancel"}</Button>
+      <Button variant="ghost" size="lg" onClick={requestClose} disabled={saving}>{"Cancel"}</Button>
       <div className="crm-footer__right">
         {step > 0 && (
-          <Button variant="secondary" size="sm" onClick={() => setStep((s) => s - 1)}>{"Back"}</Button>
+          <Button variant="secondary" size="sm" onClick={() => setStep((s) => s - 1)} disabled={saving}>{"Back"}</Button>
         )}
         {step < STEP_LABELS.length - 1 ? (
-          <Button variant="primary" size="lg" onClick={() => setStep((s) => s + 1)} disabled={step === 0 && !canNext}>{"Next"}</Button>
+          <Button variant="primary" size="lg" onClick={() => setStep((s) => s + 1)} disabled={saving || (step === 0 && !canNext)}>{"Next"}</Button>
         ) : (
           <Button variant="primary" size="lg" onClick={() => void handleSave()} loading={saving} disabled={!canNext || saving}>
             {roleId ? "Save Changes" : "Create Role"}
@@ -101,7 +109,7 @@ export function CreateEditRoleModal({
   return (
     <AppModal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       title={roleId ? "Edit Role" : "Create Role"}
       icon={<Shield size={15} strokeWidth={2} />}
       size="xl"
