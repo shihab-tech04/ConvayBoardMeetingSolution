@@ -673,7 +673,7 @@ export function MeetingRecordPage() {
                       setBusyMinutesId(m.id);
                       try {
                         const saved = await minutesReg.update(m.id, { approval_status: "Signed" });
-                        if (saved === false) throw new Error("Minutes signature was not saved.");
+                        if (saved === false) return; // Registry has already reported the failed server write.
                         try {
                           await minutesReg.refresh?.();
                           toast.success("Internal minutes signature recorded.");
@@ -744,7 +744,7 @@ export function MeetingRecordPage() {
                     setBusyMinutesId(m.id);
                     try {
                       const saved = await minutesReg.update(m.id, patch as never);
-                      if (saved === false) throw new Error("Revision request was not saved.");
+                      if (saved === false) return; // Avoid a duplicate error toast from the registry.
                       setRevisionMinutesId(null);
                       setRevisionInstructions("");
                       try {
@@ -795,7 +795,7 @@ export function MeetingRecordPage() {
                     setBusyMinutesId(m.id);
                     try {
                       const saved = await minutesReg.update(m.id, { discussion_summary: el.value });
-                      if (saved === false) throw new Error("Minutes edit was not saved.");
+                      if (saved === false) return; // Registry has already reported the failed server write.
                       setEditMinutesId(null);
                       try {
                         await minutesReg.refresh?.();
