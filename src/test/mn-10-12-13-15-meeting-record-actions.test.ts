@@ -60,7 +60,8 @@ describe("MN-10/MN-12/MN-13/MN-15 — Meeting Record minutes lifecycle preflight
     expect(page).toContain("buildMinutesRevisionRequest(latest?.approval_status, canApproveMinutes, revisionInstructions)");
     expect(page).toContain("canEditMinutesContent(latest?.approval_status, canEditMinutes)");
     expect(page).toContain("canArchiveMinutes(latest?.approval_status, canApproveMinutes)");
-    expect(page).toContain("if (saved === false) throw new Error");
+    expect(page).toContain("if (saved === false) return;");
+    expect(page).not.toContain("if (saved === false) throw new Error");
     expect(page).toContain("await minutesReg.refresh?.()");
     expect(page).toContain("Revision instructions (minimum 10 characters)");
     expect(page).toContain("Record Internal Signature");
