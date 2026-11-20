@@ -165,6 +165,30 @@ revoke all on function convay_private.mt27_delete_owned_draft(text,text,bigint)
 grant execute on function convay_private.mt27_delete_owned_draft(text,text,bigint)
  to authenticated;
 
+-- Deny reusing a deleted meeting identity. AFTER INSERT observes the tenant
+-- set by WS-F BEFORE INSERT stamping and raises to roll back unauthorized reuse.
+create function convay_private.mt27_reject_tombstoned_meeting()
+returns trigger language plpgsql security definer set search_path=''
+as $tomb$
+begin
+ if new.entity_key='bms.meetings' then
+   if new.tenant_id is null then
+     raise exception 'Meeting tenant identity required' using errcode='42501';
+   end if;
+   if exists(select 1 from convay_private.mt27_delete_receipts r
+      where r.tenant_id=new.tenant_id and r.record_id=new.record_id) then
+     raise exception 'A deleted meeting identifier cannot be reused'
+       using errcode='23505';
+   end if;
+ end if;
+ return new;
+end $tomb$;
+revoke all on function convay_private.mt27_reject_tombstoned_meeting()
+ from public,anon,authenticated;
+create trigger convay_mt27_no_reused_meeting_identity
+ after insert on public.convay_entity_records
+ for each row execute function convay_private.mt27_reject_tombstoned_meeting();
+
 -- A thin RLS-invoker public endpoint; the private function still checks all
 -- security requirements. PR #82 currently uses TWO args and MUST be updated
 -- to pass a fresh expected revision before any feature activation.
