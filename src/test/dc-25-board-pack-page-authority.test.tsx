@@ -54,6 +54,8 @@ describe("DC-21 safe board-pack draft entry", () => {
     expect(src).toContain("formFields: BOARD_PACK_FORM_FIELDS");
     expect(src).toContain("onRowCreate: createDraft");
     expect(src).toContain("onRowUpdate: updateDraft");
+    expect(src).toContain("dataLoading: Boolean(reg.loading)");
+    expect(src).toContain("dataError: reg.error");
     expect(src).toContain("await reg.add(draft)");
     expect(src).toContain("await reg.update(id, patch)");
     expect(src).toContain("actor = await convayAuth.restore()");
