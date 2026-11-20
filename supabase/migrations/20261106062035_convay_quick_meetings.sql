@@ -253,7 +253,8 @@ begin
     share_link_id = coalesce(excluded.share_link_id,public.convay_quick_meeting_attendance.share_link_id),
     last_joined_at = now(),
     left_at = null,
-    join_count = public.convay_quick_meeting_attendance.join_count + 1
+    join_count = public.convay_quick_meeting_attendance.join_count
+      + case when public.convay_quick_meeting_attendance.left_at is not null then 1 else 0 end
   returning * into v_row;
   return v_row;
 end $$;
