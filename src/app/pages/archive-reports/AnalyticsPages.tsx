@@ -4,6 +4,8 @@ import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
 import { buildGovernanceReportFilters } from "./governanceReportView";
+import { buildDecisionRegisterFilters } from "./decisionRegisterView";
+import { countOverdueActions, isActionClosed, todayInLocalTime } from "./actionRegisterView";
 import {
   MEETING_DRAWER_COLS,
   GOV_BODY_DRAWER_COLS,
@@ -226,7 +228,6 @@ export function GovernanceReportPage() {
 export function DecisionsActionsAnalyticsPage() {
   const decisionReg = useDecisionRegistry();
   const actionReg   = useActionItemRegistry();
-  const today       = new Date().toISOString().slice(0, 10);
 
   const rows: TableRow[] = decisionReg.items.map(d => {
     const linked = actionReg.items.filter(a => a.source_decision === d.decision_id);
@@ -240,15 +241,13 @@ export function DecisionsActionsAnalyticsPage() {
       effective_date:        d.effective_date,
       financial_impact:      d.financial_impact,
       linked_actions:        String(linked.length),
-      completed_actions:     String(linked.filter(a => a.implementation_status === "Completed").length),
+      completed_actions:     String(linked.filter(a => isActionClosed({ ...a })).length),
       implementation_status: d.implementation_status,
       approval_status:       d.approval_status,
     };
   });
 
-  const overdueActions = actionReg.items.filter(
-    a => a.due_date && a.due_date < today && a.implementation_status !== "Completed"
-  ).length;
+  const overdueActions = countOverdueActions(actionReg.items.map(a => ({ ...a })), todayInLocalTime(new Date()));
 
   const kpis: KpiDef[] = [
     { label: "Total Decisions", value: String(decisionReg.items.length),                                                     tone: "primary" },
@@ -276,12 +275,17 @@ export function DecisionsActionsAnalyticsPage() {
       status:     "implementation_status",
       date:       "effective_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildDecisionRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Decision Details",
     drawerCols:  DECISION_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(decisionReg.loading || actionReg.loading),
+    dataError: decisionReg.error ?? actionReg.error ?? null,
+    onDataRetry: async () => {
+      await Promise.all([decisionReg.refresh?.(), actionReg.refresh?.()]);
+    },
+    kpis: decisionReg.loading || actionReg.loading || decisionReg.error || actionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
