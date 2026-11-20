@@ -319,8 +319,9 @@ async function issueRoomToken(
   identity: string,
   name: string,
   meeting: QuickMeetingRow,
+  linkExpiresAt?: string,
 ): Promise<{ participantToken: string; expiresIn: number }> {
-  const ttl = quickMeetingTokenLifetimeSeconds(meeting.expires_at, Date.now(), TOKEN_TTL_SECONDS);
+  const ttl = quickMeetingTokenLifetimeSeconds(meeting.expires_at, Date.now(), TOKEN_TTL_SECONDS, linkExpiresAt);
   if (ttl === null || !isQuickMeetingActive(meeting)) {
     throw new HttpError(410, "This quick meeting has ended or expired.");
   }
@@ -733,7 +734,7 @@ async function guestAction(body: JsonObject): Promise<JsonObject> {
     const name = normalizeQuickParticipantName(body.displayName);
     if (!name) throw new HttpError(400, "Enter a display name between 2 and 80 characters.");
     await ensureLiveRoom(meeting);
-    const minted = await issueRoomToken(identity, name, meeting);
+    const minted = await issueRoomToken(identity, name, meeting, link.expires_at);
     return { serverUrl: livekitServerUrl(), ...minted, identity };
   }
 
