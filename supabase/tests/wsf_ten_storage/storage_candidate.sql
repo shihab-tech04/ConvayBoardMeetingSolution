@@ -40,10 +40,10 @@ BEGIN
     OR p_path LIKE '%/../%'
     OR p_path LIKE '%/./%'
     OR p_path LIKE '%\\%'
-    OR p_path LIKE '%%%'
+    OR position('%' in p_path)>0
  THEN
-   -- Last predicate is overridden below: this fixture deliberately denies
-   -- percent escapes until a reviewed canonical URL decoder is integrated.
+   -- Conservative test-only rule: reject encoded paths until a reviewed
+   -- canonical URL-decoding contract is integrated.
    RETURN false;
  END IF;
  v_tenant := v_tenant_text::uuid;
