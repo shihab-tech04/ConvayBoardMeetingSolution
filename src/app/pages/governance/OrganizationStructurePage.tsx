@@ -1,4 +1,6 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
+import { toast } from "sonner";
+import { persistOrgUnitChange, type OrgSaveResult } from "./orgUnitPersistence";
 import { createPortal } from "react-dom";
 import {
   Building2, ChevronRight, ChevronDown, Plus, Pencil, Eye,
@@ -613,7 +615,7 @@ function UnitFormModal({
   defaultParentId?: string;
   allUnits: OrgUnit[];
   users: import("../../data/bmsUsers").BmsUser[];
-  onConfirm: (values: UnitFormValues) => void;
+  onConfirm: (values: UnitFormValues) => Promise<boolean>;
   onClose: () => void;
 }) {
   const [step, setStep] = useState(0);
@@ -632,6 +634,8 @@ function UnitFormModal({
     status:             (editUnit?.status === "Active" ? "Active" : "Draft") as "Draft" | "Active",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
 
   const set = useCallback(<K extends keyof UnitFormValues>(k: K, v: UnitFormValues[K]) => {
     setVals(prev => ({ ...prev, [k]: v }));
@@ -686,9 +690,23 @@ function UnitFormModal({
 
   function nextStep() { if (validateStep(step)) setStep(s => s + 1); }
   function prevStep() { setStep(s => s - 1); }
-  function handleSubmit(saveStatus: "Draft" | "Active") {
-    if (!validateStep(step)) return;
-    onConfirm({ ...vals, status: saveStatus });
+  async function handleSubmit(saveStatus: "Draft" | "Active") {
+    if (saveInFlight.current || !validateStep(step)) return;
+    saveInFlight.current = true;
+    setSaving(true);
+    setErrors(prev => { const next = { ...prev }; delete next.save; return next; });
+    try {
+      const saved = await onConfirm({ ...vals, status: saveStatus });
+      if (!saved) setErrors(prev => ({ ...prev, save: "The organization record was not saved. Review access or reload and retry." }));
+    } catch (error) {
+      setErrors(prev => ({
+        ...prev,
+        save: error instanceof Error ? error.message : "Unable to save this organization record.",
+      }));
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
   }
 
   const isEdit = !!editUnit;
@@ -873,6 +891,8 @@ function UnitFormModal({
           )}
         </div>
 
+        {/* Save failures stay visible in the modal until server confirmation succeeds. */}
+        {errors.save && <p role="alert" className="px-6 pb-2 text-sm text-red-600">{errors.save}</p>}
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-border flex-shrink-0">
           <button
@@ -888,11 +908,11 @@ function UnitFormModal({
               </button>
             ) : (
               <>
-                <button onClick={() => handleSubmit("Draft")} className="px-4 py-2 text-sm font-medium text-foreground border border-border hover:bg-muted rounded-lg transition-colors">
+                <button onClick={() => { void handleSubmit("Draft"); }} disabled={saving} className="px-4 py-2 text-sm font-medium text-foreground border border-border hover:bg-muted rounded-lg transition-colors">
                   Save as Draft
                 </button>
-                <button onClick={() => handleSubmit("Active")} className="px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors">
-                  {isEdit ? "Save Changes" : "Save & Activate"}
+                <button onClick={() => { void handleSubmit("Active"); }} disabled={saving} className="px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors">
+                  {saving ? "Saving..." : isEdit ? "Save Changes" : "Save & Activate"}
                 </button>
               </>
             )}
@@ -1017,7 +1037,7 @@ export function OrganizationStructurePage() {
 
   const emitAudit = useCallback((unitId: string, action: string, details: string) => {
     const now = new Date().toISOString();
-    auditReg.add({
+    return auditReg.add({
       id:              generateId("AUD", auditReg.items.map(a => a.id)),
       created_at:      now,
       event_id:        `AUDIT-OU-${Date.now()}`,
@@ -1033,76 +1053,96 @@ export function OrganizationStructurePage() {
     });
   }, [auditReg, currentUser]);
 
-  const handleFormConfirm = useCallback((values: UnitFormValues) => {
+  const handleFormConfirm = useCallback(async (values: UnitFormValues): Promise<boolean> => {
     const now = new Date().toISOString();
+    let result: OrgSaveResult;
     if (editingUnit) {
-      // Update existing unit
       const prevParent = editingUnit.parent_unit_id;
-      orgReg.update(editingUnit.id, {
-        unit_name:          values.unit_name,
-        unit_type:          values.unit_type,
-        code:               values.code || undefined,
-        description:        values.description || undefined,
-        phone:              values.phone || undefined,
-        email:              values.email || undefined,
-        address:            values.address || undefined,
-        parent_unit_id:     values.parent_unit_id || undefined,
-        parent_unit:        allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? editingUnit.parent_unit,
-        head_user_id:       values.head_user_id || undefined,
-        deputy_user_id:     values.deputy_user_id || undefined,
-        effective_start_at: values.effective_start_at || undefined,
-        status:             values.status,
-        updated_at:         now,
-        updated_by:         currentUser?.id,
-        path_ids:           values.parent_unit_id ? buildPathIds(values.parent_unit_id, units).concat(editingUnit.id) : [editingUnit.id],
-        path_label:         values.parent_unit_id ? `${buildPathLabel(values.parent_unit_id, units)} › ${values.unit_name}` : values.unit_name,
-      });
-      emitAudit(editingUnit.id, "org_unit_updated", `Unit updated: ${values.unit_name}`);
-      if (prevParent !== values.parent_unit_id) {
-        emitAudit(editingUnit.id, "org_parent_changed", `Parent changed from ${prevParent ?? "root"} to ${values.parent_unit_id || "root"}`);
-      }
+      result = await persistOrgUnitChange(
+        () => orgReg.update(editingUnit.id, {
+          unit_name:          values.unit_name,
+          unit_type:          values.unit_type,
+          code:               values.code || undefined,
+          description:        values.description || undefined,
+          phone:              values.phone || undefined,
+          email:              values.email || undefined,
+          address:            values.address || undefined,
+          parent_unit_id:     values.parent_unit_id || undefined,
+          parent_unit:        allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? editingUnit.parent_unit,
+          head_user_id:       values.head_user_id || undefined,
+          deputy_user_id:     values.deputy_user_id || undefined,
+          effective_start_at: values.effective_start_at || undefined,
+          status:             values.status,
+          updated_at:         now,
+          updated_by:         currentUser?.id,
+          path_ids:           values.parent_unit_id ? buildPathIds(values.parent_unit_id, units).concat(editingUnit.id) : [editingUnit.id],
+          path_label:         values.parent_unit_id ? `${buildPathLabel(values.parent_unit_id, units)} › ${values.unit_name}` : values.unit_name,
+        }),
+        async () => {
+          const updated = await emitAudit(editingUnit.id, "org_unit_updated", `Unit updated: ${values.unit_name}`);
+          if (prevParent === values.parent_unit_id) return updated;
+          const parentChange = await emitAudit(editingUnit.id, "org_parent_changed",
+            `Parent changed from ${prevParent ?? "root"} to ${values.parent_unit_id || "root"}`);
+          return Boolean(updated && parentChange);
+        },
+      );
     } else {
-      // Create new unit
       const newId = generateId("OU", units.map(u => u.unit_id));
       const parentPath = values.parent_unit_id ? buildPathLabel(values.parent_unit_id, units) : "";
-      orgReg.add({
-        id:                 newId,
-        unit_id:            newId,
-        unit_name:          values.unit_name,
-        unit_type:          values.unit_type,
-        code:               values.code || undefined,
-        description:        values.description || undefined,
-        phone:              values.phone || undefined,
-        email:              values.email || undefined,
-        address:            values.address || undefined,
-        parent_unit:        allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? "—",
-        parent_unit_id:     values.parent_unit_id || undefined,
-        head:               "",
-        head_user_id:       values.head_user_id || undefined,
-        deputy_user_id:     values.deputy_user_id || undefined,
-        member_count:       "0",
-        effective_start_at: values.effective_start_at || undefined,
-        status:             values.status,
-        created_at:         now,
-        created_by:         currentUser?.id,
-        path_ids:           values.parent_unit_id ? [...buildPathIds(values.parent_unit_id, units), newId] : [newId],
-        path_label:         parentPath ? `${parentPath} › ${values.unit_name}` : values.unit_name,
-      });
-      emitAudit(newId, "org_unit_created", `Unit created: ${values.unit_name} (${values.unit_type})`);
+      result = await persistOrgUnitChange(
+        () => orgReg.add({
+          id:                 newId,
+          unit_id:            newId,
+          unit_name:          values.unit_name,
+          unit_type:          values.unit_type,
+          code:               values.code || undefined,
+          description:        values.description || undefined,
+          phone:              values.phone || undefined,
+          email:              values.email || undefined,
+          address:            values.address || undefined,
+          parent_unit:        allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? "—",
+          parent_unit_id:     values.parent_unit_id || undefined,
+          head:               "",
+          head_user_id:       values.head_user_id || undefined,
+          deputy_user_id:     values.deputy_user_id || undefined,
+          member_count:       "0",
+          effective_start_at: values.effective_start_at || undefined,
+          status:             values.status,
+          created_at:         now,
+          created_by:         currentUser?.id,
+          path_ids:           values.parent_unit_id ? [...buildPathIds(values.parent_unit_id, units), newId] : [newId],
+          path_label:         parentPath ? `${parentPath} › ${values.unit_name}` : values.unit_name,
+        }),
+        () => emitAudit(newId, "org_unit_created", `Unit created: ${values.unit_name} (${values.unit_type})`),
+      );
+    }
+    if (result === "not-saved") return false;
+    if (result === "audit-unverified") {
+      toast.warning("The organization record was saved, but its activity journal could not be confirmed.");
     }
     setFormOpen(false);
     setEditingUnit(undefined);
     setDefaultParentId(undefined);
+    return true;
   }, [editingUnit, orgReg, units, currentUser, emitAudit]);
 
   // Alias for path functions inside handleFormConfirm
   const allUnits = units;
 
-  const handleActivate = useCallback((unit: OrgUnit) => {
+  const handleActivate = useCallback(async (unit: OrgUnit): Promise<void> => {
     if (!perm.activate_units) return;
     const now = new Date().toISOString();
-    orgReg.update(unit.id, { status: "Active", updated_at: now, updated_by: currentUser?.id });
-    emitAudit(unit.id, "org_status_changed", `Status changed to Active (was ${unit.status})`);
+    const result = await persistOrgUnitChange(
+      () => orgReg.update(unit.id, {
+        status: "Active", updated_at: now, updated_by: currentUser?.id,
+      }),
+      () => emitAudit(unit.id, "org_status_changed", `Status changed to Active (was ${unit.status})`),
+    );
+    if (result === "not-saved") {
+      toast.error("Activation was not saved. Check permissions and retry.");
+    } else if (result === "audit-unverified") {
+      toast.warning("Activation was saved, but its activity journal could not be confirmed.");
+    }
   }, [perm.activate_units, orgReg, currentUser, emitAudit]);
 
   const handleDeactivate = useCallback((unit: OrgUnit) => {
