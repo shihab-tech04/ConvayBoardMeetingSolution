@@ -7,18 +7,22 @@ const state = vi.hoisted(() => ({
   loading: false,
   error: null as string | null,
   refreshes: 0,
+  navigate: vi.fn(),
 }));
 vi.mock("react-router", async original => {
   const mod = await original<typeof import("react-router")>();
-  return { ...mod, useNavigate: () => () => undefined };
+  return { ...mod, useNavigate: () => state.navigate };
 });
 vi.mock("../app/hooks/useCurrentUser", () => ({
   useCurrentUser: () => state.user,
 }));
 vi.mock("../app/components/tables/UnifiedDataTable", () => ({
-  UnifiedDataTable: ({ rows }: { rows: Array<{ id: string; title: string }> }) => (
+  UnifiedDataTable: ({ rows, onViewRow }: {
+    rows: Array<{ id: string; title: string; [key: string]: unknown }>;
+    onViewRow: (row: { id: string; title: string; [key: string]: unknown }) => void;
+  }) => (
     <section data-testid="visible-task-queue">
-      {rows.map(row => <p key={row.id}>{row.title}</p>)}
+      {rows.map(row => <button key={row.id} type="button" onClick={() => onViewRow(row)}>{row.title}</button>)}
     </section>
   ),
 }));
@@ -28,7 +32,8 @@ vi.mock("../app/components/cards/StatCard", () => ({
   ),
 }));
 vi.mock("../app/components/drawers/DynamicDetailsDrawer", () => ({
-  DynamicDetailsDrawer: () => null,
+  DynamicDetailsDrawer: ({ open, extraFooterActions }: { open: boolean; extraFooterActions?: React.ReactNode }) =>
+    open ? <section data-testid="task-details">{extraFooterActions}</section> : null,
 }));
 vi.mock("../app/data/boardMeetingData", () => {
   const registry = (name: string) => () => ({
@@ -65,6 +70,7 @@ beforeEach(() => {
   state.loading = false;
   state.error = null;
   state.refreshes = 0;
+  state.navigate.mockReset();
 });
 
 describe("HM-03 My Tasks screen", () => {
@@ -86,6 +92,21 @@ describe("HM-03 My Tasks screen", () => {
     render(<PSRDashboardPage />);
     expect(screen.getByText("Ann's assigned follow-up")).toBeInTheDocument();
     expect(screen.getByText("Open: 1")).toBeInTheDocument();
+  });
+
+  it("opens the selected SQL-backed action item by its exact record id", () => {
+    state.data.actions = [{
+      id: "action-42", action_title: "Ann's assigned follow-up",
+      assigned_to: "Ann", implementation_status: "In Progress",
+    }];
+    render(<PSRDashboardPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ann's assigned follow-up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Action Item" }));
+
+    expect(state.navigate).toHaveBeenCalledWith(
+      "/decisions-followup/action-items?view=action-42",
+    );
   });
 
   it("does not place an Admin assignment in a Secretary's task queue", () => {
@@ -123,3 +144,4 @@ describe("HM-03 My Tasks screen", () => {
     expect(screen.queryByText("Open: 0")).not.toBeInTheDocument();
   });
 });
+
