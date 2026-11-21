@@ -14,32 +14,9 @@ import type { PageCfg, TableRow, KpiDef, ColDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA, dg } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { TEMPLATE_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
+import { unverifiedMeetingAgendaTemplatesView } from "./meetingAgendaTemplatesEvidence";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
-
-const AGENDA_TEMPLATE_NAMES = [
-  "Standard Board Meeting Agenda", "Annual General Meeting Agenda", "Emergency Board Meeting Agenda",
-  "Executive Committee Agenda", "Audit Committee Agenda", "Risk Committee Agenda",
-  "Strategy Session Agenda", "Shariah Committee Agenda", "NRC Meeting Agenda",
-  "IT Steering Committee Agenda",
-];
-
-const agendaTemplateRows: TableRow[] = gen(20, i => ({
-  template_id:   `AT-${String(1000 + i).padStart(4, "0")}`,
-  template_name: AGENDA_TEMPLATE_NAMES[i % 10],
-  template_type: "Agenda",
-  committee:     CIRCLES_DATA[i % 8],
-  meeting_type:  ["Regular", "Extraordinary", "Emergency", "Annual"][i % 4],
-  language:      ["English", "Bengali", "Both"][i % 3],
-  agenda_count:  String((i % 8) + 3),
-  document_count: String((i % 5) + 1),
-  version:       `v${(i % 3) + 1}.0`,
-  status:        ["Active", "Inactive", "Draft"][i % 3],
-  created_by:    ["Company Secretary", "System Admin", "Governance Officer"][i % 3],
-  created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  updated_at:    `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description:   `Standard agenda template for ${AGENDA_TEMPLATE_NAMES[i % 10]}.`,
-}));
 
 const MINUTES_TEMPLATE_NAMES = [
   "Standard Board Meeting Minutes", "AGM Minutes Template", "Executive Committee Minutes",
@@ -170,12 +147,7 @@ const DOC_TEMPLATE_DRAWER_COLS: ColDef[] = [
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
 export function MeetingAgendaTemplatesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Templates",  value: String(agendaTemplateRows.length),                                           tone: "primary"  },
-    { label: "Active",           value: String(agendaTemplateRows.filter(r => r.status === "Active").length),        tone: "success"  },
-    { label: "Draft",            value: String(agendaTemplateRows.filter(r => r.status === "Draft").length),         tone: "neutral"  },
-    { label: "Inactive",         value: String(agendaTemplateRows.filter(r => r.status === "Inactive").length),      tone: "warning"  },
-  ];
+  const evidence = unverifiedMeetingAgendaTemplatesView();
 
   const cfg: PageCfg = {
     title: "Meeting & Agenda Templates",
@@ -207,8 +179,10 @@ export function MeetingAgendaTemplatesPage() {
       { id: "download",   label: "Download",       icon: Download,    color: "#6b7280" },
       { id: "archive",    label: "Archive",        icon: Archive,     color: "#ef4444" },
     ],
-    rows:      agendaTemplateRows,
-    kpis,
+    rows:      evidence.rows,
+    dataError: evidence.unavailableReason,
+    dataErrorTitle: "Meeting and agenda templates are unavailable",
+    dataErrorDescription: evidence.unavailableReason,
     entryBtn:  "Create Agenda Template",
     searchPlaceholder: "Search agenda templates",
   };
