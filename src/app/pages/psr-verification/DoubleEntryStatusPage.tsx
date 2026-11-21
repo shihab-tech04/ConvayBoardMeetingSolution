@@ -6,6 +6,7 @@ import { ACTION_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { BarChart2, Calendar, CheckCircle } from "lucide-react";
 import { useActionItemRegistry, useMeetingRegistry, useGovernanceRegistry, generateId } from "../../data/boardMeetingData";
 import { patchFormOptions } from "../../utils/patchFormOptions";
+import { useSearchParams } from "react-router";
 import {
   ACTION_ITEM_FORM_FIELDS,
   PROGRESS_UPDATE_FORM_FIELDS,
@@ -14,6 +15,7 @@ import {
 } from "../boardMeetingFormFields";
 
 export function DoubleEntryStatusPage() {
+  const [searchParams] = useSearchParams();
   const registry = useActionItemRegistry();
   const meetingReg = useMeetingRegistry();
   const govReg = useGovernanceRegistry();
@@ -63,6 +65,7 @@ export function DoubleEntryStatusPage() {
     drawerTitle: "Action Item Details",
     drawerCols: ACTION_DRAWER_COLS,
     rows,
+    initialDrawerRowId: searchParams.get("view") ?? undefined,
     kpis,
     entryBtn:      "Add Action Item",
     formFields:    dynamicFields,

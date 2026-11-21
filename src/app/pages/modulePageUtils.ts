@@ -44,6 +44,8 @@ export interface PageCfg {
   /** Per-row dynamic replacement for drawerActions — used only when provided. */
   drawerActionsResolver?: (row: TableRow) => RowAction[];
   rows: TableRow[];
+  /** Opens a row after its authoritative registry data is available. */
+  initialDrawerRowId?: string;
   /** Optional authoritative registry load state for pages backed by Supabase. */
   dataLoading?: boolean;
   dataError?: string | null;
