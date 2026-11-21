@@ -17,7 +17,7 @@ import { fc, BADGE } from "../modulePageUtils";
 import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
 import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./userBusinessFields";
-import { createLatestUserDirectoryRead } from "./userDirectoryRead";
+import { createLatestUserDirectoryRead, isUserDirectoryStatsUnavailable } from "./userDirectoryRead";
 import { requireUserMutationAck } from "./userMutationAck";
 
 type Mode = "invite" | "edit" | "password" | null;
@@ -136,6 +136,12 @@ export function SupabaseUserManagementPage() {
     { label: "Inactive / Suspended", value: users.filter(u => u.account_status !== "active").length, Icon: UserX, tone: "neutral" as const },
     { label: "Super Admins", value: users.filter(u => u.account_role === "super_admin").length, Icon: Shield, tone: "primary" as const },
   ];
+  const statsUnavailable = isUserDirectoryStatsUnavailable({
+    accessLoaded: access.loaded,
+    isSuperAdmin: access.is_super_admin,
+    loading,
+    error: loadError,
+  });
 
   const openRoleAssignment = (user: ConvayProfile) => {
     setSelectedId(null);
@@ -303,7 +309,7 @@ export function SupabaseUserManagementPage() {
       </div>
       <div className="user-management__stats">
         {stats.map(({ label, value, Icon, tone }) => (
-          <StatCard key={label} icon={Icon} value={String(value)} label={label} tone={tone} />
+          <StatCard key={label} icon={Icon} value={String(value)} label={label} tone={tone} loading={statsUnavailable} />
         ))}
       </div>
       {loadError && <p role="alert" className="text-red-600 text-sm my-3">{loadError}</p>}
