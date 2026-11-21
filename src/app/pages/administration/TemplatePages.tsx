@@ -15,31 +15,9 @@ import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA, dg } from "../modulePageUti
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { TEMPLATE_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { unverifiedMeetingAgendaTemplatesView } from "./meetingAgendaTemplatesEvidence";
+import { unverifiedMinutesResolutionTemplatesView } from "./minutesResolutionTemplatesEvidence";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
-
-const MINUTES_TEMPLATE_NAMES = [
-  "Standard Board Meeting Minutes", "AGM Minutes Template", "Executive Committee Minutes",
-  "Audit Committee Minutes", "Risk Committee Minutes", "Special Meeting Minutes",
-  "Board Resolution Template", "Committee Resolution Template",
-];
-
-const minutesTemplateRows: TableRow[] = gen(18, i => ({
-  template_id:   `MT-${String(2000 + i).padStart(4, "0")}`,
-  template_name: MINUTES_TEMPLATE_NAMES[i % 8],
-  template_type: i % 3 === 0 ? "Resolution" : "Minutes",
-  committee:     CIRCLES_DATA[i % 8],
-  meeting_type:  ["Regular", "Extraordinary", "Annual"][i % 3],
-  language:      ["English", "Bengali", "Both"][i % 3],
-  version:       `v${(i % 4) + 1}.${i % 3}`,
-  status:        ["Active", "Inactive", "Draft"][i % 3],
-  created_by:    ["Company Secretary", "System Admin"][i % 2],
-  created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  updated_at:    `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  agenda_count:  String((i % 4) + 2),
-  document_count: String((i % 3) + 1),
-  description:   `Minutes/resolution template for ${CIRCLES_DATA[i % 8]}.`,
-}));
 
 const DOC_TEMPLATE_NAMES = [
   "Board Paper Template", "Meeting Notice Template", "Agenda Cover Sheet",
@@ -191,12 +169,7 @@ export function MeetingAgendaTemplatesPage() {
 }
 
 export function MinutesResolutionTemplatesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Templates",  value: String(minutesTemplateRows.length),                                          tone: "primary"  },
-    { label: "Active",           value: String(minutesTemplateRows.filter(r => r.status === "Active").length),       tone: "success"  },
-    { label: "Draft",            value: String(minutesTemplateRows.filter(r => r.status === "Draft").length),        tone: "neutral"  },
-    { label: "Inactive",         value: String(minutesTemplateRows.filter(r => r.status === "Inactive").length),     tone: "warning"  },
-  ];
+  const evidence = unverifiedMinutesResolutionTemplatesView();
 
   const cfg: PageCfg = {
     title: "Minutes & Resolution Templates",
@@ -228,8 +201,10 @@ export function MinutesResolutionTemplatesPage() {
       { id: "download",  label: "Download",       icon: Download,    color: "#6b7280" },
       { id: "archive",   label: "Archive",        icon: Archive,     color: "#ef4444" },
     ],
-    rows:      minutesTemplateRows,
-    kpis,
+    rows:      evidence.rows,
+    dataError: evidence.unavailableReason,
+    dataErrorTitle: "Minutes and resolution templates are unavailable",
+    dataErrorDescription: evidence.unavailableReason,
     entryBtn:  "Create Minutes Template",
     searchPlaceholder: "Search minutes templates",
   };
