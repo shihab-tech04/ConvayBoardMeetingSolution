@@ -11,11 +11,13 @@ import {
   Download, Copy, Archive,
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
-import type { PageCfg, TableRow, KpiDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA } from "../modulePageUtils";
+import type { PageCfg, KpiDef } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { unverifiedWorkflowHistoryView } from "./workflowHistoryEvidence";
 import { unverifiedWorkflowDefinitionsView } from "./workflowDefinitionsEvidence";
+import { unverifiedApprovalRulesView } from "./workflowApprovalRulesEvidence";
+import { unverifiedRevisionRulesView } from "./workflowRevisionRulesEvidence";
 import {
   WORKFLOW_DRAWER_COLS,
   APPROVAL_RULE_DRAWER_COLS,
@@ -23,54 +25,8 @@ import {
   WORKFLOW_HISTORY_DRAWER_COLS,
 } from "../boardMeetingDrawerSchemas";
 
-// ─── Local sample data ────────────────────────────────────────────────────────
-
-const APPROVAL_TYPES = ["Sequential", "Parallel", "Majority Vote", "Any Approver"];
-const RULE_TYPES = ["Content Review", "Signature Requirement", "Formatting Check", "Compliance Validation"];
-
-// AD-01: A verified, versioned workflow-definition registry is not deployed.
-// Never render invented workflows as configured production policy.
-
-const approvalRuleRows: TableRow[] = gen(24, i => ({
-  rule_id:    `AR-${String(2000 + i).padStart(4, "0")}`,
-  rule_name:  [
-    "Meeting Agenda Approval Rule", "Minutes Approval Policy", "Document Sign-off Rule",
-    "Resolution Adoption Rule", "Board Pack Release Rule", "Attendance Verification Rule",
-    "Quorum Exception Approval", "Special Session Rule",
-  ][i % 8],
-  rule_type:  APPROVAL_TYPES[i % 4],
-  committee:  CIRCLES_DATA[i % 8],
-  approvers:  String((i % 4) + 1),
-  threshold:  ["50%+1", "Two-Thirds", "Unanimous", "Any One"][i % 4],
-  sla_hours:  String([(24), (48), (72), (168)][i % 4]),
-  circle:     ["Board Secretariat", "Governance Unit", "Compliance Office"][i % 3],
-  status:     ["Active", "Inactive", "Draft"][i % 3],
-  created_by: ["Company Secretary", "System Admin"][i % 2],
-  created_at: `2025-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  escalation: ["Board Chairman", "MD", "None"][i % 3],
-  description: "Defines the approver chain and threshold for governance document approvals.",
-}));
-
-const revisionRuleRows: TableRow[] = gen(20, i => ({
-  rule_id:    `RR-${String(3000 + i).padStart(4, "0")}`,
-  rule_name:  [
-    "Agenda Content Review Rule", "Minutes Revision Policy", "Resolution Amendment Rule",
-    "Document Format Check", "Signature Verification Rule", "Date Validation Rule",
-    "Compliance Review Rule",
-  ][i % 7],
-  rule_type:  RULE_TYPES[i % 4],
-  applies_to: ["Agenda Items", "Meeting Minutes", "Resolutions", "Board Packs", "All Documents"][i % 5],
-  conditions: ["Date mismatch", "Missing signatures", "Format non-compliance", "Content gap"][i % 4],
-  approvers:  ["Company Secretary", "Board Chairman", "Legal Counsel"][i % 3],
-  status:     ["Active", "Inactive", "Draft"][i % 3],
-  created_by: ["Company Secretary", "System Admin"][i % 2],
-  created_at: `2025-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description: ["Triggered when agenda content fails standard validation checks.",
-    "Applied when minutes require further review before sign-off."][i % 2],
-}));
-
-// AD-04: No authenticated, append-only workflow event journal is currently
-// available. Never substitute dated sample approvals or counts as real audit data.
+// AD-01/02/03: authoritative tenant-scoped configuration services are not connected.
+// Never display generated policy as real governance data or enable unsupported writes.
 
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
@@ -119,16 +75,13 @@ export function WorkflowDefinitionsPage() {
 }
 
 export function ApprovalRulesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Rules",  value: String(approvalRuleRows.length),                                           tone: "primary"  },
-    { label: "Active",       value: String(approvalRuleRows.filter(r => r.status === "Active").length),        tone: "success"  },
-    { label: "Draft",        value: String(approvalRuleRows.filter(r => r.status === "Draft").length),         tone: "neutral"  },
-    { label: "Inactive",     value: String(approvalRuleRows.filter(r => r.status === "Inactive").length),      tone: "warning"  },
-  ];
+  const evidence = unverifiedApprovalRulesView();
+  const kpis: KpiDef[] = evidence.kpis;
 
   const cfg: PageCfg = {
     title: "Approval Rules",
-    desc:  "Define approval chains, quorum thresholds, SLAs, and escalation paths for governance documents and decisions.",
+    desc:  evidence.description,
+    dataError: evidence.unavailableReason,
     cols: [
       fc("rule_id",    "Rule ID"),
       fc("rule_name",  "Rule Name"),
@@ -156,7 +109,7 @@ export function ApprovalRulesPage() {
       { id: "duplicate",  label: "Duplicate Rule",   icon: Copy,        color: "#8b5cf6" },
       { id: "archive",    label: "Archive",          icon: Archive,     color: "#ef4444" },
     ],
-    rows:      approvalRuleRows,
+    rows:      evidence.rows,
     kpis,
     entryBtn:  "Create Approval Rule",
     searchPlaceholder: "Search approval rules",
@@ -166,16 +119,13 @@ export function ApprovalRulesPage() {
 }
 
 export function ReviewRevisionRulesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Rules",  value: String(revisionRuleRows.length),                                          tone: "primary"  },
-    { label: "Active",       value: String(revisionRuleRows.filter(r => r.status === "Active").length),       tone: "success"  },
-    { label: "Draft",        value: String(revisionRuleRows.filter(r => r.status === "Draft").length),        tone: "neutral"  },
-    { label: "Inactive",     value: String(revisionRuleRows.filter(r => r.status === "Inactive").length),     tone: "warning"  },
-  ];
+  const evidence = unverifiedRevisionRulesView();
+  const kpis: KpiDef[] = evidence.kpis;
 
   const cfg: PageCfg = {
     title: "Review & Revision Rules",
-    desc:  "Configure rules that trigger content review, format validation, and revision workflows for governance documents.",
+    desc:  evidence.description,
+    dataError: evidence.unavailableReason,
     cols: [
       fc("rule_id",    "Rule ID"),
       fc("rule_name",  "Rule Name"),
@@ -202,7 +152,7 @@ export function ReviewRevisionRulesPage() {
       { id: "duplicate",  label: "Duplicate",        icon: Copy,        color: "#8b5cf6" },
       { id: "archive",    label: "Archive",          icon: Archive,     color: "#ef4444" },
     ],
-    rows:      revisionRuleRows,
+    rows:      evidence.rows,
     kpis,
     entryBtn:  "Create Revision Rule",
     searchPlaceholder: "Search review rules",
