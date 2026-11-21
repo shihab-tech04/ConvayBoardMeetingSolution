@@ -41,13 +41,16 @@ vi.mock("../app/components/tables", () => ({
   ),
 }));
 vi.mock("../app/components/drawers/DynamicDetailsDrawer", () => ({
-  DynamicDetailsDrawer: ({ open, rowData, extraFooterActions }: {
+  DynamicDetailsDrawer: ({ open, rowData, extraFooterActions, onClose }: {
     open: boolean; rowData: TableRow | null; extraFooterActions?: React.ReactNode;
+    onClose?: () => void;
   }) => open && rowData ? (
     <section data-testid="details-drawer">
+      <p>{String(rowData.id ?? "")}</p>
       <p>{String(rowData.approval_status ?? rowData.status ?? "")}</p>
       {rowData.revision_instructions && <p>{String(rowData.revision_instructions)}</p>}
       {extraFooterActions}
+      <button type="button" onClick={onClose}>Close details</button>
     </section>
   ) : null,
 }));
@@ -158,6 +161,34 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("GeneratedTablePage shared Approve Record", () => {
+  it("opens a deep-linked row only after the authorized registry returns it", async () => {
+    const view = renderPage(config({ rows: [], initialDrawerRowId: "action-42" }));
+    expect(screen.queryByTestId("details-drawer")).not.toBeInTheDocument();
+
+    view.rerender(
+      <MemoryRouter>
+        <GeneratedTablePage cfg={config({
+          rows: [{ id: "action-42", action_title: "Assigned follow-up" }],
+          initialDrawerRowId: "action-42",
+        })} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId("details-drawer")).toHaveTextContent("action-42");
+    fireEvent.click(screen.getByRole("button", { name: "Close details" }));
+    expect(screen.queryByTestId("details-drawer")).not.toBeInTheDocument();
+
+    view.rerender(
+      <MemoryRouter>
+        <GeneratedTablePage cfg={config({
+          rows: [{ id: "action-42", action_title: "Assigned follow-up" }],
+          initialDrawerRowId: "action-42",
+        })} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId("details-drawer")).not.toBeInTheDocument();
+  });
+
   it("uses the confirmed SQL approval flow for meeting actions even when other actions are custom", async () => {
     let confirmWrite!: (value: true) => void;
     const save = vi.fn(() => new Promise<true>(resolve => { confirmWrite = resolve; }));
@@ -504,3 +535,4 @@ describe("GeneratedTablePage shared Request Revision", () => {
     expect(state.toast.success).not.toHaveBeenCalled();
   });
 });
+
