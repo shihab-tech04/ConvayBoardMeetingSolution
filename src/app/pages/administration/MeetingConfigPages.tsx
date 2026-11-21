@@ -10,8 +10,8 @@ import {
   CheckCircle, Pencil, Pause, Copy, Archive, Download,
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
-import type { PageCfg, TableRow, KpiDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS, gen } from "../modulePageUtils";
+import type { PageCfg } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import {
   QUORUM_RULE_DRAWER_COLS,
@@ -26,31 +26,9 @@ import {
 import { unverifiedMeetingTypesView } from "./meetingTypesEvidence";
 import { unverifiedQuorumRulesView } from "./quorumRulesEvidence";
 import { unverifiedVotingMethodsView } from "./votingMethodsEvidence";
+import { unverifiedStatusConfigurationView } from "./statusConfigurationEvidence";
 
-// ─── Local sample data ────────────────────────────────────────────────────────
-
-const STATUS_ENTITY_TYPES = ["Meeting", "Agenda", "Document", "Resolution", "Minutes", "Action Item"];
-const STATUS_NAMES = [
-  "Draft", "Submitted", "Under Review", "Pending Approval",
-  "Approved", "Rejected", "In Progress", "Completed",
-  "Archived", "Cancelled", "Published", "Signed",
-];
-
-const statusRows: TableRow[] = gen(24, i => ({
-  config_id:    `SC-${String(300 + i).padStart(3, "0")}`,
-  status_name:  STATUS_NAMES[i % 12],
-  entity_type:  STATUS_ENTITY_TYPES[i % 6],
-  color_code:   ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#6b7280"][i % 6],
-  is_terminal:  i % 5 === 0 ? "Yes" : "No",
-  sort_order:   String(i + 1),
-  prefix:       ["MTG", "AGD", "DOC", "RES", "MIN", "ACT"][i % 6],
-  sequence_from: String(1000 + i * 100),
-  format:       [`${["MTG", "AGD", "DOC", "RES"][i % 4]}-{YYYY}-{NNN}`, `{PREFIX}-{YY}-{NNNN}`][i % 2],
-  status:       ["Active", "Inactive"][i % 2],
-  created_by:   ["System Admin", "Company Secretary"][i % 2],
-  created_at:   `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description:  `${STATUS_NAMES[i % 12]} state for ${STATUS_ENTITY_TYPES[i % 6]} records.`,
-}));
+// ─── Status and numbering drawer schema ──────────────────────────────────────
 
 const STATUS_NUMBERING_DRAWER_COLS: ColDef[] = [
   dg("Status Configuration", [
@@ -232,16 +210,11 @@ export function VotingMethodsPage() {
 }
 
 export function StatusesNumberingPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Configs",  value: String(statusRows.length),                                          tone: "primary"  },
-    { label: "Active",         value: String(statusRows.filter(r => r.status === "Active").length),       tone: "success"  },
-    { label: "Entity Types",   value: String(new Set(statusRows.map(r => r.entity_type)).size),           tone: "neutral"  },
-    { label: "Inactive",       value: String(statusRows.filter(r => r.status === "Inactive").length),     tone: "warning"  },
-  ];
+  const evidence = unverifiedStatusConfigurationView();
 
   const cfg: PageCfg = {
     title: "Statuses & Numbering",
-    desc:  "Configure status definitions, display colors, terminal states, and reference number formats for all entity types.",
+    desc:  evidence.description,
     cols: [
       fc("config_id",    "Config ID"),
       fc("entity_type",  "Entity Type"),
@@ -266,8 +239,10 @@ export function StatusesNumberingPage() {
       { id: "toggle",  label: "Toggle Active", icon: CheckCircle, color: "#22c55e" },
       { id: "archive", label: "Archive",       icon: Archive,     color: "#ef4444" },
     ],
-    rows:      statusRows,
-    kpis,
+    rows:      evidence.rows,
+    dataError: evidence.unavailableReason,
+    dataErrorTitle: "Status configuration is unavailable",
+    dataErrorDescription: evidence.unavailableReason,
     entryBtn:  "Add Status Config",
     searchPlaceholder: "Search statuses and numbering",
   };
