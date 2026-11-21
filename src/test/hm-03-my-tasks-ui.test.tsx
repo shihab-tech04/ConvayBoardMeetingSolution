@@ -144,4 +144,3 @@ describe("HM-03 My Tasks screen", () => {
     expect(screen.queryByText("Open: 0")).not.toBeInTheDocument();
   });
 });
-
