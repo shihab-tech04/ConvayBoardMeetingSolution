@@ -18,6 +18,7 @@ import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
 import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./userBusinessFields";
 import { createLatestUserDirectoryRead, isUserDirectoryStatsUnavailable } from "./userDirectoryRead";
+import { userDirectoryCountLabel } from "./userDirectorySubtitle";
 import { requireUserMutationAck } from "./userMutationAck";
 
 type Mode = "invite" | "edit" | "password" | null;
@@ -299,7 +300,9 @@ export function SupabaseUserManagementPage() {
         <div className="user-management__header-row">
           <div>
             <h1 className="user-management__title">User Management</h1>
-            <p className="user-management__subtitle">{users.length} users · Manage system users and access</p>
+            <p className="user-management__subtitle">
+              {userDirectoryCountLabel(statsUnavailable, loading, users.length)}
+            </p>
           </div>
           <div className="user-management__actions">
             <Button variant="secondary" size="sm" leadingIcon={Shield} onClick={() => navigate("/administration/roles-permissions/roles")}>Manage Roles</Button>
