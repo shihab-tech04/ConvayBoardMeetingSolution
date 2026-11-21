@@ -52,7 +52,7 @@ describe("HM-01 overview and My Tasks document parity", () => {
       [
         doc({ id: "ack-published", doc_id: "DOC-P", owner: "Bob Jones", approval_status: "Published", acknowledgement_required: "Yes" }),
         doc({ id: "ack-done", doc_id: "DOC-DONE", owner: "Bob Jones", approval_status: "Approved", acknowledgement_required: "Yes" }),
-        doc({ id: "ack-pending", approval_status: "Under Review", acknowledgement_required: "Yes" }),
+        doc({ id: "ack-pending", owner: "Bob Jones", approval_status: "Under Review", acknowledgement_required: "Yes" }),
       ],
       [{ document_id: "DOC-DONE", acknowledged_by: "ALICE SMITH" }],
       { name: "Alice Smith", role: "Member" },
