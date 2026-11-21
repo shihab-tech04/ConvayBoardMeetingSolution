@@ -18,6 +18,7 @@ import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
 import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./userBusinessFields";
 import { createLatestUserDirectoryRead } from "./userDirectoryRead";
+import { formatDirectoryKpi, summarizeUserDirectory } from "./userDirectoryKpis";
 import { requireUserMutationAck } from "./userMutationAck";
 
 type Mode = "invite" | "edit" | "password" | null;
@@ -54,6 +55,7 @@ export function SupabaseUserManagementPage() {
   const access = useAccessSnapshot();
   const [users, setUsers] = useState<ConvayProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [directoryReady, setDirectoryReady] = useState(false);
   const [working, setWorking] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [formError, setFormError] = useState("");
@@ -80,6 +82,7 @@ export function SupabaseUserManagementPage() {
       setUsers([]);
       setLoading(false);
       setLoadError("Super Admin access required");
+      setDirectoryReady(false);
       return false;
     }
     return directoryRead.current.load(
@@ -88,6 +91,7 @@ export function SupabaseUserManagementPage() {
         setUsers(update.users);
         setLoading(update.phase === "loading");
         setLoadError(update.error);
+        setDirectoryReady(update.phase === "ready");
       },
     );
   };
@@ -97,8 +101,9 @@ export function SupabaseUserManagementPage() {
     } else {
       directoryRead.current.invalidate();
       setUsers([]);
-      setLoading(false);
-      setLoadError("");
+      setLoading(!access.loaded);
+      setLoadError(access.loaded ? "Super Admin access required" : "");
+      setDirectoryReady(false);
     }
     return () => { directoryRead.current.invalidate(); };
     // Reload only when effective Super Admin access changes.
@@ -130,11 +135,12 @@ export function SupabaseUserManagementPage() {
     accountStatus: displayAccountStatus(u),
     lastActive: u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleString() : "—",
   }));
+  const directoryKpis = summarizeUserDirectory(users, directoryReady);
   const stats = [
-    { label: "Total Users", value: users.length, Icon: Users, tone: "primary" as const },
-    { label: "Active", value: users.filter(u => u.account_status === "active").length, Icon: UserCheck, tone: "success" as const },
-    { label: "Inactive / Suspended", value: users.filter(u => u.account_status !== "active").length, Icon: UserX, tone: "neutral" as const },
-    { label: "Super Admins", value: users.filter(u => u.account_role === "super_admin").length, Icon: Shield, tone: "primary" as const },
+    { label: "Total Users", value: directoryKpis.total, Icon: Users, tone: "primary" as const },
+    { label: "Active", value: directoryKpis.active, Icon: UserCheck, tone: "success" as const },
+    { label: "Inactive / Suspended", value: directoryKpis.inactiveOrSuspended, Icon: UserX, tone: "neutral" as const },
+    { label: "Super Admins", value: directoryKpis.superAdmins, Icon: Shield, tone: "primary" as const },
   ];
 
   const openRoleAssignment = (user: ConvayProfile) => {
@@ -293,7 +299,10 @@ export function SupabaseUserManagementPage() {
         <div className="user-management__header-row">
           <div>
             <h1 className="user-management__title">User Management</h1>
-            <p className="user-management__subtitle">{users.length} users · Manage system users and access</p>
+            <p className="user-management__subtitle">
+              {directoryReady ? `${users.length} users` : loading ? "Loading users" : "User count unavailable"}
+              {" · Manage system users and access"}
+            </p>
           </div>
           <div className="user-management__actions">
             <Button variant="secondary" size="sm" leadingIcon={Shield} onClick={() => navigate("/administration/roles-permissions/roles")}>Manage Roles</Button>
@@ -303,7 +312,7 @@ export function SupabaseUserManagementPage() {
       </div>
       <div className="user-management__stats">
         {stats.map(({ label, value, Icon, tone }) => (
-          <StatCard key={label} icon={Icon} value={String(value)} label={label} tone={tone} />
+          <StatCard key={label} icon={Icon} value={formatDirectoryKpi(value)} label={label} tone={tone} loading={loading} />
         ))}
       </div>
       {loadError && <p role="alert" className="text-red-600 text-sm my-3">{loadError}</p>}
