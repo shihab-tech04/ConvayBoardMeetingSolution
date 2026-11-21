@@ -646,7 +646,7 @@ export function PSRDashboardPage() {
       case "rsvp":         navigate("/meetings/all-meetings"); break;
       case "declaration":  navigate("/meetings/all-meetings"); break;
       case "minutes":      navigate("/archive-reports/minutes"); break;
-      case "action-item":  navigate("/decisions-followup/action-items"); break;
+      case "action-item":  navigate(`/decisions-followup/action-items?view=${encodeURIComponent(task.sourceId)}`); break;
       case "document":     navigate(`/agenda-documents/document-library?view=${task.sourceId}`); break;
       default:             navigate("/home/my-tasks");
     }
@@ -792,3 +792,4 @@ export function PSRDashboardPage() {
     </div>
   );
 }
+
