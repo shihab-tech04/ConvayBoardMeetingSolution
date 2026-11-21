@@ -56,9 +56,10 @@ describe("AD-10 meeting and agenda template evidence state", () => {
     expect(tableSource).toContain("disabled={Boolean(cfg.dataLoading || cfg.dataError)}");
   });
 
-  it("keeps the AD-10 guard and leaves document and communication template modules untouched", () => {
+  it("keeps the AD-10 guard and preserves the AD-12 unavailable state", () => {
     expect(pageSource).toContain("unverifiedMeetingAgendaTemplatesView");
-    expect(pageSource).toContain("const docTemplateRows: TableRow[] = gen(22");
+    expect(pageSource).toContain("unverifiedDocumentTemplatesView");
+    expect(pageSource).not.toContain("docTemplateRows");
     expect(pageSource).toContain("const commTemplateRows: TableRow[] = gen(24");
   });
 });

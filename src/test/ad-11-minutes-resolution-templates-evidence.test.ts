@@ -57,9 +57,10 @@ describe("AD-11 minutes and resolution template evidence state", () => {
     expect(tableSource).toContain("disabled={Boolean(cfg.dataLoading || cfg.dataError)}");
   });
 
-  it("leaves the agenda, document, and communication template modules unchanged", () => {
+  it("preserves the agenda and document guards while leaving communications unchanged", () => {
     expect(pageSource).toContain("unverifiedMeetingAgendaTemplatesView");
-    expect(pageSource).toContain("const docTemplateRows: TableRow[] = gen(22");
+    expect(pageSource).toContain("unverifiedDocumentTemplatesView");
+    expect(pageSource).not.toContain("docTemplateRows");
     expect(pageSource).toContain("const commTemplateRows: TableRow[] = gen(24");
   });
 });

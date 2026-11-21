@@ -16,34 +16,9 @@ import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { TEMPLATE_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { unverifiedMeetingAgendaTemplatesView } from "./meetingAgendaTemplatesEvidence";
 import { unverifiedMinutesResolutionTemplatesView } from "./minutesResolutionTemplatesEvidence";
+import { unverifiedDocumentTemplatesView } from "./documentTemplatesEvidence";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
-
-const DOC_TEMPLATE_NAMES = [
-  "Board Paper Template", "Meeting Notice Template", "Agenda Cover Sheet",
-  "Attendance Register Template", "Conflict Declaration Form", "RSVP Form Template",
-  "Board Pack Cover Template", "Resolution Certificate Template",
-  "Action Item Tracking Sheet", "Governance Report Template",
-];
-
-const docTemplateRows: TableRow[] = gen(22, i => ({
-  template_id:   `DT-${String(3000 + i).padStart(4, "0")}`,
-  template_name: DOC_TEMPLATE_NAMES[i % 10],
-  template_type: "Document",
-  category:      ["Board Paper", "Notice", "Form", "Report", "Certificate"][i % 5],
-  committee:     CIRCLES_DATA[i % 8],
-  language:      ["English", "Bengali", "Both"][i % 3],
-  version:       `v${(i % 3) + 1}.${i % 4}`,
-  file_format:   ["DOCX", "PDF", "XLSX", "PPTX"][i % 4],
-  status:        ["Active", "Inactive", "Draft"][i % 3],
-  created_by:    ["Company Secretary", "System Admin", "Governance Officer"][i % 3],
-  created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  updated_at:    `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  agenda_count:  "—",
-  document_count: String((i % 4) + 1),
-  description:   `Standard ${DOC_TEMPLATE_NAMES[i % 10]} for governance documentation.`,
-  meeting_type:  ["All", "Board", "Committee"][i % 3],
-}));
 
 const COMM_TEMPLATE_NAMES = [
   "Meeting Invitation Email", "RSVP Reminder", "Agenda Distribution Notice",
@@ -213,12 +188,7 @@ export function MinutesResolutionTemplatesPage() {
 }
 
 export function DocumentTemplatesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Templates",  value: String(docTemplateRows.length),                                          tone: "primary"  },
-    { label: "Active",           value: String(docTemplateRows.filter(r => r.status === "Active").length),       tone: "success"  },
-    { label: "Draft",            value: String(docTemplateRows.filter(r => r.status === "Draft").length),        tone: "neutral"  },
-    { label: "Inactive",         value: String(docTemplateRows.filter(r => r.status === "Inactive").length),     tone: "warning"  },
-  ];
+  const evidence = unverifiedDocumentTemplatesView();
 
   const cfg: PageCfg = {
     title: "Document Templates",
@@ -250,8 +220,10 @@ export function DocumentTemplatesPage() {
       { id: "download",  label: "Download",       icon: Download,    color: "#6b7280" },
       { id: "archive",   label: "Archive",        icon: Archive,     color: "#ef4444" },
     ],
-    rows:      docTemplateRows,
-    kpis,
+    rows:      evidence.rows,
+    dataError: evidence.unavailableReason,
+    dataErrorTitle: "Document templates are unavailable",
+    dataErrorDescription: evidence.unavailableReason,
     entryBtn:  "Create Document Template",
     searchPlaceholder: "Search document templates",
   };
