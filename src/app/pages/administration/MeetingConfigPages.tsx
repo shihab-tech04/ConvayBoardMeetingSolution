@@ -198,7 +198,7 @@ export function QuorumRulesPage() {
     ],
     rows:      evidence.rows,
     dataLoading: registry.loading,
-    dataError: registry.error ?? evidence.unavailableReason,
+    dataError: registry.error ?? (registry.loading ? null : evidence.unavailableReason),
     dataErrorTitle: "Quorum rule configuration is unavailable",
     dataErrorDescription: evidence.description,
     onDataRetry: registry.refresh,

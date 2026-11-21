@@ -41,7 +41,7 @@ describe("AD-06 quorum rule evidence state", () => {
 
   it("uses the authoritative loading, error, and retry state and fails closed", () => {
     expect(quorumPage).toContain("dataLoading: registry.loading");
-    expect(quorumPage).toContain("dataError: registry.error ?? evidence.unavailableReason");
+    expect(quorumPage).toContain("dataError: registry.error ?? (registry.loading ? null : evidence.unavailableReason)");
     expect(quorumPage).toContain("onDataRetry: registry.refresh");
     expect(quorumPage).toContain("rows:      evidence.rows");
   });
