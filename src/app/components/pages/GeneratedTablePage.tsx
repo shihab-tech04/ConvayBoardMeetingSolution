@@ -949,11 +949,13 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
           style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12 }}
         >
           <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--color-text-primary)" }}>
-            {cfg.dataError ? "Meeting records could not be loaded" : "Loading meeting records"}
+            {cfg.dataError
+              ? (cfg.dataErrorTitle ?? "Meeting records could not be loaded")
+              : "Loading meeting records"}
           </h2>
           <p style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
             {cfg.dataError
-              ? "The register cannot show reliable results until Supabase records are available."
+              ? (cfg.dataErrorDescription ?? "The register cannot show reliable results until Supabase records are available.")
               : "Retrieving meetings and related governance records."}
           </p>
           {cfg.dataError && cfg.onDataRetry && (

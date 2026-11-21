@@ -47,6 +47,9 @@ export interface PageCfg {
   /** Optional authoritative registry load state for pages backed by Supabase. */
   dataLoading?: boolean;
   dataError?: string | null;
+  /** Optional page-specific copy for an unavailable authoritative registry. */
+  dataErrorTitle?: string;
+  dataErrorDescription?: string;
   onDataRetry?: () => void | Promise<void>;
   kpis?: KpiDef[];
   entryBtn?: string;
