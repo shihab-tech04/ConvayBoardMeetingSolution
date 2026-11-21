@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, KpiDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS, gen } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import {
   QUORUM_RULE_DRAWER_COLS,
@@ -21,37 +21,13 @@ import { dg } from "../modulePageUtils";
 import type { ColDef } from "../modulePageUtils";
 import {
   useQuorumRuleRegistry,
+  useVotingMethodRegistry,
 } from "../../data/boardMeetingData";
 import { unverifiedMeetingTypesView } from "./meetingTypesEvidence";
 import { unverifiedQuorumRulesView } from "./quorumRulesEvidence";
+import { unverifiedVotingMethodsView } from "./votingMethodsEvidence";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
-
-const VOTING_METHOD_NAMES = [
-  "Simple Majority", "Two-Thirds Majority", "Unanimous Consent",
-  "Show of Hands", "Secret Ballot", "Written Resolution",
-  "Casting Vote (Chairman)", "Proxy Voting", "Electronic Voting",
-];
-
-const votingMethodRows: TableRow[] = gen(16, i => ({
-  method_id:      `VM-${String(200 + i).padStart(3, "0")}`,
-  method_name:    VOTING_METHOD_NAMES[i % 9],
-  method_type:    ["Simple", "Supermajority", "Consensus", "Proxy"][i % 4],
-  majority_rule:  ["50%+1", "Two-Thirds", "Three-Quarters", "Unanimous"][i % 4],
-  applicable_to:  ["All Meetings", "Board Meetings", "Committee Meetings", "AGM"][i % 4],
-  eligible_voters: ["All Members", "Voting Members Only", "Board Directors"][i % 3],
-  status:         ["Active", "Inactive", "Draft"][i % 3],
-  committee:      CIRCLES_DATA[i % 8],
-  created_by:     ["Company Secretary", "System Admin"][i % 2],
-  created_at:     `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  particulars:    VOTING_METHOD_NAMES[i % 9],
-  reference:      ["Simple", "Supermajority", "Consensus"][i % 3],
-  name:           ["All Meetings", "Board Only", "Committees Only"][i % 3],
-  debit:          ["50%+1", "Two-Thirds", "Unanimous"][i % 3],
-  credit:         ["All Members", "Voting Members"][i % 2],
-  balance:        ["Active", "Inactive", "Draft"][i % 3],
-  transaction_date: `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-}));
 
 const STATUS_ENTITY_TYPES = ["Meeting", "Agenda", "Document", "Resolution", "Minutes", "Action Item"];
 const STATUS_NAMES = [
@@ -210,16 +186,12 @@ export function QuorumRulesPage() {
 }
 
 export function VotingMethodsPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Methods",  value: String(votingMethodRows.length),                                           tone: "primary"  },
-    { label: "Active",         value: String(votingMethodRows.filter(r => r.status === "Active").length),        tone: "success"  },
-    { label: "Draft",          value: String(votingMethodRows.filter(r => r.status === "Draft").length),         tone: "neutral"  },
-    { label: "Inactive",       value: String(votingMethodRows.filter(r => r.status === "Inactive").length),      tone: "warning"  },
-  ];
+  const registry = useVotingMethodRegistry();
+  const evidence = unverifiedVotingMethodsView();
 
   const cfg: PageCfg = {
     title: "Voting Methods",
-    desc:  "Configure voting methods including majority rules, eligible voters, and applicable meeting types.",
+    desc:  evidence.description,
     cols: [
       fc("method_id",      "Method ID"),
       fc("method_name",    "Voting Method"),
@@ -246,8 +218,12 @@ export function VotingMethodsPage() {
       { id: "duplicate",  label: "Duplicate",    icon: Copy,        color: "#8b5cf6" },
       { id: "archive",    label: "Archive",      icon: Archive,     color: "#ef4444" },
     ],
-    rows:      votingMethodRows,
-    kpis,
+    rows:      evidence.rows,
+    dataLoading: registry.loading,
+    dataError: registry.error ?? (registry.loading ? null : evidence.unavailableReason),
+    dataErrorTitle: "Voting method configuration is unavailable",
+    dataErrorDescription: evidence.description,
+    onDataRetry: registry.refresh,
     entryBtn:  "Create Voting Method",
     searchPlaceholder: "Search voting methods",
   };
