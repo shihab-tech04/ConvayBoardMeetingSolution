@@ -283,6 +283,19 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const [fVals, setFVals]   = useState<Record<string, string>>({});
   const [applied, setApplied] = useState<Record<string, string>>({});
   const [drawer, setDrawer] = useState<TableRow | null>(null);
+  const lastInitialDrawerRowId = useRef<string | null>(null);
+  useEffect(() => {
+    const rowId = cfg.initialDrawerRowId?.trim();
+    if (!rowId) {
+      lastInitialDrawerRowId.current = null;
+      return;
+    }
+    if (lastInitialDrawerRowId.current === rowId) return;
+    const row = cfg.rows.find(candidate => String(candidate.id ?? "") === rowId);
+    if (!row) return; // Wait for the authenticated registry read; never synthesize a row from the URL.
+    lastInitialDrawerRowId.current = rowId;
+    setDrawer(row);
+  }, [cfg.initialDrawerRowId, cfg.rows]);
   const [modal, setModal]   = useState<string | null>(cfg.initialModal ?? null);
   const [entryStep, setEntryStep] = useState(0);
   const [stepValues, setStepValues] = useState<Record<string, EntryFormValue>>({});
@@ -1614,3 +1627,4 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
 }
 
 export { GeneratedTablePage as GenPage };
+
