@@ -20,10 +20,10 @@ import {
 import { dg } from "../modulePageUtils";
 import type { ColDef } from "../modulePageUtils";
 import {
-  useGovernanceRegistry,
   useQuorumRuleRegistry,
 } from "../../data/boardMeetingData";
 import { unverifiedMeetingTypesView } from "./meetingTypesEvidence";
+import { unverifiedQuorumRulesView } from "./quorumRulesEvidence";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
 
@@ -165,57 +165,12 @@ export function MeetingTypesPage() {
 }
 
 export function QuorumRulesPage() {
-  const { items: quorumRules } = useQuorumRuleRegistry();
-  const { items: govBodies }   = useGovernanceRegistry();
-
-  const rows: TableRow[] = quorumRules.map(r => ({
-    ...r,
-    id:          r.id,
-    governance_body_name: govBodies.find(g => g.id === r.governance_body_id || g.body_id === r.governance_body_id)?.body_name ?? r.governance_body_name ?? r.governance_body_id,
-    name:        r.governance_body_name ?? r.governance_body_id,
-    agenda_no:   `QR-${r.id?.padStart?.(4, "0") ?? r.id}`,
-    agenda_date: r.quorum_type ?? "Percentage",
-    meeting_type: r.meeting_type ?? "All",
-    committee:    r.governance_body_name ?? "",
-    approved_amount: String(r.minimum_members ?? "—"),
-    disbursed_amount: r.quorum_percent ? `${r.quorum_percent}%` : "—",
-    outstanding:  r.effective_date ?? "—",
-    approval_status: (r as { status?: string }).status ?? "Active",
-    status:      (r as { status?: string }).status ?? "Active",
-  }));
-
-  const fallbackRows: TableRow[] = gen(16, i => ({
-    quorum_id:      `QR-${String(400 + i).padStart(4, "0")}`,
-    governance_body_name: CIRCLES_DATA[i % 8],
-    quorum_type:    ["Percentage", "Fixed Count", "Role-Based"][i % 3],
-    minimum_members: String([3, 4, 5, 6, 7][i % 5]),
-    quorum_percent:  `${[50, 60, 67, 75][i % 4]}%`,
-    meeting_type:    ["All Meetings", "Regular", "Extraordinary"][i % 3],
-    required_roles:  ["Chairperson", "Chairperson + Secretary", "Any Voting Member"][i % 3],
-    effective_date:  `2024-0${(i % 9) + 1}-01`,
-    status:         ["Active", "Inactive", "Draft"][i % 3],
-    committee:      CIRCLES_DATA[i % 8],
-    agenda_no:      `QR-${String(400 + i).padStart(4, "0")}`,
-    agenda_date:    ["Percentage", "Fixed Count", "Role-Based"][i % 3],
-    meeting_type2:  ["All Meetings", "Regular"][i % 2],
-    approved_amount: String([3, 4, 5, 6][i % 4]),
-    disbursed_amount: `${[50, 67, 75][i % 3]}%`,
-    outstanding:    `2024-0${(i % 9) + 1}-01`,
-    approval_status: ["Active", "Inactive", "Draft"][i % 3],
-    name:           CIRCLES_DATA[i % 8],
-  }));
-
-  const displayRows = rows.length > 0 ? rows : fallbackRows;
-
-  const kpis: KpiDef[] = [
-    { label: "Total Rules",  value: String(displayRows.length),                                                         tone: "primary"  },
-    { label: "Active",       value: String(displayRows.filter(r => r.status === "Active" || r.approval_status === "Active").length), tone: "success"  },
-    { label: "Governance Bodies", value: String(new Set(displayRows.map(r => r.governance_body_name || r.committee)).size), tone: "neutral" },
-  ];
+  const registry = useQuorumRuleRegistry();
+  const evidence = unverifiedQuorumRulesView();
 
   const cfg: PageCfg = {
     title: "Quorum Rules",
-    desc:  "Define quorum requirements for each governance body, including minimum attendance thresholds and role requirements.",
+    desc:  evidence.description,
     cols: [
       fc("agenda_no",             "Rule ID"),
       fc("governance_body_name",  "Governance Body"),
@@ -241,8 +196,12 @@ export function QuorumRulesPage() {
       { id: "deactivate", label: "Deactivate",   icon: Pause,       color: "#f59e0b" },
       { id: "download",   label: "Export",       icon: Download,    color: "#6b7280" },
     ],
-    rows:      displayRows,
-    kpis,
+    rows:      evidence.rows,
+    dataLoading: registry.loading,
+    dataError: registry.error ?? (registry.loading ? null : evidence.unavailableReason),
+    dataErrorTitle: "Quorum rule configuration is unavailable",
+    dataErrorDescription: evidence.description,
+    onDataRetry: registry.refresh,
     entryBtn:  "Create Quorum Rule",
     searchPlaceholder: "Search quorum rules",
   };
