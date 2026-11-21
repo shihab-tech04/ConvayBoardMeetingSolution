@@ -18,6 +18,7 @@ import type { ColDef, FilterDef } from "../modulePageUtils";
 import { convayAuth, type ConvayProfile } from "../../services/supabase/convayAuth";
 import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./userBusinessFields";
 import { createLatestUserDirectoryRead, isUserDirectoryStatsUnavailable } from "./userDirectoryRead";
+import { userDirectoryCountLabel } from "./userDirectorySubtitle";
 import { requireUserMutationAck } from "./userMutationAck";
 
 type Mode = "invite" | "edit" | "password" | null;
