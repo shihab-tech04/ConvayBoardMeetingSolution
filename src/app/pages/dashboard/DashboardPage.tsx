@@ -33,6 +33,7 @@ import { useSettings } from "../../hooks/useSettings";
 import { resolveLifecycleStage, type LifecycleStage } from "./meetingLifecycleStatus";
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { resolveDashboardMeetingDestination } from "./dashboardContextActions";
+import { actionItemDetailsPath } from "./actionItemDetailsPath";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
@@ -1097,7 +1098,7 @@ export function DashboardPage() {
     } else if (task.id.startsWith("rsvp-")) {
       navigate("/meetings/all-meetings");
     } else if (task.id.startsWith("act-")) {
-      navigate("/decisions-followup/action-items");
+      navigate(actionItemDetailsPath(task.id.slice(4)));
     } else {
       navigate("/home/my-tasks");
     }
