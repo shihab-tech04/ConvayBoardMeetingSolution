@@ -34,7 +34,11 @@ import { resolveLifecycleStage, type LifecycleStage } from "./meetingLifecycleSt
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { resolveDashboardMeetingDestination } from "./dashboardContextActions";
 import { actionItemDetailsPath } from "./actionItemDetailsPath";
-import { isPersonalMeetingTask, isPersonalAgendaTask, isPersonalRsvpTask, isPersonalActionTask } from "./personalTaskPreviewRules";
+import {
+  isPersonalMeetingTask, isPersonalAgendaTask, isPersonalRsvpTask,
+  isPersonalActionTask, isPersonalBoardPackTask, isPersonalConflictTask,
+  isPersonalMinutesTask,
+} from "./personalTaskPreviewRules";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
@@ -1112,44 +1116,82 @@ export function DashboardPage() {
     }
   }, [meetings, navigate]);
 
-  // ── KPI cards ────────────────────────────────────────────────────────────────
+  // ── Personal KPI cards ───────────────────────────────────────────────────────
+  // Every "My" count uses the same viewer as the detailed My Tasks preview,
+  // never the entire RLS-visible registry.
+  const viewerName = sessionUser.name || currentUser?.name || "";
+  const viewerRole = sessionUser.role || currentUser?.role || "";
+  const viewerDesignation = sessionUser.designation || "";
+  const taskViewer = { name: viewerName, role: viewerRole, designation: viewerDesignation };
 
   const openTaskCount = useMemo(() => {
     let n = 0;
-    n += meetings.filter(m => isMeetingApprovalPending(m.approval_status ?? m.status)).length;
-    n += agendas.filter(a => ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))).length;
-    n += boardPacks.filter(p => !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? ""))).length;
-    n += rsvps.filter(r => !r.response || String(r.response) === "Pending").length;
-    n += conflicts.filter(c => String(c.review_status ?? "") === "Pending").length;
-    n += minutes.filter(m => ["Draft", "Awaiting Review"].includes(String(m.approval_status ?? ""))).length;
-    n += actions.filter(a => String(a.implementation_status ?? "") !== "Completed").length;
+    n += meetings.filter(m => {
+      const state = String(m.approval_status ?? m.status ?? "");
+      return ["Pending Approval", "Awaiting Approval", "Awaiting Minutes"].includes(state)
+        && isPersonalMeetingTask(m, taskViewer)
+        && !(state === "Awaiting Minutes" && minutes.some(min =>
+          String(min.meeting_id ?? "") === String(m.id)
+          && ["Draft", "Awaiting Review"].includes(String(min.approval_status ?? ""))));
+    }).length;
+    n += agendas.filter(a =>
+      ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))
+      && isPersonalAgendaTask(a, taskViewer)).length;
+    n += boardPacks.filter(p =>
+      !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? ""))
+      && isPersonalBoardPackTask(p, taskViewer)).length;
+    n += rsvps.filter(v =>
+      (!v.response || String(v.response) === "Pending")
+      && isPersonalRsvpTask(v, taskViewer)).length;
+    n += conflicts.filter(c =>
+      ["Pending", "Under Review"].includes(String(c.review_status ?? ""))
+      && isPersonalConflictTask(c, taskViewer)).length;
+    n += minutes.filter(m =>
+      ["Draft", "Awaiting Review"].includes(String(m.approval_status ?? ""))
+      && isPersonalMinutesTask(m, taskViewer)).length;
+    n += actions.filter(a =>
+      String(a.implementation_status ?? "") !== "Completed"
+      && isPersonalActionTask(a, taskViewer)).length;
     return n;
-  }, [meetings, agendas, boardPacks, rsvps, conflicts, minutes, actions]);
+  }, [meetings, agendas, boardPacks, rsvps, conflicts, minutes, actions, viewerName, viewerRole, viewerDesignation]);
 
   const tasksThisWeek = useMemo(() =>
     actions.filter(a => {
       const due = String(a.due_date ?? "");
-      return due > today && due <= weekEnd && String(a.implementation_status ?? "") !== "Completed";
+      return due > today && due <= weekEnd
+        && String(a.implementation_status ?? "") !== "Completed"
+        && isPersonalActionTask(a, taskViewer);
     }).length,
-    [actions, today, weekEnd]
+    [actions, today, weekEnd, viewerName, viewerRole, viewerDesignation]
   );
 
-  const pendingApprovals      = meetings.filter(m => isMeetingApprovalPending(m.approval_status ?? m.status));
-  const pendingAgendas        = agendas.filter(a => ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? "")));
-  const pendingApprovalCount  = pendingApprovals.length + pendingAgendas.length;
-  const pendingToday          = pendingApprovals.filter(m => String(m.meeting_date ?? "") === today).length;
+  const pendingApprovals = meetings.filter(m =>
+    isMeetingApprovalPending(m.approval_status ?? m.status)
+    && isPersonalMeetingTask(m, taskViewer));
+  const pendingAgendas = agendas.filter(a =>
+    ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))
+    && isPersonalAgendaTask(a, taskViewer));
+  const pendingApprovalCount = pendingApprovals.length + pendingAgendas.length;
+  const pendingToday = pendingApprovals.filter(m => String(m.meeting_date ?? "") === today).length;
 
   const overdueActions = useMemo(() =>
-    actions.filter(a => String(a.due_date ?? "") < today && String(a.due_date ?? "") !== "" && String(a.implementation_status ?? "") !== "Completed"),
-    [actions, today]
+    actions.filter(a => String(a.due_date ?? "") < today && String(a.due_date ?? "") !== ""
+      && String(a.implementation_status ?? "") !== "Completed"
+      && isPersonalActionTask(a, taskViewer)),
+    [actions, today, viewerName, viewerRole, viewerDesignation]
   );
   const over30Days = overdueActions.filter(a => {
     const diff = (new Date(today).getTime() - new Date(String(a.due_date ?? "")).getTime()) / 86400000;
     return diff > 30;
   }).length;
 
-  const docsToReview    = boardPacks.filter(p => !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? "")));
-  const docsDueThisWeek = docsToReview.filter(p => { const d = String(p.meeting_date ?? ""); return d > today && d <= weekEnd; }).length;
+  const docsToReview = boardPacks.filter(p =>
+    !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? ""))
+    && isPersonalBoardPackTask(p, taskViewer));
+  const docsDueThisWeek = docsToReview.filter(p => {
+    const due = String(p.meeting_date ?? "");
+    return due > today && due <= weekEnd;
+  }).length;
 
   // ── Recent updates ───────────────────────────────────────────────────────────
 
@@ -1198,10 +1240,6 @@ export function DashboardPage() {
   // ── Personal urgent tasks ───────────────────────────────────────────────────
   // Mirror My Tasks ownership instead of showing every RLS-visible person's
   // assignments as if they were this user's tasks.
-  const viewerName = sessionUser.name || currentUser?.name || "";
-  const viewerRole = sessionUser.role || currentUser?.role || "";
-  const viewerDesignation = sessionUser.designation || "";
-
   const urgentTasks = useMemo((): UrgentTask[] => {
     const viewer = { name: viewerName, role: viewerRole, designation: viewerDesignation };
     const out: UrgentTask[] = [];
