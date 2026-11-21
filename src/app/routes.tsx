@@ -37,7 +37,7 @@ import { PermissionListPage }       from "./pages/administration-requests/Permis
 import { ParticipantGroupsPage }    from "./pages/governance/ParticipantGroupsPage";
 import { OrganizationStructurePage } from "./pages/governance/OrganizationStructurePage";
 import { TimeExtensionPage }        from "./pages/administration-requests/TimeExtensionPage";
-import { AuditSelectionPage }       from "./pages/administration-requests/AuditSelectionPage";
+import { SecurityPoliciesPage }     from "./pages/administration/SecurityPoliciesPage";
 
 import { WorkflowDefinitionsPage, ApprovalRulesPage, ReviewRevisionRulesPage, WorkflowHistoryPage } from "./pages/administration/WorkflowPages";
 import { MeetingTypesPage, QuorumRulesPage, VotingMethodsPage, StatusesNumberingPage } from "./pages/administration/MeetingConfigPages";
@@ -202,7 +202,7 @@ export const router = createBrowserRouter([
       { path: "administration/notifications/delivery-logs",       Component: DeliveryLogsPage },
       { path: "administration/integrations", Component: IntegrationsPage },
       { path: "administration/security-retention",                        loader: async () => redirect("/administration/security-retention/security-policies") },
-      { path: "administration/security-retention/security-policies",      Component: AuditSelectionPage },
+      { path: "administration/security-retention/security-policies",      Component: SecurityPoliciesPage },
       { path: "administration/security-retention/retention-legal-holds",  Component: TimeExtensionPage },
 
       // ── Backward compatibility redirects ──────────────────────────────────
@@ -235,7 +235,7 @@ export const router = createBrowserRouter([
       { path: "administration/permission-list",     loader: async () => redirect("/administration/roles-permissions/permissions") },
       { path: "administration/special-registration",loader: async () => redirect("/governance-org/participant-groups") },
       { path: "administration/time-extension",      loader: async () => redirect("/administration/security-retention/retention-legal-holds") },
-      { path: "administration/audit-selection",     loader: async () => redirect("/administration/security-retention/security-policies") },
+      { path: "administration/audit-selection",     loader: async () => redirect("/archive-reports/audit-trail") },
     ],
   },
 ], { basename: import.meta.env.BASE_URL });
