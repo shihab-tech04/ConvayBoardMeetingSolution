@@ -263,4 +263,3 @@ export const auditRows = gen(18, i => ({ audit_no: `AUD-${1000 + i}`, audit_type
 // Note: Icons must be imported from lucide-react in consuming modules
 // ROW_VIEW is the standard row action - only "View Details" appears in table rows
 // All other actions (Edit, Approve, Reject, etc.) should be passed via drawerActions
-
