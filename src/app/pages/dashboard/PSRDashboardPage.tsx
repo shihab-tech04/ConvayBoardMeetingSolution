@@ -473,15 +473,18 @@ export function PSRDashboardPage() {
 
   // ── Tab counts ───────────────────────────────────────────────────────────────
 
-  const tabCounts = useMemo(() => ({
-    all:          tasks.length,
-    approvals:    tasks.filter(t => t.type === "Approval").length,
-    reviews:      tasks.filter(t => t.type === "Review").length,
-    votes:        tasks.filter(t => t.type === "Vote").length,
-    actions:      tasks.filter(t => t.type === "Action").length,
-    declarations: tasks.filter(t => t.type === "Declaration" || t.type === "RSVP").length,
-    completed:    tasks.filter(t => t.status === "Completed").length,
-  }), [tasks]);
+  const tabCounts = useMemo(() => {
+    const activeTasks = tasks.filter(t => t.status !== "Completed");
+    return {
+      all:          activeTasks.length,
+      approvals:    activeTasks.filter(t => t.type === "Approval").length,
+      reviews:      activeTasks.filter(t => t.type === "Review").length,
+      votes:        activeTasks.filter(t => t.type === "Vote").length,
+      actions:      activeTasks.filter(t => t.type === "Action").length,
+      declarations: activeTasks.filter(t => t.type === "Declaration" || t.type === "RSVP").length,
+      completed:    tasks.filter(t => t.status === "Completed").length,
+    };
+  }, [tasks]);
 
   const TASK_TABS: TabDef[] = [
     { id: "all",          label: "All",               count: tabCounts.all },
@@ -503,12 +506,16 @@ export function PSRDashboardPage() {
     else if (kpiFilter === "overdue")       { list = tasks.filter(t => t.status === "Overdue"); }
     else if (kpiFilter === "completed-month") { list = tasks.filter(t => t.status === "Completed"); }
     else {
+      const completedView = activeTab === "completed" || appliedFilters.status === "Completed";
+      list = tasks.filter(t => completedView
+        ? t.status === "Completed"
+        : t.status !== "Completed");
+
       if (activeTab === "approvals")         list = list.filter(t => t.type === "Approval");
       else if (activeTab === "reviews")      list = list.filter(t => t.type === "Review");
       else if (activeTab === "votes")        list = list.filter(t => t.type === "Vote");
       else if (activeTab === "actions")      list = list.filter(t => t.type === "Action");
       else if (activeTab === "declarations") list = list.filter(t => t.type === "Declaration" || t.type === "RSVP");
-      else if (activeTab === "completed")    list = list.filter(t => t.status === "Completed");
     }
 
     if (appliedFilters.type)    list = list.filter(t => t.type === appliedFilters.type);
