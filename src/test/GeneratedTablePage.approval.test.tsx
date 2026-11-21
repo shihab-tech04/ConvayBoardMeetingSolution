@@ -535,4 +535,3 @@ describe("GeneratedTablePage shared Request Revision", () => {
     expect(state.toast.success).not.toHaveBeenCalled();
   });
 });
-
