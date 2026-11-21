@@ -43,8 +43,17 @@ vi.mock("../app/data/boardMeetingData", () => {
     useConflictRegistry: registry("conflicts"),
     useMinutesRegistry: registry("minutes"),
     useResolutionRegistry: registry("resolutions"),
+    useDocumentRegistry: registry("documents"),
   };
 });
+vi.mock("../app/data/documentWorkspaceData", () => ({
+  useDocumentAcknowledgementRegistry: () => ({
+    items: state.records.acknowledgements ?? [],
+    loading: state.loading,
+    error: state.error,
+    refresh: async () => { state.retries += 1; },
+  }),
+}));
 
 import { DashboardPage } from "../app/pages/dashboard/DashboardPage";
 import { dashboardCalendarWindow } from "../app/pages/dashboard/dashboardOverviewRules";
@@ -161,6 +170,6 @@ describe("HM-01 executive overview renders authoritative registry state", () => 
     render(<DashboardPage />);
     expect(screen.getByRole("alert")).toHaveTextContent("Overview data could not be loaded");
     fireEvent.click(screen.getByRole("button", { name: "Retry loading" }));
-    expect(state.retries).toBe(9);
+    expect(state.retries).toBe(11);
   });
 });
