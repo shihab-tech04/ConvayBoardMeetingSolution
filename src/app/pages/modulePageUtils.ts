@@ -44,6 +44,8 @@ export interface PageCfg {
   /** Per-row dynamic replacement for drawerActions — used only when provided. */
   drawerActionsResolver?: (row: TableRow) => RowAction[];
   rows: TableRow[];
+  /** Opens a row after its authoritative registry data is available. */
+  initialDrawerRowId?: string;
   /** Optional authoritative registry load state for pages backed by Supabase. */
   dataLoading?: boolean;
   dataError?: string | null;
@@ -261,3 +263,4 @@ export const auditRows = gen(18, i => ({ audit_no: `AUD-${1000 + i}`, audit_type
 // Note: Icons must be imported from lucide-react in consuming modules
 // ROW_VIEW is the standard row action - only "View Details" appears in table rows
 // All other actions (Edit, Approve, Reject, etc.) should be passed via drawerActions
+
