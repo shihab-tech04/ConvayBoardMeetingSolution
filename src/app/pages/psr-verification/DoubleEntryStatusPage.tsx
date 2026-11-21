@@ -96,4 +96,3 @@ export function DoubleEntryStatusPage() {
   };
   return <GenPage cfg={cfg} />;
 }
-
