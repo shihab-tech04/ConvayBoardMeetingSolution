@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isPersonalMeetingTask, isPersonalAgendaTask,
   isPersonalRsvpTask, isPersonalActionTask,
+  isPersonalBoardPackTask, isPersonalConflictTask, isPersonalMinutesTask,
 } from "../app/pages/dashboard/personalTaskPreviewRules";
 
 const ann = { name: "Ann", role: "board_member", designation: "Director" };
@@ -30,6 +31,16 @@ describe("HM-02/HM-03 dashboard personal task preview", () => {
     expect(isPersonalRsvpTask({ participant_name: "Another User" }, secretary)).toBe(false);
     expect(isPersonalRsvpTask({ participant_name: "Ann" }, ann)).toBe(true);
   });
+  it("personal KPI-only categories do not count other users' documents and minutes", () => {
+    expect(isPersonalBoardPackTask({ created_by: "Anna" }, ann)).toBe(false);
+    expect(isPersonalBoardPackTask({ created_by: "Ann" }, ann)).toBe(true);
+    expect(isPersonalConflictTask({ declared_by: "Anna" }, ann)).toBe(false);
+    expect(isPersonalConflictTask({ declared_by: "Anna" }, secretary)).toBe(true);
+    expect(isPersonalMinutesTask({ minute_taker: "Anna", co_authors: ["Other"] }, ann)).toBe(false);
+    expect(isPersonalMinutesTask({ minute_taker: "Anna", co_authors: ["Ann"] }, ann)).toBe(true);
+    expect(isPersonalMinutesTask({ minute_taker: "Anna" }, secretary)).toBe(true);
+  });
+
   it("fails closed for missing identity and unassigned actions", () => {
     expect(isPersonalActionTask({}, ann)).toBe(false);
     expect(isPersonalMeetingTask({}, { name: "", role: "", designation: "" })).toBe(false);
