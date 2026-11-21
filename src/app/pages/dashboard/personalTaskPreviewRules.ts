@@ -48,3 +48,27 @@ export function isPersonalActionTask(
     || (workflowActor(viewer)
       && roleAssignmentMatchesUser(assignee, viewer.role, viewer.designation));
 }
+
+/** Additional personal work categories displayed in dashboard KPI cards. */
+export function isPersonalBoardPackTask(
+  pack: { created_by?: unknown },
+  viewer: PersonalTaskViewer,
+): boolean {
+  return workflowActor(viewer) || fieldMatchesUser(pack.created_by, viewer.name);
+}
+
+export function isPersonalConflictTask(
+  conflict: { declared_by?: unknown },
+  viewer: PersonalTaskViewer,
+): boolean {
+  return workflowActor(viewer) || fieldMatchesUser(conflict.declared_by, viewer.name);
+}
+
+export function isPersonalMinutesTask(
+  minutes: { minute_taker?: unknown; co_authors?: unknown },
+  viewer: PersonalTaskViewer,
+): boolean {
+  return workflowActor(viewer)
+    || fieldMatchesUser(minutes.minute_taker, viewer.name)
+    || fieldMatchesUser(minutes.co_authors, viewer.name);
+}
