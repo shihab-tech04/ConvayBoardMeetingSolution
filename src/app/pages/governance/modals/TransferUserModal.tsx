@@ -12,7 +12,8 @@
  *  - Preserves previous assignment in member count recalc
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
+import { toast } from "sonner";
 import { createPortal } from "react-dom";
 import { X, ArrowRight, AlertTriangle, Search, CheckCircle, Users } from "lucide-react";
 
@@ -61,6 +62,7 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
   const [newDesignation, setNewDesignation]   = useState("");
   const [handoverUserId, setHandoverUserId]   = useState("");
   const [saving, setSaving]                   = useState(false);
+  const saveInFlight = useRef(false);
   const [error, setError]                     = useState("");
 
   // Selected user
@@ -141,10 +143,15 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
   // ── Save ──────────────────────────────────────────────────────────────────────
 
   async function handleConfirm() {
-    if (!selectedUser || !destUnit) return;
+    if (saveInFlight.current || !selectedUser || !destUnit) return;
+    if (selectedUser.primary_org_unit_id === destUnit.id) {
+      setError("Source and destination units must be different.");
+      return;
+    }
+    saveInFlight.current = true;
     setSaving(true);
+    setError("");
     const now = new Date().toISOString();
-
     const patch: Partial<BmsUser> = {
       ...buildUnitClearancePatch(),
       ...buildUnitAssignmentPatch(destUnit),
@@ -152,26 +159,42 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
       ...(newDesignation ? { position: newDesignation } : {}),
     };
 
-    bmsUsers.update(selectedUser.id, patch);
+    try {
+      // The live user-directory source rejects direct member writes. Only a
+      // server-confirmed authorized transfer may be reported as complete.
+      const saved = await bmsUsers.update(selectedUser.id, patch);
+      if (!saved) throw new Error("Transfer was not saved. Use authorized User Management.");
 
-    auditReg.add({
-      id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-      created_at:      now,
-      event_id:        `AUDIT-XFER-${Date.now()}`,
-      entity_type:     "OrgUnit",
-      entity_id:       destUnit.id,
-      action:          "org_user_transferred",
-      actor:           currentUser?.name ?? "System",
-      actor_role:      currentUser?.designation ?? "",
-      timestamp:       now,
-      ip_address:      "",
-      details:         `${selectedUser.name} transferred from ${sourcePath} to ${destPath}. Reason: ${reason}. Effective: ${effectiveDate}.`,
-      approval_status: "Approved",
-    });
-
-    setSaving(false);
-    onSuccess?.();
-    onClose();
+      let auditSaved = false;
+      try {
+        auditSaved = await auditReg.add({
+          id:              generateId("AUD", auditReg.items.map((a) => a.id)),
+          created_at:      now,
+          event_id:        `AUDIT-XFER-${Date.now()}`,
+          entity_type:     "OrgUnit",
+          entity_id:       destUnit.id,
+          action:          "org_user_transferred",
+          actor:           currentUser?.name ?? "System",
+          actor_role:      currentUser?.designation ?? "",
+          timestamp:       now,
+          ip_address:      "",
+          details:         `${selectedUser.name} transferred from ${sourcePath} to ${destPath}. Reason: ${reason}. Effective: ${effectiveDate}.`,
+          approval_status: "Approved",
+        });
+      } catch {
+        // The primary transfer has already been confirmed; do not claim rollback.
+      }
+      if (!auditSaved) {
+        toast.warning("Transfer saved, but the activity journal could not be verified.");
+      }
+      onSuccess?.();
+      onClose();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Unable to transfer the user.");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -179,7 +202,7 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (!saving && e.target === e.currentTarget) onClose(); }}
     >
       <div className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[92vh]">
         {/* Header */}
@@ -191,7 +214,7 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
               <p className="text-xs text-muted-foreground">Step {step + 1} of {STEPS.length}: {STEPS[step]}</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={16} /></button>
+          <button onClick={onClose} disabled={saving} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={16} /></button>
         </div>
 
         {/* Step indicator */}
@@ -360,11 +383,11 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
             </div>
           )}
 
-          {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
+          {error && <p role="alert" className="mt-3 text-xs text-destructive">{error}</p>}
         </div>
 
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-border flex-shrink-0">
-          <button onClick={step === 0 ? onClose : back} className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg">
+          <button onClick={step === 0 ? onClose : back} disabled={saving} className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg">
             {step === 0 ? "Cancel" : "Back"}
           </button>
           {step < STEPS.length - 1 ? (
