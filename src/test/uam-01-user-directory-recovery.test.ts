@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createLatestUserDirectoryRead, type UserDirectoryUpdate } from
+import { createLatestUserDirectoryRead, isUserDirectoryStatsUnavailable, type UserDirectoryUpdate } from
   "../app/pages/administration-requests/userDirectoryRead";
 
 type User = {
@@ -22,6 +22,24 @@ const deferred = <T,>() => {
 };
 
 describe("UAM-01 fail-closed user-directory read and account recovery", () => {
+  it("withholds register KPIs until an authorized directory read succeeds", () => {
+    expect(isUserDirectoryStatsUnavailable({
+      accessLoaded: false, isSuperAdmin: false, loading: true, error: "",
+    })).toBe(true);
+    expect(isUserDirectoryStatsUnavailable({
+      accessLoaded: true, isSuperAdmin: false, loading: false, error: "",
+    })).toBe(true);
+    expect(isUserDirectoryStatsUnavailable({
+      accessLoaded: true, isSuperAdmin: true, loading: true, error: "",
+    })).toBe(true);
+    expect(isUserDirectoryStatsUnavailable({
+      accessLoaded: true, isSuperAdmin: true, loading: false, error: "Session expired",
+    })).toBe(true);
+    expect(isUserDirectoryStatsUnavailable({
+      accessLoaded: true, isSuperAdmin: true, loading: false, error: "",
+    })).toBe(false);
+  });
+
   it("loads an authenticated server-returned directory with honest loading and readback", async () => {
     const gate = createLatestUserDirectoryRead<User>();
     const updates: UserDirectoryUpdate<User>[] = [];
