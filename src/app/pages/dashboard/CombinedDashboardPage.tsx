@@ -32,6 +32,7 @@ import {
 } from "./homeWorkspaceUtils";
 import { friendlyDate, friendlyTime } from "./dateUtils";
 import { calendarDateWindows } from "./calendarDateWindows";
+import { actionItemDetailsPath } from "./actionItemDetailsPath";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -109,13 +110,15 @@ function FeaturedMeetingCard({
     );
   }
 
+  // Match calendar-only meeting dates in local time (not UTC at Dhaka midnight).
+  const isTodayMeeting = event.date === format(new Date(), "yyyy-MM-dd");
   const statusLabel = isLive
     ? "Live now"
-    : event.date === new Date().toISOString().slice(0, 10)
+    : isTodayMeeting
     ? "Starting soon"
     : "Next meeting";
 
-  const statusMod = isLive ? "cal-featured--live" : event.date === new Date().toISOString().slice(0, 10) ? "cal-featured--soon" : "cal-featured--next";
+  const statusMod = isLive ? "cal-featured--live" : isTodayMeeting ? "cal-featured--soon" : "cal-featured--next";
 
   const modeIcon = event.mode === "Virtual" ? Monitor : MapPin;
   const ModeIcon = modeIcon;
@@ -454,7 +457,7 @@ export function CombinedDashboardPage({
     } else if (e.sourceType === "rsvp") {
       navigate("/meetings/all-meetings");
     } else if (e.sourceType === "action-item") {
-      navigate("/decisions-followup/action-items");
+      navigate(actionItemDetailsPath(e.sourceId));
     } else if (e.sourceType === "minutes") {
       navigate("/archive-reports/minutes");
     }
