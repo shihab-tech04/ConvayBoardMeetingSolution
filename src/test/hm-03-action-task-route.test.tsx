@@ -41,4 +41,3 @@ describe("HM-03 assigned action deep link", () => {
     expect(screen.getByTestId("linked-action-id")).toBeEmptyDOMElement();
   });
 });
-
