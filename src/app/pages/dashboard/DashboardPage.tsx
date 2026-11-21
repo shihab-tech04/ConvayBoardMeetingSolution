@@ -22,7 +22,9 @@ import {
   useConflictRegistry,
   useMinutesRegistry,
   useResolutionRegistry,
+  useDocumentRegistry,
 } from "../../data/boardMeetingData";
+import { useDocumentAcknowledgementRegistry } from "../../data/documentWorkspaceData";
 import { useUserRegistry } from "../../hooks/useUserRegistry";
 import { useResolvedActions } from "../../actions/useResolvedActions";
 import type { ResolvedAction } from "../../actions/types";
@@ -39,6 +41,7 @@ import {
   isPersonalActionTask, isPersonalBoardPackTask, isPersonalConflictTask,
   isPersonalMinutesTask,
 } from "./personalTaskPreviewRules";
+import { buildPersonalDocumentTasks } from "./personalDocumentTasks";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
@@ -999,6 +1002,8 @@ export function DashboardPage() {
   const conflictRegistry = useConflictRegistry();
   const minutesRegistry = useMinutesRegistry();
   const resolutionRegistry = useResolutionRegistry();
+  const documentRegistry = useDocumentRegistry();
+  const acknowledgementRegistry = useDocumentAcknowledgementRegistry();
 
   const { items: meetings } = meetingRegistry;
   const { items: decisions } = decisionRegistry;
@@ -1009,11 +1014,14 @@ export function DashboardPage() {
   const { items: conflicts } = conflictRegistry;
   const { items: minutes } = minutesRegistry;
   const { items: resolutions } = resolutionRegistry;
+  const { items: documents } = documentRegistry;
+  const { items: acknowledgements } = acknowledgementRegistry;
 
   // Never present incomplete/failed Supabase reads as a genuine empty dashboard.
   const dashboardSources = [
     meetingRegistry, decisionRegistry, actionRegistry, agendaRegistry, boardPackRegistry,
     rsvpRegistry, conflictRegistry, minutesRegistry, resolutionRegistry,
+    documentRegistry, acknowledgementRegistry,
   ];
   const dashboardDataState = resolveDashboardDataState(dashboardSources);
 
@@ -1146,8 +1154,12 @@ export function DashboardPage() {
   // never the entire RLS-visible registry.
   const viewerName = sessionUser.name || currentUser?.name || "";
   const viewerRole = sessionUser.role || currentUser?.role || "";
-  const viewerDesignation = sessionUser.designation || "";
+  const viewerDesignation = sessionUser.designation || currentUser?.designation || "";
   const taskViewer = { name: viewerName, role: viewerRole, designation: viewerDesignation };
+  const personalDocumentTasks = useMemo(
+    () => buildPersonalDocumentTasks(documents, acknowledgements, taskViewer, today),
+    [documents, acknowledgements, viewerName, viewerRole, viewerDesignation, today],
+  );
 
   const openTaskCount = useMemo(() => {
     let n = 0;
@@ -1177,8 +1189,9 @@ export function DashboardPage() {
     n += actions.filter(a =>
       String(a.implementation_status ?? "") !== "Completed"
       && isPersonalActionTask(a, taskViewer)).length;
+    n += personalDocumentTasks.length;
     return n;
-  }, [meetings, agendas, boardPacks, rsvps, conflicts, minutes, actions, viewerName, viewerRole, viewerDesignation]);
+  }, [meetings, agendas, boardPacks, rsvps, conflicts, minutes, actions, personalDocumentTasks]);
 
   const tasksThisWeek = useMemo(() =>
     actions.filter(a => {
