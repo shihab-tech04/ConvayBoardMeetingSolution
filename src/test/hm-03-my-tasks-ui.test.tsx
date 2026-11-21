@@ -17,11 +17,36 @@ vi.mock("../app/hooks/useCurrentUser", () => ({
   useCurrentUser: () => state.user,
 }));
 vi.mock("../app/components/tables/UnifiedDataTable", () => ({
-  UnifiedDataTable: ({ rows, onViewRow }: {
+  UnifiedDataTable: ({ rows, onViewRow, tabs, activeTab, onTabChange, filterDefs, filterValues, onFilterChange, onApplyFilters }: {
     rows: Array<{ id: string; title: string; [key: string]: unknown }>;
     onViewRow: (row: { id: string; title: string; [key: string]: unknown }) => void;
+    tabs?: Array<{ id: string; label: string; count: number }>;
+    activeTab?: string;
+    onTabChange?: (id: string) => void;
+    filterDefs?: Array<{ key: string; label: string; type: string; options?: string[] }>;
+    filterValues?: Record<string, string>;
+    onFilterChange?: (key: string, value: string) => void;
+    onApplyFilters?: () => void;
   }) => (
     <section data-testid="visible-task-queue">
+      {tabs?.map(tab => (
+        <button key={tab.id} type="button" aria-pressed={activeTab === tab.id} onClick={() => onTabChange?.(tab.id)}>
+          {tab.label} ({tab.count})
+        </button>
+      ))}
+      {filterDefs?.filter(filter => filter.type === "select").map(filter => (
+        <label key={filter.key}>
+          {filter.label}
+          <select
+            aria-label={filter.label}
+            value={filterValues?.[filter.key] ?? ""}
+            onChange={event => onFilterChange?.(filter.key, event.target.value)}
+          >
+            {filter.options?.map(option => <option key={option} value={option}>{option || "All"}</option>)}
+          </select>
+        </label>
+      ))}
+      <button type="button" onClick={() => onApplyFilters?.()}>Apply filters</button>
       {rows.map(row => <button key={row.id} type="button" onClick={() => onViewRow(row)}>{row.title}</button>)}
     </section>
   ),
@@ -142,5 +167,31 @@ describe("HM-03 My Tasks screen", () => {
     render(<PSRDashboardPage />);
     expect(screen.getByRole("status")).toHaveTextContent("Loading your assigned tasks");
     expect(screen.queryByText("Open: 0")).not.toBeInTheDocument();
+  });
+
+  it("moves completed work out of the active queue while keeping it in Completed", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    state.data.actions = [{
+      id: "done-now",
+      action_title: "Completed follow-up",
+      assigned_to: "Ann",
+      implementation_status: "Completed",
+      updated_at: `${today}T12:00:00.000Z`,
+      due_date: today,
+    }];
+
+    render(<PSRDashboardPage />);
+
+    expect(screen.getByText("Open: 0")).toBeInTheDocument();
+    expect(screen.getByText("Completed This Month: 1")).toBeInTheDocument();
+    expect(screen.queryByText("Completed follow-up")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All (0)" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Status"), { target: { value: "Completed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+    expect(screen.getByText("Completed follow-up")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    expect(screen.getByText("Completed follow-up")).toBeInTheDocument();
   });
 });
