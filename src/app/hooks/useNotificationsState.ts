@@ -3,7 +3,7 @@ import { useSelector, useDispatch } from "react-redux";
 import { toast } from "sonner";
 import type { RootState, AppDispatch } from "../store/store";
 import {
-  markNotificationRead, markAllNotificationsRead, setNotifications,
+  markNotificationRead, setNotifications,
 } from "../store/notificationsSlice";
 import type { Notification } from "../store/notificationsSlice";
 import {
@@ -98,11 +98,12 @@ export function useNotificationsState() {
     if (!isAuthenticated || !userId || activeOwnerRef.current !== userId) return false;
     invalidateNotificationsFor(userId);
     try {
-      await persistAllNotificationsRead(userId);
-      // Ignore stale responses after logout or identity switch.
+      const acknowledgedIds = await persistAllNotificationsRead(userId);
+      // Ignore stale responses after logout or identity switch. Only rows
+      // confirmed by SQL may change the client read state.
       if (activeOwnerRef.current !== userId) return false;
-      dispatch(markAllNotificationsRead());
-      return true;
+      for (const id of acknowledgedIds) dispatch(markNotificationRead(id));
+      return acknowledgedIds.length > 0;
     } catch (reason) {
       if (activeOwnerRef.current !== userId) return false;
       toast.error(reason instanceof Error ? reason.message : "Unable to mark notifications as read");
