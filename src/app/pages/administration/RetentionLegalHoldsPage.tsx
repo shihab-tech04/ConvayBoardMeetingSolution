@@ -31,7 +31,7 @@ export function RetentionLegalHoldsPage() {
   const cfg: PageCfg = {
     title: "Retention & Legal Holds",
     titleKey: "navigation.administration.retentionLegalHolds",
-    desc: "Review retention policies and legal-hold records. Legal holds must block purge, and missing policy must retain records.",
+    desc: "Review retention policies and legal-hold records. Required safety rules: legal holds block purge, and missing policy retains records.",
     cols: [
       fc("record_type", "Record Type"),
       fc("policy_name", "Policy Name"),

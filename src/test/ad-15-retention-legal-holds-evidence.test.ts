@@ -27,6 +27,7 @@ describe("AD-15 retention and legal-hold evidence state", () => {
   });
 
   it("provides the retention and legal-hold fields without wiring unsupported writes", () => {
+    expect(pageSource).toContain("Required safety rules: legal holds block purge, and missing policy retains records.");
     expect(RETENTION_FORM_FIELDS.map(field => field.key)).toEqual([
       "policy_name", "entity_type", "retention_period", "disposal_method", "legal_basis", "effective_date", "status",
     ]);
