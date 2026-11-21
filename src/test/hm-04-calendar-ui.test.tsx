@@ -8,11 +8,12 @@ const state = vi.hoisted(() => ({
   loading: false,
   error: null as string | null,
   retries: 0,
+  navigate: vi.fn(),
 }));
 
 vi.mock("react-router", async original => {
   const mod = await original<typeof import("react-router")>();
-  return { ...mod, useNavigate: () => () => undefined };
+  return { ...mod, useNavigate: () => state.navigate };
 });
 vi.mock("../app/hooks/useCurrentUser", () => ({ useCurrentUser: () => state.user }));
 vi.mock("../app/actions/useResolvedActions", () => ({
@@ -55,6 +56,7 @@ beforeEach(() => {
   state.loading = false;
   state.error = null;
   state.retries = 0;
+  state.navigate.mockClear();
 });
 
 afterEach(() => vi.useRealTimers());
@@ -141,6 +143,22 @@ describe("HM-04 personal calendar", () => {
     expect(featured).toHaveTextContent("On hold");
     expect(featured).not.toHaveTextContent("Live now");
     expect(featured).not.toHaveTextContent("Starting soon");
+  });
+
+  it("does not route a stale In Progress calendar record into the live workspace", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 22, 8, 30, 0));
+    const yesterday = calendarDateWindows(new Date(2026, 10, 21, 8, 30, 0)).today;
+    state.data.meetings = [
+      { ...includedMeeting(), id: "stale-live", meeting_title: "Stale In Progress Calendar Meeting", meeting_date: yesterday, approval_status: "In Progress" },
+    ];
+
+    render(<CombinedDashboardPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Saturday 21 November/ }));
+    fireEvent.click(screen.getAllByText("Stale In Progress Calendar Meeting")[0]);
+
+    expect(state.navigate).toHaveBeenCalledWith("/meetings/all-meetings");
+    expect(state.navigate).not.toHaveBeenCalledWith("/meetings/stale-live/live");
   });
 
   it("keeps the next-seven-days KPI date-based while featured selection filters actual starts", () => {

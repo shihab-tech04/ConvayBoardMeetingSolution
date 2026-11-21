@@ -30,7 +30,7 @@ import { friendlyDate, friendlyDue, friendlyTime, timeAgo } from "./dateUtils";
 import { dashboardCalendarWindow, isMeetingApprovalPending } from "./dashboardOverviewRules";
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
-import { resolveLifecycleStage, type LifecycleStage } from "./meetingLifecycleStatus";
+import { resolveLifecycleStage, validMeetingDateKey, type LifecycleStage } from "./meetingLifecycleStatus";
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { resolveDashboardMeetingDestination } from "./dashboardContextActions";
 import { actionItemDetailsPath } from "./actionItemDetailsPath";
@@ -49,6 +49,7 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string }> = {
   "In Progress":      { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
   "Paused":           { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
   "On Break":         { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
+  "On Hold":          { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
   "Ready to Start":   { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
   "Awaiting Approval":{ bg: "var(--color-primary-alpha-8)",  fg: "var(--color-primary)"   },
   "Scheduled":        { bg: "var(--color-primary-alpha-8)",  fg: "var(--color-primary)"   },
@@ -128,9 +129,13 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
   if (!meeting) return null;
 
   const m = meeting;
-  const status    = String(m.approval_status ?? m.status ?? "");
+  const status    = String(m.approval_status ?? "").trim() || String(m.status ?? "").trim();
   const mid       = String(m.meeting_id ?? m.id ?? "");
-  const isLive    = ["In Progress", "Paused", "On Break"].includes(status);
+  const lifecycleStage = resolveLifecycleStage(status, m.meeting_date).stage;
+  const isLive    = lifecycleStage === "Meeting Live";
+  const canJoinLiveWorkspace = isLive || (
+    lifecycleStage === "Meeting Paused" && ["paused", "on break"].includes(status.toLowerCase())
+  );
   const statusSty = STATUS_STYLES[status] ?? { bg: "var(--color-surface-secondary)", fg: "var(--color-text-secondary)" };
   const str = (v: unknown) => { const s = String(v ?? ""); return s === "undefined" || s === "null" ? "" : s; };
 
@@ -210,7 +215,7 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            {isLive && (
+            {canJoinLiveWorkspace && (
               <button type="button" onClick={() => { onClose(); navigate(`/meetings/${mid}/live`); }} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: "var(--color-success)", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
                 <Radio size={14} /> Join Live
               </button>
@@ -288,8 +293,16 @@ const ROLE_LABELS: Record<ViewRole, string> = {
   admin:        "Administrator",
 };
 
-const ONGOING_STATUSES  = ["In Progress", "Paused", "On Break"];
-const EXCLUDED_STATUSES = ["Completed", "Cancelled", "Archived"];
+const ONGOING_STATUSES  = new Set(["in progress", "paused", "on break", "on hold"]);
+const EXCLUDED_STATUSES = new Set(["completed", "cancelled", "archived"]);
+
+function persistedMeetingStatus(meeting: Meeting): string {
+  return String(meeting.approval_status ?? "").trim() || String(meeting.status ?? "").trim();
+}
+
+function hasOngoingStatus(status: string): boolean {
+  return ONGOING_STATUSES.has(status.toLowerCase());
+}
 
 const ROLE_SUBTITLES: Record<ViewRole, string> = {
   chairperson:  "Meeting readiness, quorum status, pending approvals, and decisions requiring attention.",
@@ -347,6 +360,7 @@ function StatusPill({ status }: { status: string }) {
 
 interface HeroSlideProps {
   meeting: Meeting;
+  now: Date;
   navigate: (path: string) => void;
   primaryAction: { label: string; tone: "primary" | "success" | "warning" | "neutral"; icon?: React.ElementType; onClick: () => void } | null;
   userRole: string;
@@ -355,25 +369,25 @@ interface HeroSlideProps {
   onViewDetails: () => void;
 }
 
-function HeroSlide({ meeting, navigate, primaryAction, userRole, isVisible, hasMultiple, onViewDetails }: HeroSlideProps) {
+function HeroSlide({ meeting, now, navigate, primaryAction, userRole, isVisible, hasMultiple, onViewDetails }: HeroSlideProps) {
   const action  = primaryAction ?? { label: "View Details", tone: "neutral" as const, onClick: onViewDetails };
   const mode    = String(meeting.mode ?? "");
-  const status  = String(meeting.approval_status ?? meeting.status ?? "Scheduled");
+  const status  = persistedMeetingStatus(meeting);
   const dateStr = String(meeting.meeting_date ?? "");
   const cd      = countdown(dateStr, String(meeting.start_time ?? ""));
-  const isOngoing = ["In Progress", "Paused", "On Break"].includes(status);
-  const isLive    = status === "In Progress";
-
-  const contextLabel =
-    status === "In Progress" ? "Live Now"
-    : status === "Paused"    ? "On Pause"
-    : status === "On Break"  ? "On Break"
-    : status === "Ready to Start" ? "Starting Soon"
-    : status === "Pending Approval" ? "Needs Approval"
-    : status === "Approved" || status === "Published" ? "Next Meeting"
-    : "Upcoming";
-
-  const { stage } = resolveLifecycleStage(status, dateStr);
+  const { stage } = resolveLifecycleStage(status, dateStr, now);
+  const normalizedStatus = status.toLowerCase();
+  const isLive = stage === "Meeting Live";
+  const isPaused = stage === "Meeting Paused";
+  const isOngoing = isLive || isPaused;
+  const contextLabel = stage === "Meeting Live" ? "Live Now"
+    : stage === "Meeting Paused" ? normalizedStatus === "on break" ? "On Break" : normalizedStatus === "on hold" ? "On Hold" : "On Pause"
+    : stage === "Ready to Start" ? "Starting Soon"
+    : stage === "Awaiting Approval" ? "Needs Approval"
+    : stage === "Ready to Publish" ? "Next Meeting"
+    : stage === "Upcoming Meeting" ? "Upcoming"
+    : stage === "Post-Meeting Follow-up" ? "Post-Meeting Follow-up"
+    : "Preparation Required";
   const stageStyle = STAGE_STYLES[stage];
 
   const { themeId } = useSettings();
@@ -419,7 +433,7 @@ function HeroSlide({ meeting, navigate, primaryAction, userRole, isVisible, hasM
         )}
         <span style={{ marginLeft: "auto", fontSize: 12, color: "rgba(255,255,255,0.5)", display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
           <Clock size={11} />
-          {status === "In Progress" ? "In progress" : status === "Paused" ? "Paused" : status === "On Break" ? "On break" : cd}
+          {isLive ? "In progress" : isPaused ? contextLabel : cd}
         </span>
       </div>
 
@@ -475,13 +489,14 @@ function HeroSlide({ meeting, navigate, primaryAction, userRole, isVisible, hasM
 
 interface MeetingHeroCarouselProps {
   meetings: Meeting[];
+  now: Date;
   navigate: (path: string) => void;
   getPrimaryAction: (m: Meeting) => { label: string; tone: "primary" | "success" | "warning" | "neutral"; onClick: () => void } | null;
   onViewDetails: (m: Meeting) => void;
   userRole: string;
 }
 
-function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetails, userRole }: MeetingHeroCarouselProps) {
+function MeetingHeroCarousel({ meetings, now, navigate, getPrimaryAction, onViewDetails, userRole }: MeetingHeroCarouselProps) {
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
   const [keyboardFocused, setKeyboardFocused] = useState(false);
@@ -558,6 +573,7 @@ function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetai
           <HeroSlide
             key={String(m.meeting_id ?? m.id ?? i)}
             meeting={m}
+            now={now}
             navigate={navigate}
             primaryAction={pa}
             userRole={userRole}
@@ -600,17 +616,17 @@ function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetai
 
 interface MeetingsSectionProps {
   meetings: Meeting[];
+  now: Date;
   navigate: (path: string) => void;
   getRowAction: (m: Meeting) => { label: string; onClick: () => void; highlight: boolean } | null;
   onRowClick: (m: Meeting) => void;
 }
 
-const LIVE_STATUSES = new Set(["In Progress", "Paused", "On Break"]);
-
 function LiveDot({ status }: { status: string }) {
-  const isLive = status === "In Progress";
+  const normalizedStatus = status.toLowerCase();
+  const isLive = normalizedStatus === "in progress";
   const fg = isLive ? "var(--color-success)" : "var(--color-warning)";
-  const label = isLive ? "Live" : status === "Paused" ? "Paused" : "On Break";
+  const label = isLive ? "Live" : normalizedStatus === "paused" ? "Paused" : normalizedStatus === "on hold" ? "On Hold" : "On Break";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 44, flexShrink: 0 }}>
       <span style={{ width: 7, height: 7, borderRadius: "50%", background: fg, flexShrink: 0 }} />
@@ -619,7 +635,7 @@ function LiveDot({ status }: { status: string }) {
   );
 }
 
-function MeetingsSection({ meetings, navigate, getRowAction, onRowClick }: MeetingsSectionProps) {
+function MeetingsSection({ meetings, now, navigate, getRowAction, onRowClick }: MeetingsSectionProps) {
   return (
     <div className="dash-compact-card">
       {/* Header */}
@@ -643,9 +659,10 @@ function MeetingsSection({ meetings, navigate, getRowAction, onRowClick }: Meeti
             <p>No upcoming meetings</p>
           </div>
         ) : meetings.map((m, i) => {
-          const status = String(m.approval_status ?? m.status ?? "");
+          const status = persistedMeetingStatus(m);
           const isLast = i === meetings.length - 1;
-          const isOngoing = LIVE_STATUSES.has(status);
+          const lifecycleStage = resolveLifecycleStage(status, m.meeting_date, now).stage;
+          const isOngoing = lifecycleStage === "Meeting Live" || lifecycleStage === "Meeting Paused";
           const rowAction = getRowAction(m);
 
           return (
@@ -679,7 +696,7 @@ function MeetingsSection({ meetings, navigate, getRowAction, onRowClick }: Meeti
                   {m.start_time && <span className="dash-compact-row__meta-sep">·</span>}
                   {m.start_time && <span>{friendlyTime(String(m.start_time))}</span>}
                   {isOngoing && <span className="dash-compact-row__meta-sep">·</span>}
-                  {isOngoing && <span style={{ color: status === "In Progress" ? "var(--color-success)" : "var(--color-warning)" }}>{status}</span>}
+                  {isOngoing && <span style={{ color: lifecycleStage === "Meeting Live" ? "var(--color-success)" : "var(--color-warning)" }}>{status}</span>}
                 </div>
               </div>
 
@@ -1000,16 +1017,22 @@ export function DashboardPage() {
   ];
   const dashboardDataState = resolveDashboardDataState(dashboardSources);
 
-  const { today, weekEnd } = dashboardCalendarWindow(new Date());
+  const calendarNow = new Date();
+  const { today, weekEnd } = dashboardCalendarWindow(calendarNow);
 
 
-  // ── Ongoing meetings (regardless of date) ───────────────────────────────────
+  // ── Ongoing meetings are current only when persisted status and date agree ──
 
   const ongoingMeetings = useMemo(() =>
     meetings
-      .filter(m => ONGOING_STATUSES.includes(String(m.approval_status ?? m.status ?? "")))
+      .filter(m => {
+        const status = persistedMeetingStatus(m);
+        if (!hasOngoingStatus(status) || !validMeetingDateKey(m.meeting_date)) return false;
+        const stage = resolveLifecycleStage(status, m.meeting_date, calendarNow).stage;
+        return stage === "Meeting Live" || stage === "Meeting Paused";
+      })
       .sort((a, b) => String(a.meeting_date ?? "").localeCompare(String(b.meeting_date ?? ""))),
-    [meetings]
+    [meetings, calendarNow]
   );
 
   // ── Upcoming meetings (future, not ongoing) ──────────────────────────────────
@@ -1017,9 +1040,11 @@ export function DashboardPage() {
   const upcomingMeetings = useMemo(() =>
     meetings
       .filter(m => {
-        const date   = String(m.meeting_date ?? "");
-        const status = String(m.approval_status ?? m.status ?? "");
-        return date >= today && !EXCLUDED_STATUSES.includes(status) && !ONGOING_STATUSES.includes(status);
+        const date = validMeetingDateKey(m.meeting_date);
+        const status = persistedMeetingStatus(m);
+        return date !== null && date >= today
+          && !EXCLUDED_STATUSES.has(status.toLowerCase())
+          && !hasOngoingStatus(status);
       })
       .sort((a, b) => String(a.meeting_date ?? "").localeCompare(String(b.meeting_date ?? ""))),
     [meetings, today]
@@ -1035,13 +1060,13 @@ export function DashboardPage() {
   // ── Hero carousel: priority-sorted, 3–5 items ───────────────────────────────
 
   const heroMeetings = useMemo(() => {
-    const inProgress   = ongoingMeetings.filter(m => String(m.approval_status ?? "") === "In Progress");
-    const paused       = ongoingMeetings.filter(m => ["Paused", "On Break"].includes(String(m.approval_status ?? "")));
-    const readyToStart = upcomingMeetings.filter(m => String(m.approval_status ?? "") === "Ready to Start");
-    const pendingAppr  = upcomingMeetings.filter(m => String(m.approval_status ?? "") === "Pending Approval");
-    const approved     = upcomingMeetings.filter(m => ["Approved", "Published"].includes(String(m.approval_status ?? "")));
+    const inProgress   = ongoingMeetings.filter(m => persistedMeetingStatus(m).toLowerCase() === "in progress");
+    const paused       = ongoingMeetings.filter(m => ["paused", "on break", "on hold"].includes(persistedMeetingStatus(m).toLowerCase()));
+    const readyToStart = upcomingMeetings.filter(m => persistedMeetingStatus(m).toLowerCase() === "ready to start");
+    const pendingAppr  = upcomingMeetings.filter(m => ["pending approval", "awaiting approval"].includes(persistedMeetingStatus(m).toLowerCase()));
+    const approved     = upcomingMeetings.filter(m => ["approved", "published"].includes(persistedMeetingStatus(m).toLowerCase()));
     const other        = upcomingMeetings.filter(m =>
-      !["Ready to Start", "Pending Approval", "Approved", "Published"].includes(String(m.approval_status ?? ""))
+      !["ready to start", "pending approval", "awaiting approval", "approved", "published"].includes(persistedMeetingStatus(m).toLowerCase())
     );
     return [...inProgress, ...paused, ...readyToStart, ...pendingAppr, ...approved, ...other].slice(0, 5);
   }, [ongoingMeetings, upcomingMeetings]);
@@ -1337,6 +1362,7 @@ export function DashboardPage() {
         <div className="lg:col-span-7" style={{ display: "flex", flexDirection: "column" }}>
           <MeetingHeroCarousel
             meetings={heroMeetings}
+            now={calendarNow}
             navigate={navigate}
             getPrimaryAction={getPrimaryAction}
             onViewDetails={setSelectedMeeting}
@@ -1400,7 +1426,7 @@ export function DashboardPage() {
       {/* Row 2: Ongoing & Upcoming Meetings (50%) + My Tasks (50%) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" style={{ alignItems: "start" }}>
         <div>
-          <MeetingsSection meetings={displayedMeetings} navigate={navigate} getRowAction={getMeetingRowAction} onRowClick={setSelectedMeeting} />
+          <MeetingsSection meetings={displayedMeetings} now={calendarNow} navigate={navigate} getRowAction={getMeetingRowAction} onRowClick={setSelectedMeeting} />
         </div>
         <div>
           <MyTasksOverviewSection tasks={urgentTasks} navigate={navigate} onTaskAction={handleTaskAction} />
