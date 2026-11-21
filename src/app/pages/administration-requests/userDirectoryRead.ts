@@ -17,6 +17,18 @@ export type UserDirectoryUpdate<T> =
   | { phase: "ready"; users: T[]; error: "" }
   | { phase: "error"; users: []; error: string };
 
+export interface UserDirectoryStatsState {
+  accessLoaded: boolean;
+  isSuperAdmin: boolean;
+  loading: boolean;
+  error: string;
+}
+
+/** A zero count is authoritative only after an authorized directory read succeeds. */
+export function isUserDirectoryStatsUnavailable(state: UserDirectoryStatsState): boolean {
+  return !state.accessLoaded || !state.isSuperAdmin || state.loading || Boolean(state.error.trim());
+}
+
 function validDirectoryUser(value: unknown): value is DirectoryUserShape {
   if (!value || typeof value !== "object") return false;
   const user = value as Record<string, unknown>;
