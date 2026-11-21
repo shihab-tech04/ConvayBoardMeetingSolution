@@ -131,7 +131,11 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
   const m = meeting;
   const status    = String(m.approval_status ?? "").trim() || String(m.status ?? "").trim();
   const mid       = String(m.meeting_id ?? m.id ?? "");
-  const isLive    = resolveLifecycleStage(status, m.meeting_date).stage === "Meeting Live";
+  const lifecycleStage = resolveLifecycleStage(status, m.meeting_date).stage;
+  const isLive    = lifecycleStage === "Meeting Live";
+  const canJoinLiveWorkspace = isLive || (
+    lifecycleStage === "Meeting Paused" && ["paused", "on break"].includes(status.toLowerCase())
+  );
   const statusSty = STATUS_STYLES[status] ?? { bg: "var(--color-surface-secondary)", fg: "var(--color-text-secondary)" };
   const str = (v: unknown) => { const s = String(v ?? ""); return s === "undefined" || s === "null" ? "" : s; };
 
@@ -211,7 +215,7 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            {isLive && (
+            {canJoinLiveWorkspace && (
               <button type="button" onClick={() => { onClose(); navigate(`/meetings/${mid}/live`); }} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: "var(--color-success)", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
                 <Radio size={14} /> Join Live
               </button>

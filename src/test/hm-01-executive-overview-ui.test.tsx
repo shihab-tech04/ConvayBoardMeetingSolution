@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   loading: false,
   error: null as string | null,
   retries: 0,
+  navigate: vi.fn(),
 }));
 
 vi.mock("react-redux", async importOriginal => {
@@ -14,7 +15,7 @@ vi.mock("react-redux", async importOriginal => {
 });
 vi.mock("react-router", async importOriginal => {
   const actual = await importOriginal<typeof import("react-router")>();
-  return { ...actual, useNavigate: () => () => undefined };
+  return { ...actual, useNavigate: () => state.navigate };
 });
 vi.mock("../app/hooks/useCurrentUser", () => ({
   useCurrentUser: () => ({ id: "hm01-test-admin", name: "Test Admin", role: "super_admin" }),
@@ -53,6 +54,7 @@ beforeEach(() => {
   state.loading = false;
   state.error = null;
   state.retries = 0;
+  state.navigate.mockClear();
 });
 
 describe("HM-01 executive overview renders authoritative registry state", () => {
@@ -123,6 +125,28 @@ describe("HM-01 executive overview renders authoritative registry state", () => 
     expect(screen.getAllByText("On Hold").length).toBeGreaterThan(0);
     expect(screen.queryByText("LIVE")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Join Live/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the live-workspace entry for a current paused meeting without claiming it is live", () => {
+    const today = dashboardCalendarWindow(new Date()).today;
+    state.records.meetings = [{
+      id: "hm06-paused", meeting_id: "HM06-PAUSED", meeting_title: "Same-day Paused Meeting",
+      committee: "Audit Committee", approval_status: "Paused",
+      meeting_date: today, start_time: "10:00", mode: "Physical", activity_history: [],
+    }];
+
+    render(<DashboardPage />);
+    const meetingsCard = screen.getByText("Ongoing & Upcoming Meetings").closest(".dash-compact-card");
+    const meetingRow = meetingsCard?.querySelector(".dash-compact-row");
+    expect(meetingRow).not.toBeNull();
+    fireEvent.click(meetingRow!);
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Join Live/ })).toBeInTheDocument();
+    expect(screen.queryByText("LIVE")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Join Live/ }));
+    expect(state.navigate).toHaveBeenCalledWith("/meetings/HM06-PAUSED/live");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("does not show false zero counts while Supabase data is loading", () => {
