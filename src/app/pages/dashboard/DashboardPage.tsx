@@ -34,6 +34,7 @@ import { resolveLifecycleStage, type LifecycleStage } from "./meetingLifecycleSt
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { resolveDashboardMeetingDestination } from "./dashboardContextActions";
 import { actionItemDetailsPath } from "./actionItemDetailsPath";
+import { isPersonalMeetingTask, isPersonalAgendaTask, isPersonalRsvpTask, isPersonalActionTask } from "./personalTaskPreviewRules";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
@@ -1091,7 +1092,14 @@ export function DashboardPage() {
   const handleTaskAction = useCallback((task: UrgentTask) => {
     if (task.id.startsWith("mtg-")) {
       const meeting = meetings.find(m => String(m.id ?? "") === task.id.replace("mtg-", ""));
-      if (meeting) { setSelectedMeeting(meeting); return; }
+      if (meeting) {
+        if (String(meeting.approval_status ?? meeting.status ?? "") === "Awaiting Minutes") {
+          navigate("/archive-reports/minutes");
+        } else {
+          setSelectedMeeting(meeting);
+        }
+        return;
+      }
       navigate("/meetings/all-meetings");
     } else if (task.id.startsWith("agd-")) {
       navigate("/agenda-documents/agenda-management");
@@ -1187,27 +1195,43 @@ export function DashboardPage() {
     return out.filter(u => u.time).sort((a, b) => b.time.localeCompare(a.time)).slice(0, 8);
   }, [meetings, agendas, actions, decisions]);
 
-  // ── Urgent tasks ─────────────────────────────────────────────────────────────
+  // ── Personal urgent tasks ───────────────────────────────────────────────────
+  // Mirror My Tasks ownership instead of showing every RLS-visible person's
+  // assignments as if they were this user's tasks.
+  const viewerName = sessionUser.name || currentUser?.name || "";
+  const viewerRole = sessionUser.role || currentUser?.role || "";
+  const viewerDesignation = sessionUser.designation || "";
 
   const urgentTasks = useMemo((): UrgentTask[] => {
+    const viewer = { name: viewerName, role: viewerRole, designation: viewerDesignation };
     const out: UrgentTask[] = [];
     for (const m of meetings) {
-      if (!["Pending Approval", "Awaiting Minutes"].includes(String(m.approval_status ?? ""))) continue;
+      const meetingStatus = String(m.approval_status ?? m.status ?? "");
+      if (!["Pending Approval", "Awaiting Approval", "Awaiting Minutes"].includes(meetingStatus)) continue;
+      if (!isPersonalMeetingTask(m, viewer)) continue;
+      if (meetingStatus === "Awaiting Minutes" && minutes.some(min =>
+        String(min.meeting_id ?? "") === String(m.id) &&
+        ["Draft", "Awaiting Review"].includes(String(min.approval_status ?? "")),
+      )) continue;
       const due = String(m.meeting_date ?? "");
-      out.push({ id: `mtg-${m.id}`, title: "Review meeting approval", context: String(m.meeting_title ?? ""), dueLabel: friendlyDue(due), type: "Approval", action: "Review", isOverdue: due < today && due !== "" });
+      const isMinutes = meetingStatus === "Awaiting Minutes";
+      out.push({ id: `mtg-${m.id}`, title: isMinutes ? "Prepare meeting minutes" : "Review meeting approval", context: String(m.meeting_title ?? ""), dueLabel: friendlyDue(due), type: isMinutes ? "Review" : "Approval", action: "Review", isOverdue: due < today && due !== "" });
     }
     for (const a of agendas) {
       if (!["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))) continue;
+      if (!isPersonalAgendaTask(a, viewer)) continue;
       const due = String(a.meeting_date ?? "");
       out.push({ id: `agd-${a.id}`, title: "Approve agenda submission", context: String(a.meeting_title ?? ""), dueLabel: friendlyDue(due), type: "Approval", action: "Approve", isOverdue: due < today && due !== "" });
     }
     for (const r of rsvps) {
       if (r.response && String(r.response) !== "Pending") continue;
+      if (!isPersonalRsvpTask(r, viewer)) continue;
       const due = String(r.meeting_date ?? "");
       out.push({ id: `rsvp-${r.id}`, title: "Confirm RSVP", context: String(r.meeting_title ?? ""), dueLabel: friendlyDue(due), type: "RSVP", action: "Respond", isOverdue: due < today && due !== "" });
     }
     for (const a of actions) {
       if (String(a.implementation_status ?? "") === "Completed") continue;
+      if (!isPersonalActionTask(a, viewer)) continue;
       const due = String(a.due_date ?? "");
       out.push({ id: `act-${a.id}`, title: String(a.action_title ?? "Action item"), context: String(a.source_meeting ?? ""), dueLabel: friendlyDue(due), type: "Action", action: "Update", isOverdue: due < today && due !== "" });
     }
@@ -1216,7 +1240,7 @@ export function DashboardPage() {
       if (!a.isOverdue && b.isOverdue) return 1;
       return 0;
     });
-  }, [meetings, agendas, rsvps, actions, today]);
+  }, [meetings, agendas, rsvps, actions, minutes, today, viewerName, viewerRole, viewerDesignation]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
