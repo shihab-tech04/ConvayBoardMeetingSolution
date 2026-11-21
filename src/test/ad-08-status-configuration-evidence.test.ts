@@ -45,8 +45,10 @@ describe("AD-08 status configuration evidence state", () => {
   });
 
   it("configures an unavailable error so the shared page disables writes", () => {
-    expect(statusPage).toContain("dataError: evidence.unavailableReason");
-    expect(statusPage).toContain("dataErrorTitle: \"Status configuration is unavailable\"");
+    expect(statusPage).toContain("evidence.unavailableReason");
+    expect(statusPage).toContain("dataError: unavailableReason");
+    expect(statusPage).toContain("dataErrorTitle: \"Status and numbering configuration are unavailable\"");
+    expect(statusPage).toContain("dataErrorDescription: unavailableReason");
     expect(statusPage).toContain("rows:      evidence.rows");
     const tableSource = readFileSync(
       resolve(process.cwd(), "src/app/components/pages/GeneratedTablePage.tsx"),

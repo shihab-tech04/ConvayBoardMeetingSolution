@@ -27,6 +27,7 @@ import { unverifiedMeetingTypesView } from "./meetingTypesEvidence";
 import { unverifiedQuorumRulesView } from "./quorumRulesEvidence";
 import { unverifiedVotingMethodsView } from "./votingMethodsEvidence";
 import { unverifiedStatusConfigurationView } from "./statusConfigurationEvidence";
+import { unverifiedNumberingConfigurationView } from "./numberingConfigurationEvidence";
 
 // ─── Status and numbering drawer schema ──────────────────────────────────────
 
@@ -211,10 +212,12 @@ export function VotingMethodsPage() {
 
 export function StatusesNumberingPage() {
   const evidence = unverifiedStatusConfigurationView();
+  const numbering = unverifiedNumberingConfigurationView();
+  const unavailableReason = `${evidence.unavailableReason} ${numbering.unavailableReason}`;
 
   const cfg: PageCfg = {
     title: "Statuses & Numbering",
-    desc:  evidence.description,
+    desc:  `${evidence.description} ${numbering.description}`,
     cols: [
       fc("config_id",    "Config ID"),
       fc("entity_type",  "Entity Type"),
@@ -240,9 +243,9 @@ export function StatusesNumberingPage() {
       { id: "archive", label: "Archive",       icon: Archive,     color: "#ef4444" },
     ],
     rows:      evidence.rows,
-    dataError: evidence.unavailableReason,
-    dataErrorTitle: "Status configuration is unavailable",
-    dataErrorDescription: evidence.unavailableReason,
+    dataError: unavailableReason,
+    dataErrorTitle: "Status and numbering configuration are unavailable",
+    dataErrorDescription: unavailableReason,
     entryBtn:  "Add Status Config",
     searchPlaceholder: "Search statuses and numbering",
   };
