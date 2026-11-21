@@ -96,17 +96,6 @@ export function fieldMatchesUser(field: unknown, name: string): boolean {
   });
 }
 
-/** True when designation indicates secretary / secretariat / admin role */
-export function isWorkflowRole(designation: string): boolean {
-  const d = designation.toLowerCase();
-  return (
-    d.includes("secretary") ||
-    d.includes("secretariat") ||
-    d.includes("admin") ||
-    d.includes("administrator")
-  );
-}
-
 /**
  * Match only the user's assigned role/designation. Otherwise all workflow
  * users (including Secretaries and Admins) receive one another's tasks.
@@ -119,6 +108,11 @@ function roleFamily(value: string): "admin" | "secretary" | "" {
   if (["admin", "administrator", "super admin", "super administrator"].includes(value)) return "admin";
   if (["secretary", "company secretary", "secretariat"].includes(value)) return "secretary";
   return "";
+}
+
+/** True only for an explicitly recognized secretary/admin workflow role. */
+export function isWorkflowRole(designation: string): boolean {
+  return roleFamily(normalizeRoleName(designation)) !== "";
 }
 
 export function roleAssignmentMatchesUser(
