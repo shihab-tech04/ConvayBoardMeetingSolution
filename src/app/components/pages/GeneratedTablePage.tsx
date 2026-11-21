@@ -1627,4 +1627,3 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
 }
 
 export { GeneratedTablePage as GenPage };
-
