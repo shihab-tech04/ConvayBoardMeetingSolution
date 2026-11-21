@@ -23,30 +23,9 @@ import {
   useGovernanceRegistry,
   useQuorumRuleRegistry,
 } from "../../data/boardMeetingData";
+import { unverifiedMeetingTypesView } from "./meetingTypesEvidence";
 
 // ─── Local sample data ────────────────────────────────────────────────────────
-
-const MEETING_TYPE_NAMES = [
-  "Annual General Meeting", "Extraordinary General Meeting", "Board Meeting",
-  "Executive Committee Meeting", "Audit Committee Meeting", "Risk Committee Meeting",
-  "Shariah Committee Meeting", "Nomination & Remuneration Committee Meeting",
-  "Special Board Session", "Emergency Board Meeting",
-];
-
-const meetingTypeRows: TableRow[] = gen(18, i => ({
-  type_id:       `MT-${String(100 + i).padStart(3, "0")}`,
-  type_name:     MEETING_TYPE_NAMES[i % 10],
-  category:      ["Board", "Committee", "Special", "Emergency"][i % 4],
-  committee:     CIRCLES_DATA[i % 8],
-  frequency:     ["Monthly", "Quarterly", "Annual", "As Required"][i % 4],
-  notice_days:   String([7, 14, 21, 3][i % 4]),
-  quorum_rule:   ["50%+1", "Two-Thirds", "Majority", "Three-Quarters"][i % 4],
-  voting_method: ["Simple Majority", "Consensus", "Show of Hands", "Secret Ballot"][i % 4],
-  status:        ["Active", "Inactive", "Draft"][i % 3],
-  created_by:    ["Company Secretary", "System Admin"][i % 2],
-  created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description:   `Standard ${MEETING_TYPE_NAMES[i % 10]} procedures as per governance charter.`,
-}));
 
 const VOTING_METHOD_NAMES = [
   "Simple Majority", "Two-Thirds Majority", "Unanimous Consent",
@@ -143,16 +122,14 @@ const MEETING_TYPE_DRAWER_COLS: ColDef[] = [
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
 export function MeetingTypesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Types",  value: String(meetingTypeRows.length),                                          tone: "primary"  },
-    { label: "Active",       value: String(meetingTypeRows.filter(r => r.status === "Active").length),       tone: "success"  },
-    { label: "Draft",        value: String(meetingTypeRows.filter(r => r.status === "Draft").length),        tone: "neutral"  },
-    { label: "Inactive",     value: String(meetingTypeRows.filter(r => r.status === "Inactive").length),     tone: "warning"  },
-  ];
+  const evidence = unverifiedMeetingTypesView();
 
   const cfg: PageCfg = {
     title: "Meeting Types",
-    desc:  "Configure types of meetings, their default rules, notice periods, and governance settings.",
+    desc:  evidence.description,
+    dataError: evidence.unavailableReason,
+    dataErrorTitle: "Meeting type configuration is unavailable",
+    dataErrorDescription: evidence.unavailableReason,
     cols: [
       fc("type_id",      "Type ID"),
       fc("type_name",    "Meeting Type"),
@@ -179,8 +156,7 @@ export function MeetingTypesPage() {
       { id: "duplicate",  label: "Duplicate",    icon: Copy,        color: "#8b5cf6" },
       { id: "archive",    label: "Archive",      icon: Archive,     color: "#ef4444" },
     ],
-    rows:      meetingTypeRows,
-    kpis,
+    rows:      evidence.rows,
     entryBtn:  "Create Meeting Type",
     searchPlaceholder: "Search meeting types",
   };
