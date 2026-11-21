@@ -918,7 +918,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
             {cfg.extraBtns?.map((b) => {
               const Icon = b.icon;
               return (
-                <Button key={b.id} type="button" variant="primary" size="lg" leadingIcon={Icon} onClick={() => setModal(`extra:${b.id}`)}>{b.label}</Button>
+                <Button key={b.id} type="button" variant="primary" size="lg" leadingIcon={Icon} disabled={Boolean(cfg.dataLoading || cfg.dataError)} onClick={() => setModal(`extra:${b.id}`)}>{b.label}</Button>
               );
             })}
             {cfg.kpis && (

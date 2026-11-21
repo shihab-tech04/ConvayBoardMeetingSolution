@@ -38,6 +38,7 @@ import { ParticipantGroupsPage }    from "./pages/governance/ParticipantGroupsPa
 import { OrganizationStructurePage } from "./pages/governance/OrganizationStructurePage";
 import { TimeExtensionPage }        from "./pages/administration-requests/TimeExtensionPage";
 import { SecurityPoliciesPage }     from "./pages/administration/SecurityPoliciesPage";
+import { RetentionLegalHoldsPage }  from "./pages/administration/RetentionLegalHoldsPage";
 
 import { WorkflowDefinitionsPage, ApprovalRulesPage, ReviewRevisionRulesPage, WorkflowHistoryPage } from "./pages/administration/WorkflowPages";
 import { MeetingTypesPage, QuorumRulesPage, VotingMethodsPage, StatusesNumberingPage } from "./pages/administration/MeetingConfigPages";
@@ -203,7 +204,7 @@ export const router = createBrowserRouter([
       { path: "administration/integrations", Component: IntegrationsPage },
       { path: "administration/security-retention",                        loader: async () => redirect("/administration/security-retention/security-policies") },
       { path: "administration/security-retention/security-policies",      Component: SecurityPoliciesPage },
-      { path: "administration/security-retention/retention-legal-holds",  Component: TimeExtensionPage },
+      { path: "administration/security-retention/retention-legal-holds",  Component: RetentionLegalHoldsPage },
 
       // ── Backward compatibility redirects ──────────────────────────────────
       { path: "governance-org/user-management", loader: async () => redirect("/governance-org/users-assignments") },
@@ -234,7 +235,7 @@ export const router = createBrowserRouter([
       { path: "administration/role-management",     loader: async () => redirect("/administration/roles-permissions/roles") },
       { path: "administration/permission-list",     loader: async () => redirect("/administration/roles-permissions/permissions") },
       { path: "administration/special-registration",loader: async () => redirect("/governance-org/participant-groups") },
-      { path: "administration/time-extension",      loader: async () => redirect("/administration/security-retention/retention-legal-holds") },
+      { path: "administration/time-extension",      Component: TimeExtensionPage },
       { path: "administration/audit-selection",     loader: async () => redirect("/archive-reports/audit-trail") },
     ],
   },
