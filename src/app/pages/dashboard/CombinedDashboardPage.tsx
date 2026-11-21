@@ -33,6 +33,7 @@ import {
 import { friendlyDate, friendlyTime } from "./dateUtils";
 import { calendarDateWindows } from "./calendarDateWindows";
 import { resolveFeaturedMeetings } from "./featuredMeetingSelection";
+import { resolveLifecycleStage } from "./meetingLifecycleStatus";
 import { actionItemDetailsPath } from "./actionItemDetailsPath";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
 
@@ -457,8 +458,9 @@ export function CombinedDashboardPage({
         return;
       }
       const mtg = meetings.find(m => String(m.id) === e.sourceId);
-      const status = String(mtg?.approval_status ?? mtg?.status ?? "");
-      if (["In Progress", "Paused", "On Break"].includes(status)) {
+      const status = String(mtg?.approval_status ?? "").trim() || String(mtg?.status ?? "").trim();
+      const stage = resolveLifecycleStage(status, mtg?.meeting_date, now).stage;
+      if (stage === "Meeting Live" || stage === "Meeting Paused") {
         navigate(`/meetings/${e.sourceId}/live`);
         return;
       }
