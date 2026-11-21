@@ -81,6 +81,50 @@ describe("HM-01 executive overview renders authoritative registry state", () => 
     expect(screen.getByRole("button", { name: /Pending Approvals: 1/ })).toBeInTheDocument();
   });
 
+  it("does not surface a stale In Progress meeting as current or live", () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const staleDate = dashboardCalendarWindow(yesterday).today;
+    state.records.meetings = [{
+      id: "hm06-stale-live", meeting_id: "HM06-STALE", meeting_title: "Stale In Progress Meeting",
+      committee: "Audit Committee", approval_status: "In Progress",
+      meeting_date: staleDate, start_time: "10:00", mode: "Physical", activity_history: [],
+    }];
+
+    render(<DashboardPage />);
+
+    const meetingsCard = screen.getByText("Ongoing & Upcoming Meetings").closest(".dash-compact-card");
+    expect(meetingsCard).not.toBeNull();
+    expect(meetingsCard?.textContent).not.toContain("Stale In Progress Meeting");
+    expect(screen.queryByText("LIVE")).not.toBeInTheDocument();
+  });
+
+  it("shows same-day On Hold as paused instead of live", () => {
+    const today = dashboardCalendarWindow(new Date()).today;
+    state.records.meetings = [{
+      id: "hm06-on-hold", meeting_id: "HM06-HOLD", meeting_title: "Same-day On Hold Meeting",
+      committee: "Audit Committee", approval_status: "On Hold",
+      meeting_date: today, start_time: "10:00", mode: "Physical", activity_history: [],
+    }];
+
+    render(<DashboardPage />);
+
+    expect(screen.getAllByText("Same-day On Hold Meeting").length).toBeGreaterThan(0);
+    expect(screen.getByText("Meeting Paused")).toBeInTheDocument();
+    expect(screen.getAllByText("On Hold").length).toBeGreaterThan(0);
+    expect(screen.queryByText("LIVE")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Join Live/ })).not.toBeInTheDocument();
+
+    const meetingsCard = screen.getByText("Ongoing & Upcoming Meetings").closest(".dash-compact-card");
+    const meetingRow = meetingsCard?.querySelector(".dash-compact-row");
+    expect(meetingRow).not.toBeNull();
+    fireEvent.click(meetingRow!);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getAllByText("On Hold").length).toBeGreaterThan(0);
+    expect(screen.queryByText("LIVE")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Join Live/ })).not.toBeInTheDocument();
+  });
+
   it("does not show false zero counts while Supabase data is loading", () => {
     state.loading = true;
     render(<DashboardPage />);

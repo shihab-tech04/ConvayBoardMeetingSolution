@@ -10,6 +10,20 @@ export type LifecycleStage =
   | "Meeting Paused"
   | "Post-Meeting Follow-up";
 
+export function validMeetingDateKey(rawDate: unknown): string | null {
+  const date = String(rawDate ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const calendarDate = new Date(`${date}T00:00:00.000Z`);
+  return Number.isFinite(calendarDate.getTime()) && calendarDate.toISOString().slice(0, 10) === date
+    ? date
+    : null;
+}
+
+function isCurrentMeetingDate(rawDate: unknown, now: Date): boolean {
+  const date = validMeetingDateKey(rawDate);
+  return date !== null && date === calendarDateWindows(now).today;
+}
+
 /**
  * HM-06: classify the actual persisted status before displaying a lifecycle
  * stage. A paused meeting is not an upcoming meeting; "Awaiting Approval" and
@@ -20,7 +34,7 @@ export function resolveLifecycleStage(
   rawDate: unknown,
   now: Date = new Date(),
 ): { stage: LifecycleStage } {
-  const status = String(rawStatus ?? "").trim().toLocaleLowerCase();
+  const status = String(rawStatus ?? "").trim().toLowerCase();
 
   if (status === "draft") return { stage: "Preparation Required" };
   if (status === "pending approval" || status === "awaiting approval") {
@@ -28,9 +42,11 @@ export function resolveLifecycleStage(
   }
   if (status === "approved") return { stage: "Ready to Publish" };
   if (status === "ready to start") return { stage: "Ready to Start" };
-  if (status === "in progress") return { stage: "Meeting Live" };
+  if (status === "in progress") {
+    return { stage: isCurrentMeetingDate(rawDate, now) ? "Meeting Live" : "Preparation Required" };
+  }
   if (status === "paused" || status === "on break" || status === "on hold") {
-    return { stage: "Meeting Paused" };
+    return { stage: isCurrentMeetingDate(rawDate, now) ? "Meeting Paused" : "Preparation Required" };
   }
   if (["awaiting minutes", "minutes draft", "awaiting review", "minutes approved",
        "completed", "adjourned"].includes(status)) {
@@ -38,14 +54,8 @@ export function resolveLifecycleStage(
   }
 
   if (status === "scheduled" || status === "published") {
-    const date = String(rawDate ?? "").slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { stage: "Preparation Required" };
-    // ISO-looking input can still be an impossible calendar date (e.g. Feb 30).
-    // Do not infer start readiness from invalid or stale published records.
-    const calendarDate = new Date(`${date}T00:00:00.000Z`);
-    if (!Number.isFinite(calendarDate.getTime()) || calendarDate.toISOString().slice(0, 10) !== date) {
-      return { stage: "Preparation Required" };
-    }
+    const date = validMeetingDateKey(rawDate);
+    if (!date) return { stage: "Preparation Required" };
     const { today, tomorrow } = calendarDateWindows(now);
     if (date < today) return { stage: "Preparation Required" };
     return { stage: date <= tomorrow ? "Ready to Start" : "Upcoming Meeting" };
