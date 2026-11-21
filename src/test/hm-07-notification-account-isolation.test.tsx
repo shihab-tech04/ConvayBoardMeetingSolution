@@ -56,7 +56,7 @@ beforeEach(() => {
   mockStore.items = [];
   mockStore.fetchNotifications.mockReset();
   mockStore.persistOne.mockReset().mockResolvedValue(undefined);
-  mockStore.persistAll.mockReset().mockResolvedValue(undefined);
+  mockStore.persistAll.mockReset().mockResolvedValue([]);
   mockStore.dispatch = action => {
     if (action.type === "notifications/setNotifications") {
       const next = action.payload as { ownerId: string | null; items: typeof mockStore.items };
@@ -121,6 +121,16 @@ describe("HM-07 account-safe notification hydration", () => {
     await waitFor(() => expect(mockStore.ownerId).toBe("user-b"));
     await act(async () => { finish(); });
     expect(mockStore.items[0].isRead).toBe(false);
+  });
+
+  it("marks only SQL-acknowledged rows, preserving other unread notifications", async () => {
+    mockStore.fetchNotifications.mockResolvedValue([record("acknowledged"), record("unacknowledged")]);
+    mockStore.persistAll.mockResolvedValueOnce(["acknowledged"]);
+    render(<Probe />);
+    await waitFor(() => expect(mockStore.ownerId).toBe("user-a"));
+    await act(async () => screen.getByRole("button", { name: "Mark all" }).click());
+    expect(mockStore.items.find(item => item.id === "acknowledged")?.isRead).toBe(true);
+    expect(mockStore.items.find(item => item.id === "unacknowledged")?.isRead).toBe(false);
   });
 
   it("does not mark B's entire inbox read when A's delayed bulk receipt completes", async () => {
