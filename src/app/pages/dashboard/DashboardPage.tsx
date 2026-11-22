@@ -35,7 +35,7 @@ import { useSettings } from "../../hooks/useSettings";
 import { resolveLifecycleStage, validMeetingDateKey, type LifecycleStage } from "./meetingLifecycleStatus";
 import { compareMeetingStart, meetingCountdown } from "./meetingScheduleTime";
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
-import { resolveDashboardMeetingDestination } from "./dashboardContextActions";
+import { meetingRecordPath, resolveDashboardMeetingDestination } from "./dashboardContextActions";
 import { actionItemDetailsPath } from "./actionItemDetailsPath";
 import {
   isPersonalMeetingTask, isPersonalAgendaTask, isPersonalRsvpTask,
@@ -224,7 +224,7 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
                 <Radio size={14} /> Join Live
               </button>
             )}
-            <button type="button" onClick={() => { onClose(); navigate("/meetings/all-meetings"); }} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.15)", color: "#fff", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>
+            <button type="button" onClick={() => { onClose(); navigate(meetingRecordPath(mid)); }} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.15)", color: "#fff", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>
               <ExternalLink size={13} /> Full Record
             </button>
             <button type="button" aria-label="Close" onClick={onClose} style={{ width: 36, height: 36, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.2)", cursor: "pointer", color: "#fff", flexShrink: 0 }}>
