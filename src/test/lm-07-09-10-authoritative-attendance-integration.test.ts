@@ -53,7 +53,7 @@ describe("LM-07/09/10 authoritative online attendance gate", () => {
     expect(sql).toContain("count_virtual_attendance");
     expect(sql).toContain("minimum_members_count");
     expect(sql).toContain("minimum_percentage");
-    expect(sql).toContain("required_role_ids");
+    expect(sql).toContain("if v_rule->>\'rule_type\'=\'role_based\' then");
     expect(sql).toContain("meeting_id'=v_actual_mid");
   });
 
