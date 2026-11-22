@@ -848,19 +848,31 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const ACTIVE_STATES: AttendanceStatus[] = ["Present", "Temporarily Away"];
   const presentIds  = Object.entries(attendanceMap).filter(([, s]) => ACTIVE_STATES.includes(s as AttendanceStatus)).map(([id]) => id);
   const recusedIds  = Object.entries(attendanceMap).filter(([, s]) => s === "Recused").map(([id]) => id);
-  const presentCount = presentIds.length;
+  const presentCount = isOnlineMeeting ? (serverQuorum?.present ?? 0) : presentIds.length;
 
   // Filter canonical quorum links to those who are present and not recused
   const presentQuorumLinks = meetingLinks
     .filter(l => l.quorum_eligible && presentIds.includes(l.user_id) && !recusedIds.includes(l.user_id));
-  const quorumCalcResult = calculateMeetingQuorum({
+  const calculatedQuorum = calculateMeetingQuorum({
     boardCommitteeId: meeting?.committee ?? "",
     boardCommitteeName: meeting?.committee ?? "",
     participantLinks: presentQuorumLinks,
     governanceBodies: govBodies,
     quorumRules,
   });
-  const quorumMet      = quorumCalcResult.status === "expected" || quorumCalcResult.status === "at_risk";
+  // Never unlock online voting from locally computed or cached attendance.
+  const quorumCalcResult = isOnlineMeeting ? {
+    ...calculatedQuorum,
+    status: serverQuorum
+      ? (serverQuorum.met ? "expected" as const : "not_expected" as const)
+      : "not_configured" as const,
+    eligibleCount: serverQuorum?.present ?? 0,
+    requiredCount: serverQuorum?.required ?? 0,
+    reasons: serverQuorum ? [] : ["Awaiting authoritative SQL attendance and quorum readback"],
+  } : calculatedQuorum;
+  const quorumMet = isOnlineMeeting
+    ? serverQuorum?.met === true
+    : quorumCalcResult.status === "expected" || quorumCalcResult.status === "at_risk";
   const quorumRequired = quorumCalcResult.requiredCount;
   const eligibleCount  = meetingLinks.filter(l => l.quorum_eligible && !recusedIds.includes(l.user_id)).length;
 
