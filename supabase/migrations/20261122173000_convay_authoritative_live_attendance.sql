@@ -423,9 +423,9 @@ begin
   end if;
   -- A newer role-based rule must never silently fall back to a weaker legacy
   -- threshold if required role IDs cannot be resolved to persisted link roles.
-  if v_rule->>'rule_type'='role_based'
-    and pg_catalog.jsonb_typeof(v_rule->'required_role_ids')='array'
-    and pg_catalog.jsonb_array_length(v_rule->'required_role_ids')>0 then
+  if v_rule->>'rule_type'='role_based' then
+    -- A normalized role-based rule requires actual role-ID mappings not
+    -- supplied by the legacy participant link. Do not infer eligibility.
     v_required_roles_met:=false;
   end if;
   -- Explicit remote-attendance exclusion is enforced from the persisted
