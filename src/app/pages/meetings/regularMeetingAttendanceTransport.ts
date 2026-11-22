@@ -20,15 +20,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function isQuorum(value: unknown): value is LiveAttendanceSnapshot["quorum"] {
-  return isRecord(value) && Number.isSafeInteger(value.revision)
-    && Number.isSafeInteger(value.required)
-    && Number.isSafeInteger(value.present)
+  return isRecord(value) && typeof value.revision === "number" && Number.isSafeInteger(value.revision)
+    && typeof value.required === "number" && Number.isSafeInteger(value.required)
+    && typeof value.present === "number" && Number.isSafeInteger(value.present)
     && typeof value.met === "boolean";
 }
 function validateReadback(value: unknown): LiveAttendanceSnapshot {
   if (!isRecord(value) || typeof value.meetingId !== "string"
       || typeof value.participantId !== "string" || typeof value.status !== "string"
-      || !Number.isSafeInteger(value.attendanceRevision)
+      || typeof value.attendanceRevision !== "number" || !Number.isSafeInteger(value.attendanceRevision)
       || typeof value.requestId !== "string" || typeof value.attendanceId !== "string"
       || !isQuorum(value.quorum) || !isRecord(value.attendanceMap)
       || !Object.values(value.attendanceMap).every(status => typeof status === "string")) {
