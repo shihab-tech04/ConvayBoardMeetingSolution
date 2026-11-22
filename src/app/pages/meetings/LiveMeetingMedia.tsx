@@ -161,8 +161,17 @@ export function LiveMeetingMedia({
           if (publication.source === "screen_share") callbacks.current.onSharingChange(false);
         });
         nextRoom.on(sdk.RoomEvent.Reconnecting, () => setStatus("Reconnecting"));
-        nextRoom.on(sdk.RoomEvent.Reconnected, () => { setStatus("Connected"); render(); });
+        nextRoom.on(sdk.RoomEvent.Reconnected, () => {
+          if (ended) return;
+          if (!connected) {
+            connected = true;
+            callbacks.current.onPresence(true, nextRoom?.localParticipant?.identity);
+          }
+          setStatus("Connected");
+          render();
+        });
         nextRoom.on(sdk.RoomEvent.Disconnected, () => {
+          if (ended) return;
           setStatus("Disconnected");
           if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom?.localParticipant?.identity); }
         });
