@@ -293,3 +293,105 @@ revoke all on function public.convay_commit_live_attendance(uuid,text,text,text,
   from public,anon,authenticated;
 grant execute on function public.convay_commit_live_attendance(uuid,text,text,text,bigint,text,boolean,text)
   to service_role;
+
+
+-- Readback is service-role-only and always rechecks the verified actor and
+-- selected meeting. No authenticated browser is granted private SQL access.
+create or replace function public.convay_read_live_attendance(
+  p_actor_id uuid, p_meeting_id text, p_participant_id text
+) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare
+  v_mid text;
+  v_meeting record;
+  v_profile record;
+  v_row record;
+  v_snapshot record;
+  v_latest record;
+  v_attendees jsonb;
+  v_status text;
+  v_quorum jsonb;
+  v_authorized boolean;
+begin
+  if p_actor_id is null or p_meeting_id is null or p_participant_id is null
+    or p_meeting_id !~ '^[A-Za-z0-9_-]{1,180}$'
+    or p_participant_id !~ '^[A-Za-z0-9_-]{1,180}$' then
+    raise exception 'Invalid attendance readback' using errcode='22023';
+  end if;
+  select p.display_name,p.account_role into v_profile from public.user_profiles p
+    where p.user_id=p_actor_id and p.account_status='active';
+  if not found then
+    raise exception 'Active account required' using errcode='42501';
+  end if;
+  perform pg_catalog.set_config('request.jwt.claim.sub',p_actor_id::text,true);
+  if not convay_private.has_permission('mtg_view') then
+    raise exception 'Meeting read permission required' using errcode='42501';
+  end if;
+  select m.* into v_meeting from public.convay_entity_records m
+    where m.entity_key='bms.meetings'
+      and (m.record_id=p_meeting_id or m.payload->>'meeting_id'=p_meeting_id)
+    order by (m.record_id=p_meeting_id) desc limit 1;
+  if not found then raise exception 'Meeting unavailable' using errcode='P0002'; end if;
+  v_mid:=coalesce(nullif(v_meeting.payload->>'meeting_id',''),v_meeting.record_id);
+  if not exists (
+    select 1 from public.convay_entity_records link
+      where link.entity_key='bms.meetingParticipantLinks'
+      and link.payload->>'meeting_id'=v_mid
+      and link.payload->>'user_id'=p_participant_id
+  ) then
+    raise exception 'Participant not registered in this meeting' using errcode='42501';
+  end if;
+  v_authorized:=p_actor_id::text=p_participant_id
+    and convay_private.has_permission('mtg_join');
+  if not v_authorized then
+    v_authorized:=convay_private.has_permission('mtg_attendance')
+      and (v_profile.account_role='super_admin'
+        or convay_private.is_meeting_leader(p_actor_id,v_meeting.payload,v_meeting.created_by));
+  end if;
+  if not v_authorized then
+    raise exception 'Attendance readback denied' using errcode='42501';
+  end if;
+
+  select a.* into v_row from public.convay_entity_records a
+    where a.entity_key='bms.attendance'
+      and a.payload->>'meeting_id'=v_mid
+      and a.payload->>'participant_id'=p_participant_id
+    limit 1;
+  select s.* into v_snapshot from convay_private.live_quorum_snapshots s
+    where s.meeting_id=v_mid;
+  select c.* into v_latest from convay_private.live_attendance_commands c
+    where c.meeting_id=v_mid and c.participant_id=p_participant_id
+    order by c.recorded_at desc, c.request_id desc limit 1;
+  select coalesce(pg_catalog.jsonb_object_agg(a.payload->>'participant_id',
+      coalesce(a.payload->>'attendance_status',
+        case when coalesce(a.payload->>'check_out_time','')<>'' then 'Left'
+          when coalesce(a.payload->>'check_in_time','')<>'' then 'Present'
+          else 'Not Joined' end)), '{}'::jsonb)
+    into v_attendees
+    from public.convay_entity_records a
+    where a.entity_key='bms.attendance'
+      and a.payload->>'meeting_id'=v_mid
+      and nullif(a.payload->>'participant_id','') is not null;
+  v_status:=coalesce(v_row.payload->>'attendance_status',
+    case when coalesce(v_row.payload->>'check_out_time','')<>'' then 'Left'
+      when coalesce(v_row.payload->>'check_in_time','')<>'' then 'Present'
+      else 'Not Joined' end);
+  v_quorum:=pg_catalog.jsonb_build_object(
+    'revision',coalesce(v_snapshot.revision,0),
+    'required',coalesce(v_snapshot.required,0),
+    'present',coalesce(v_snapshot.present,0),
+    'met',coalesce(v_snapshot.met,false)
+  );
+  return pg_catalog.jsonb_build_object(
+    'requestId',coalesce(v_latest.request_id,'initial_1234567890123456'),
+    'meetingId',v_mid,'participantId',p_participant_id,
+    'status',v_status,'attendanceId',coalesce(v_row.record_id,''),
+    'attendanceRevision',coalesce(v_row.revision,0),
+    'quorum',v_quorum,'attendanceMap',v_attendees
+  );
+end;
+$$;
+revoke all on function public.convay_read_live_attendance(uuid,text,text)
+  from public,anon,authenticated;
+grant execute on function public.convay_read_live_attendance(uuid,text,text)
+  to service_role;
