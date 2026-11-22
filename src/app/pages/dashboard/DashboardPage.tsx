@@ -33,6 +33,7 @@ import { dashboardCalendarWindow, isMeetingApprovalPending } from "./dashboardOv
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
 import { resolveLifecycleStage, validMeetingDateKey, type LifecycleStage } from "./meetingLifecycleStatus";
+import { compareMeetingStart, meetingCountdown } from "./meetingScheduleTime";
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { resolveDashboardMeetingDestination } from "./dashboardContextActions";
 import { actionItemDetailsPath } from "./actionItemDetailsPath";
@@ -317,13 +318,7 @@ const ROLE_SUBTITLES: Record<ViewRole, string> = {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function countdown(dateStr: string, timeStr?: string): string {
-  const target = new Date(`${dateStr}T${timeStr || "09:00"}:00`);
-  const diff   = target.getTime() - Date.now();
-  if (diff <= 0) return "Now";
-  const days  = Math.floor(diff / 86400000);
-  const hours = Math.floor((diff % 86400000) / 3600000);
-  if (days > 0) return `In ${days}d ${hours}h`;
-  return `In ${hours}h ${Math.floor((diff % 3600000) / 60000)}m`;
+  return meetingCountdown(dateStr, timeStr, new Date());
 }
 
 // ── Lifecycle stage resolver ───────────────────────────────────────────────────
@@ -1039,7 +1034,7 @@ export function DashboardPage() {
         const stage = resolveLifecycleStage(status, m.meeting_date, calendarNow).stage;
         return stage === "Meeting Live" || stage === "Meeting Paused";
       })
-      .sort((a, b) => String(a.meeting_date ?? "").localeCompare(String(b.meeting_date ?? ""))),
+      .sort(compareMeetingStart),
     [meetings, calendarNow]
   );
 
@@ -1054,7 +1049,7 @@ export function DashboardPage() {
           && !EXCLUDED_STATUSES.has(status.toLowerCase())
           && !hasOngoingStatus(status);
       })
-      .sort((a, b) => String(a.meeting_date ?? "").localeCompare(String(b.meeting_date ?? ""))),
+      .sort(compareMeetingStart),
     [meetings, today]
   );
 
