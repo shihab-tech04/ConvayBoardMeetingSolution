@@ -46,6 +46,7 @@ import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
 import { OnlinePresenceTransition } from "./onlinePresenceTransition";
+import { commitLiveAttendance, readLiveAttendance, type LiveAttendanceSnapshot } from "./regularMeetingAttendanceTransport";
 import { mayOfferRegularScreenShare } from "./regularMeetingScreenShareState";
 import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
 
@@ -407,8 +408,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: docCommentThreads, add: addDocThread, update: updateDocThread } = useDocumentCommentRegistry();
   const { items: interactionItems, add: addInteraction }                = useMeetingInteractionRegistry();
   const { items: liveSessions, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
-  const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = useAttendanceRegistry();
-  const { add: addQuorumEvent }                                          = useQuorumEventRegistry();
+  const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec, refresh: refreshAttendanceRec } = useAttendanceRegistry();
+  const { add: addQuorumEvent, refresh: refreshQuorumEvents }              = useQuorumEventRegistry();
   const { items: govBodies }                                             = useGovernanceRegistry();
   const { items: partGroups }                                            = useParticipantGroupRegistry();
   const { items: quorumRules }                                           = useQuorumRuleRegistry();
@@ -585,10 +586,58 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [agendaStatuses, setAgendaStatuses]   = useState<Record<number, AgendaStatus>>(initSession.agendaStatuses);
   const [notes,          setNotes]            = useState<Record<number, string>>(initSession.notes);
   const [motions,        setMotions]          = useState<LiveMotion[]>(initSession.motions);
-  const [attendanceMap,  setAttendanceMap]    = useState<Record<string, AttendanceStatus>>(initSession.attendance);
+  // Online attendance is never restored from browser-local session cache.
+  const [attendanceMap,  setAttendanceMap]    = useState<Record<string, AttendanceStatus>>(isOnlineMeeting ? {} : initSession.attendance);
+  const [serverQuorum, setServerQuorum] = useState<LiveAttendanceSnapshot["quorum"] | null>(null);
+  const pendingAttendance = useRef(new Set<string>());
   const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
+  const applyVerifiedAttendance = useCallback((snapshot: LiveAttendanceSnapshot) => {
+    const statuses = new Set<AttendanceStatus>(["Not Joined", "Present", "Temporarily Away", "Left", "Excused", "Recused"]);
+    const next: Record<string, AttendanceStatus> = {};
+    for (const [participantId, value] of Object.entries(snapshot.attendanceMap)) {
+      if (statuses.has(value as AttendanceStatus)) next[participantId] = value as AttendanceStatus;
+    }
+    setAttendanceMap(next);
+    setServerQuorum(snapshot.quorum);
+  }, []);
+
+  // The online workspace reads SQL authority on entry and after other actors'
+  // changes. Visibility and polling are read-only; no cache may re-enable quorum.
+  const onlineRosterKey = meetingLinks.map(link => link.user_id).join("|");
+  useEffect(() => {
+    if (!isOnlineMeeting || !access.loaded || !meetingId) return;
+    const target = meetingLinks.find(link => link.user_id === currentUser.id)?.user_id
+      ?? (canEditAttendance ? meetingLinks[0]?.user_id : "");
+    setServerQuorum(null);
+    setAttendanceMap({});
+    if (!target) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const saved = await readLiveAttendance(meetingId, target);
+        if (!cancelled) applyVerifiedAttendance(saved);
+      } catch (error) {
+        if (!cancelled) {
+          setServerQuorum(null);
+          toast.error(error instanceof Error ? error.message : "Authoritative attendance unavailable.");
+        }
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 12000);
+    const onVisible = () => { if (!cancelled) void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnlineMeeting, access.loaded, meetingId, currentUser.id, canEditAttendance, onlineRosterKey, applyVerifiedAttendance]);
+
   const isVotingEligible = useCallback((participantId: string) => {
     if (!participantId || !meetingLinks.some(link => link.user_id === participantId && link.voting_eligible)) return false;
     const status = attendanceMap[participantId] ?? "Not Joined";
@@ -799,19 +848,31 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const ACTIVE_STATES: AttendanceStatus[] = ["Present", "Temporarily Away"];
   const presentIds  = Object.entries(attendanceMap).filter(([, s]) => ACTIVE_STATES.includes(s as AttendanceStatus)).map(([id]) => id);
   const recusedIds  = Object.entries(attendanceMap).filter(([, s]) => s === "Recused").map(([id]) => id);
-  const presentCount = presentIds.length;
+  const presentCount = isOnlineMeeting ? (serverQuorum?.present ?? 0) : presentIds.length;
 
   // Filter canonical quorum links to those who are present and not recused
   const presentQuorumLinks = meetingLinks
     .filter(l => l.quorum_eligible && presentIds.includes(l.user_id) && !recusedIds.includes(l.user_id));
-  const quorumCalcResult = calculateMeetingQuorum({
+  const calculatedQuorum = calculateMeetingQuorum({
     boardCommitteeId: meeting?.committee ?? "",
     boardCommitteeName: meeting?.committee ?? "",
     participantLinks: presentQuorumLinks,
     governanceBodies: govBodies,
     quorumRules,
   });
-  const quorumMet      = quorumCalcResult.status === "expected" || quorumCalcResult.status === "at_risk";
+  // Never unlock online voting from locally computed or cached attendance.
+  const quorumCalcResult = isOnlineMeeting ? {
+    ...calculatedQuorum,
+    status: serverQuorum
+      ? (serverQuorum.met ? "expected" as const : "not_expected" as const)
+      : "not_configured" as const,
+    eligibleCount: serverQuorum?.present ?? 0,
+    requiredCount: serverQuorum?.required ?? 0,
+    reasons: serverQuorum ? [] : ["Awaiting authoritative SQL attendance and quorum readback"],
+  } : calculatedQuorum;
+  const quorumMet = isOnlineMeeting
+    ? serverQuorum?.met === true
+    : quorumCalcResult.status === "expected" || quorumCalcResult.status === "at_risk";
   const quorumRequired = quorumCalcResult.requiredCount;
   const eligibleCount  = meetingLinks.filter(l => l.quorum_eligible && !recusedIds.includes(l.user_id)).length;
 
@@ -913,6 +974,43 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   // ── Attendance (uses canonical participant links) ──────────────────────────
   const setAttendance = useCallback((id: string, status: AttendanceStatus) => {
+    if (isOnlineMeeting) {
+      // The online path must never optimistically change quorum or attendee
+      // state; it uses the verified Edge + SQL + durable readback contract.
+      if (!meetingId || pendingAttendance.current.has(id)) return;
+      pendingAttendance.current.add(id);
+      void (async () => {
+        try {
+          const mode = id === currentUser.id ? "Online"
+            : meeting?.mode === "Hybrid" ? "In-Person" : "Online";
+          if (status === "Not Joined") {
+            const saved = await readLiveAttendance(meetingId, id);
+            if (saved.attendanceRevision === 0) {
+              applyVerifiedAttendance(saved);
+              return;
+            }
+          }
+          const saved = await commitLiveAttendance(meetingId, id, status, mode);
+          applyVerifiedAttendance(saved);
+          void refreshAttendanceRec?.().catch(() => undefined);
+          void refreshQuorumEvents?.().catch(() => undefined);
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Attendance was not confirmed by the server.");
+          // On failure we still reconcile from SQL; no stale browser state may
+          // unlock a quorum or an ineligible vote.
+          try {
+            const saved = await readLiveAttendance(meetingId, id);
+            applyVerifiedAttendance(saved);
+          } catch {
+            setServerQuorum(null);
+          }
+        } finally {
+          pendingAttendance.current.delete(id);
+        }
+      })();
+      return;
+    }
+    // Preserve existing in-person/offline attendance behaviour unchanged.
     setAttendanceMap(prev => ({ ...prev, [id]: status }));
     const participant = participants.find(p => p.id === id);
     const link        = meetingLinks.find(l => l.user_id === id);
@@ -966,7 +1064,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent]);
+  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent, currentUser.id, applyVerifiedAttendance, refreshAttendanceRec, refreshQuorumEvents]);
 
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
