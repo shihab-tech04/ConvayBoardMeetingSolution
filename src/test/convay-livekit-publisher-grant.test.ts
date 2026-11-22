@@ -34,6 +34,23 @@ describe("Server-issued regular-meeting media publisher policy", () => {
       { meeting_id: "MTG-1", user_id: "member-1", participant_type: "Observer" },
     ] })).toBe(false);
   });
+  it("an unrelated publisher role never elevates an Observer on the current meeting", () => {
+    expect(canPublishOnlineMeeting({ ...context(), links: [
+      { meeting_id: "MTG-1", user_id: "member-1", participant_type: "Observer" },
+      { meeting_id: "MTG-2", user_id: "member-1", participant_type: "Chairperson" },
+    ] })).toBe(false);
+    expect(canPublishOnlineMeeting({ ...context(), links: [
+      { meeting_id: "MTG-1", user_id: "member-1", participant_type: "Member" },
+      { meeting_id: "MTG-1", user_id: "member-1", participant_type: undefined },
+    ] })).toBe(false);
+  });
+
+  it("subscription-only roles cannot regain publishing via case or spacing variations", () => {
+    for (const role of [" Observer ", "GUEST", " observer", "Viewer", "Auditor", "Invitee"]) {
+      expect(canPublishOnlineMeeting(asRole(role))).toBe(false);
+    }
+  });
+
   it("cannot mint a grant from another user's link or another meeting", () => {
     expect(canPublishOnlineMeeting({ ...context(),
       links: [{ meeting_id: "MTG-1", user_id: "other", participant_type: "Presenter" }] })).toBe(false);
