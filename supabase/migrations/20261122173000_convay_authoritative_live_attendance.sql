@@ -49,6 +49,8 @@ declare
   v_actor_can_attend boolean;
   v_actor_is_leader boolean;
   v_role text;
+  v_required_roles text[] := array[]::text[];
+  v_required_roles_met boolean := true;
   v_key text;
   v_att_id text;
   v_att_revision bigint;
@@ -109,6 +111,12 @@ begin
     raise exception 'Exactly one active or paused session required' using errcode='23514';
   end if;
 
+  -- Contradictory persisted mode aliases must not elevate admission.
+  if nullif(v_meeting.payload->>'mode','') is not null
+     and nullif(v_meeting.payload->>'meeting_mode','') is not null
+     and v_meeting.payload->>'mode' <> v_meeting.payload->>'meeting_mode' then
+    raise exception 'Conflicting saved meeting mode aliases' using errcode='23514';
+  end if;
   v_mode:=coalesce(nullif(v_meeting.payload->>'mode',''),v_meeting.payload->>'meeting_mode');
   if v_mode not in ('Virtual','Hybrid','Physical') then
     raise exception 'A supported meeting mode is required' using errcode='23514';
@@ -246,7 +254,36 @@ begin
     raise exception 'Invalid configured quorum percentage' using errcode='23514';
   end if;
   v_required:=greatest(v_min,pg_catalog.ceil(v_total*v_percent/100)::integer);
-  v_met:=v_rule is not null and v_total>0 and v_required>0 and v_present>=v_required;
+  -- A configured quorum may require a particular role to be physically or
+  -- virtually present. It is not sufficient that the role was invited.
+  if pg_catalog.jsonb_typeof(v_rule->'required_roles')='array' then
+    select coalesce(pg_catalog.array_agg(value),array[]::text[])
+      into v_required_roles
+      from pg_catalog.jsonb_array_elements_text(v_rule->'required_roles') as role(value);
+  elsif pg_catalog.jsonb_typeof(v_rule->'required_roles')='string' then
+    v_required_roles:=pg_catalog.string_to_array(v_rule->>'required_roles',',');
+  end if;
+  foreach v_role in array v_required_roles loop
+    v_role:=pg_catalog.btrim(v_role);
+    if v_role<>'' and not exists (
+      select 1 from public.convay_entity_records l
+      join public.convay_entity_records a
+        on a.entity_key='bms.attendance'
+        and a.payload->>'meeting_id'=v_actual_mid
+        and a.payload->>'participant_id'=l.payload->>'user_id'
+      where l.entity_key='bms.meetingParticipantLinks'
+        and l.payload->>'meeting_id'=v_actual_mid
+        and l.payload->>'participant_type'=v_role
+        and coalesce(a.payload->>'attendance_status',
+          case when coalesce(a.payload->>'check_out_time','')<>'' then 'Left'
+            when coalesce(a.payload->>'check_in_time','')<>'' then 'Present'
+            else 'Not Joined' end) in ('Present','Temporarily Away')
+    ) then
+      v_required_roles_met:=false;
+    end if;
+  end loop;
+  v_met:=v_rule is not null and v_total>0 and v_required>0
+    and v_present>=v_required and v_required_roles_met;
 
   select * into v_state from convay_private.live_quorum_snapshots
     where meeting_id=v_actual_mid for update;
