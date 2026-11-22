@@ -7,7 +7,7 @@
  * Never use this transport as evidence that the hosted backend has been fixed.
  */
 export type RegularMeetingAttendanceStatus =
-  | "Present" | "Left" | "Temporarily Away" | "Excused" | "Recused";
+  | "Not Joined" | "Present" | "Left" | "Temporarily Away" | "Excused" | "Recused";
 
 export interface RegularAttendanceIntent {
   meetingId: string;
@@ -46,7 +46,7 @@ export class AttendanceProofError extends Error {
   }
 }
 
-const statuses: readonly string[] = ["Present", "Left", "Temporarily Away", "Excused", "Recused"];
+const statuses: readonly string[] = ["Not Joined", "Present", "Left", "Temporarily Away", "Excused", "Recused"];
 const isRow = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 const isId = (value: unknown): value is string =>
