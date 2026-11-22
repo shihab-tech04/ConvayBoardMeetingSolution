@@ -157,8 +157,24 @@ describe("HM-04 personal calendar", () => {
     fireEvent.click(screen.getByRole("button", { name: /Saturday 21 November/ }));
     fireEvent.click(screen.getAllByText("Stale In Progress Calendar Meeting")[0]);
 
-    expect(state.navigate).toHaveBeenCalledWith("/meetings/all-meetings");
+    expect(state.navigate).toHaveBeenCalledWith("/meetings/stale-live/record");
     expect(state.navigate).not.toHaveBeenCalledWith("/meetings/stale-live/live");
+  });
+
+  it("opens the exact encoded personal calendar meeting record without promoting it to live", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 22, 8, 30, 0));
+    state.data.meetings = [
+      { ...includedMeeting(), id: "m/7 &b", meeting_title: "Selected meeting",
+        meeting_date: calendarDateWindows(new Date()).today, start_time: "10:00",
+        approval_status: "Published" },
+    ];
+    const { container } = render(<CombinedDashboardPage />);
+    const featured = container.querySelector(".cal-featured");
+    expect(featured).toHaveTextContent("Selected meeting");
+    fireEvent.click(featured!);
+    expect(state.navigate).toHaveBeenCalledWith("/meetings/m%2F7%20%26b/record");
+    expect(state.navigate).not.toHaveBeenCalledWith("/meetings/m/7 &b/live");
   });
 
   it("keeps the next-seven-days KPI date-based while featured selection filters actual starts", () => {
