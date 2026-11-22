@@ -428,9 +428,23 @@ begin
     and pg_catalog.jsonb_array_length(v_rule->'required_role_ids')>0 then
     v_required_roles_met:=false;
   end if;
-  if v_rule->>'count_virtual_attendance'='false'
-     and v_mode='Virtual' then
-    v_required_roles_met:=false;
+  -- Explicit remote-attendance exclusion is enforced from the persisted
+  -- attendance mode. Hybrid online participants cannot inflate physical quorum.
+  if v_rule->>'count_virtual_attendance'='false' then
+    select count(distinct l.payload->>'user_id') into v_present
+    from public.convay_entity_records l
+    join public.convay_entity_records a
+      on a.entity_key='bms.attendance'
+      and a.payload->>'meeting_id'=v_actual_mid
+      and a.payload->>'participant_id'=l.payload->>'user_id'
+    where l.entity_key='bms.meetingParticipantLinks'
+      and l.payload->>'meeting_id'=v_actual_mid
+      and l.payload->>'quorum_eligible'='true'
+      and a.payload->>'attendance_mode'='In-Person'
+      and coalesce(a.payload->>'attendance_status',
+        case when coalesce(a.payload->>'check_out_time','')<>'' then 'Left'
+          when coalesce(a.payload->>'check_in_time','')<>'' then 'Present'
+          else 'Not Joined' end) in ('Present','Temporarily Away');
   end if;
   if v_percent<0 or v_percent>100 then
     raise exception 'Invalid configured quorum percentage' using errcode='23514';
