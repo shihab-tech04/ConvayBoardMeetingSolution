@@ -464,7 +464,7 @@ export function CombinedDashboardPage({
         navigate(`/meetings/${e.sourceId}/live`);
         return;
       }
-      navigate("/meetings/all-meetings");
+      navigate(`/meetings/${encodeURIComponent(e.sourceId)}/record`);
     } else if (e.sourceType === "board-pack") {
       navigate("/agenda-documents/board-packs");
     } else if (e.sourceType === "rsvp") {
