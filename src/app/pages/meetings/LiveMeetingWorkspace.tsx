@@ -46,6 +46,7 @@ import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
 import { OnlinePresenceTransition } from "./onlinePresenceTransition";
+import { commitLiveAttendance, readLiveAttendance, type LiveAttendanceSnapshot } from "./regularMeetingAttendanceTransport";
 import { mayOfferRegularScreenShare } from "./regularMeetingScreenShareState";
 import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
 
@@ -407,8 +408,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: docCommentThreads, add: addDocThread, update: updateDocThread } = useDocumentCommentRegistry();
   const { items: interactionItems, add: addInteraction }                = useMeetingInteractionRegistry();
   const { items: liveSessions, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
-  const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = useAttendanceRegistry();
-  const { add: addQuorumEvent }                                          = useQuorumEventRegistry();
+  const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec, refresh: refreshAttendanceRec } = useAttendanceRegistry();
+  const { add: addQuorumEvent, refresh: refreshQuorumEvents }              = useQuorumEventRegistry();
   const { items: govBodies }                                             = useGovernanceRegistry();
   const { items: partGroups }                                            = useParticipantGroupRegistry();
   const { items: quorumRules }                                           = useQuorumRuleRegistry();
@@ -585,10 +586,58 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [agendaStatuses, setAgendaStatuses]   = useState<Record<number, AgendaStatus>>(initSession.agendaStatuses);
   const [notes,          setNotes]            = useState<Record<number, string>>(initSession.notes);
   const [motions,        setMotions]          = useState<LiveMotion[]>(initSession.motions);
-  const [attendanceMap,  setAttendanceMap]    = useState<Record<string, AttendanceStatus>>(initSession.attendance);
+  // Online attendance is never restored from browser-local session cache.
+  const [attendanceMap,  setAttendanceMap]    = useState<Record<string, AttendanceStatus>>(isOnlineMeeting ? {} : initSession.attendance);
+  const [serverQuorum, setServerQuorum] = useState<LiveAttendanceSnapshot["quorum"] | null>(null);
+  const pendingAttendance = useRef(new Set<string>());
   const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
+  const applyVerifiedAttendance = useCallback((snapshot: LiveAttendanceSnapshot) => {
+    const statuses = new Set<AttendanceStatus>(["Not Joined", "Present", "Temporarily Away", "Left", "Excused", "Recused"]);
+    const next: Record<string, AttendanceStatus> = {};
+    for (const [participantId, value] of Object.entries(snapshot.attendanceMap)) {
+      if (statuses.has(value as AttendanceStatus)) next[participantId] = value as AttendanceStatus;
+    }
+    setAttendanceMap(next);
+    setServerQuorum(snapshot.quorum);
+  }, []);
+
+  // The online workspace reads SQL authority on entry and after other actors'
+  // changes. Visibility and polling are read-only; no cache may re-enable quorum.
+  const onlineRosterKey = meetingLinks.map(link => link.user_id).join("|");
+  useEffect(() => {
+    if (!isOnlineMeeting || !access.loaded || !meetingId) return;
+    const target = meetingLinks.find(link => link.user_id === currentUser.id)?.user_id
+      ?? (canEditAttendance ? meetingLinks[0]?.user_id : "");
+    setServerQuorum(null);
+    setAttendanceMap({});
+    if (!target) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const saved = await readLiveAttendance(meetingId, target);
+        if (!cancelled) applyVerifiedAttendance(saved);
+      } catch (error) {
+        if (!cancelled) {
+          setServerQuorum(null);
+          toast.error(error instanceof Error ? error.message : "Authoritative attendance unavailable.");
+        }
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 12000);
+    const onVisible = () => { if (!cancelled) void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnlineMeeting, access.loaded, meetingId, currentUser.id, canEditAttendance, onlineRosterKey, applyVerifiedAttendance]);
+
   const isVotingEligible = useCallback((participantId: string) => {
     if (!participantId || !meetingLinks.some(link => link.user_id === participantId && link.voting_eligible)) return false;
     const status = attendanceMap[participantId] ?? "Not Joined";
