@@ -45,6 +45,7 @@ import { commitVerifiedMinutesCapture } from "./regularMeetingMinutesCaptureStat
 import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
+import { OnlinePresenceTransition } from "./onlinePresenceTransition";
 import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -418,6 +419,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (!access.loaded && !access.error) void reloadAccessSnapshot().catch(() => undefined);
   }, [access.loaded, access.error]);
 
+  // Deduplicate provider callbacks per authenticated meeting workspace.
+  // Server-backed attendance/quorum authority remains a separate integration gate.
+  const onlinePresence = useMemo(() => new OnlinePresenceTransition(), [meetingId, currentUser.id]);
   const meeting = meetings.find(m => m.meeting_id === meetingId);
   const isOnlineMeeting = LIVE_MEETINGS_RELEASED && (meeting?.mode === "Virtual" || meeting?.mode === "Hybrid");
 
@@ -1686,7 +1690,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
                 <LiveMeetingMedia meetingId={meetingId} micOn={myMicOn} camOn={myCamOn} sharing={isSharing}
                   onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={setIsSharing}
-                  onPresence={connected => { if (myLink) setAttendance(currentUser.id, connected ? "Present" : "Left"); }} />
+                  onPresence={connected => {
+                    if (!myLink) return;
+                    const transition = onlinePresence.onPresence(connected);
+                    if (transition) setAttendance(currentUser.id, transition);
+                  }} />
               </div>
             )}
             {!isOnlineMeeting && viewMode === "speaker" && (
@@ -3921,7 +3929,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             confirmLabel="Leave"
             onConfirm={() => {
               setLeaveConfirmOpen(false);
-              if (wasPresent) setAttendance(myParticipantId, "Left");
+              if (isOnlineMeeting) {
+                // One confirmed online Leave wins over later disconnect/unmount callbacks.
+                const transition = onlinePresence.onLeaveConfirmed(wasPresent);
+                if (transition) setAttendance(myParticipantId, transition);
+              } else if (wasPresent) {
+                // Preserve approved physical-meeting Leave behavior.
+                setAttendance(myParticipantId, "Left");
+              }
               onClose();
             }}
             onClose={() => setLeaveConfirmOpen(false)}
