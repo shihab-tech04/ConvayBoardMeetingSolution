@@ -40,6 +40,23 @@ describe("LM-07/09/10 authoritative online attendance gate", () => {
     expect(sql).toContain("convay_private.live_quorum_snapshots");
   });
 
+  it("keeps hosted release disabled until an authorized production activation", () => {
+    expect(sql).toContain("live_attendance_release_gate");
+    expect(sql).toContain("values(true,false) on conflict");
+    expect(sql).toContain("Authoritative live attendance has not been activated");
+    expect(sql).toContain("convay_a0_authoritative_live_guard");
+    expect(sql).toContain("Online attendance and quorum must use the trusted transaction");
+    expect(sql).toContain("Cannot write online votes without SQL-confirmed quorum");
+    expect(sql).toContain("convay_z8_invalidate_live_quorum");
+    expect(sql).toContain("bms.meetingParticipantLinks");
+    expect(sql).toContain("bms.quorumrules");
+    expect(sql).toContain("count_virtual_attendance");
+    expect(sql).toContain("minimum_members_count");
+    expect(sql).toContain("minimum_percentage");
+    expect(sql).toContain("required_role_ids");
+    expect(sql).toContain("meeting_id'=v_actual_mid");
+  });
+
   it("derives true actor and actual provider presence inside the Edge boundary", () => {
     expect(edge).toContain('"/auth/v1/user"');
     expect(edge).toContain("account_status");
