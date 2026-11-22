@@ -15,7 +15,7 @@ const allowedOrigins = new Set([
 ]);
 const identityRegex = /^[A-Za-z0-9_-]{1,180}$/;
 const requestRegex = /^[A-Za-z0-9_-]{16,120}$/;
-const statuses = new Set(["Present", "Left", "Temporarily Away", "Excused", "Recused"]);
+const statuses = new Set(["Not Joined", "Present", "Left", "Temporarily Away", "Excused", "Recused"]);
 function headers(req: Request): Headers {
   const out = new Headers({ "Content-Type": "application/json", "Cache-Control": "no-store", Vary: "Origin" });
   const origin = req.headers.get("Origin");
