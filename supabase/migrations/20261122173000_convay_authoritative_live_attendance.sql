@@ -239,9 +239,14 @@ begin
     raise exception 'Meeting unavailable' using errcode='P0002';
   end if;
   v_actual_mid:=coalesce(nullif(v_meeting.payload->>'meeting_id',''),v_meeting.record_id);
-  if lower(coalesce(v_meeting.payload->>'approval_status','')) not in ('in progress','paused','on break')
-     or lower(coalesce(v_meeting.payload->>'status','')) in ('cancelled','canceled','rejected','completed','ended','archived','draft')
-     or lower(coalesce(v_meeting.payload->>'workflow_status','')) in ('cancelled','canceled','rejected','completed','ended','archived','draft') then
+  -- Session state establishes live activity; approval may still be
+  -- "Approved". Any contradictory forbidden lifecycle alias fails closed.
+  if lower(coalesce(v_meeting.payload->>'approval_status','')) in
+      ('draft','cancelled','canceled','rejected','completed','ended','archived')
+     or lower(coalesce(v_meeting.payload->>'status','')) in
+      ('draft','cancelled','canceled','rejected','completed','ended','archived')
+     or lower(coalesce(v_meeting.payload->>'workflow_status','')) in
+      ('draft','cancelled','canceled','rejected','completed','ended','archived') then
     raise exception 'Meeting is not in an active state' using errcode='23514';
   end if;
   select count(*) into v_session_count from public.convay_entity_records s
