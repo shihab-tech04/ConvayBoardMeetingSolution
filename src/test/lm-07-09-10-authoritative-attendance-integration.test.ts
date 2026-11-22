@@ -68,7 +68,7 @@ describe("LM-07/09/10 authoritative online attendance gate", () => {
   it("never includes client-supplied actor in authenticated readback", async () => {
     const seen: string[] = [];
     vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async (_path, init) => {
-      seen.push(String(init.body));
+      seen.push(String(init?.body));
       return reply(initial);
     });
     await expect(readLiveAttendance("MTG-1", "actor-1")).resolves.toMatchObject(initial);
@@ -81,7 +81,7 @@ describe("LM-07/09/10 authoritative online attendance gate", () => {
     const calls: Record<string, unknown>[] = [];
     let writes = 0;
     vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async (_path, init) => {
-      const request = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
       calls.push(request);
       if (request.action === "commit") {
         writes++;
