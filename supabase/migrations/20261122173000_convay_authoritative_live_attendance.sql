@@ -70,7 +70,7 @@ begin
     or p_participant_id !~ '^[A-Za-z0-9_-]{1,180}$'
     or p_request_id !~ '^[A-Za-z0-9_-]{16,120}$'
     or p_expected_revision is null or p_expected_revision < 0
-    or p_next_status not in ('Present','Temporarily Away','Left','Excused','Recused')
+    or p_next_status not in ('Not Joined','Present','Temporarily Away','Left','Excused','Recused')
     or p_attendance_mode not in ('Online','In-Person') then
     raise exception 'Invalid attendance command' using errcode='22023';
   end if;
@@ -137,7 +137,7 @@ begin
     if p_attendance_mode='In-Person' and not (v_actor_can_attend and (v_actor_is_leader or v_account_role='super_admin')) then
       raise exception 'Manual attendance requires authorized meeting leadership' using errcode='42501';
     end if;
-    if p_next_status in ('Recused','Excused') and not (v_actor_can_attend and (v_actor_is_leader or v_account_role='super_admin')) then
+    if p_next_status in ('Not Joined','Recused','Excused') and not (v_actor_can_attend and (v_actor_is_leader or v_account_role='super_admin')) then
       raise exception 'Only meeting leadership may set formal absence or recusal' using errcode='42501';
     end if;
   elsif not (v_actor_can_attend and (v_actor_is_leader or v_account_role='super_admin')) then
