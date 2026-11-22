@@ -974,6 +974,43 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   // ── Attendance (uses canonical participant links) ──────────────────────────
   const setAttendance = useCallback((id: string, status: AttendanceStatus) => {
+    if (isOnlineMeeting) {
+      // The online path must never optimistically change quorum or attendee
+      // state; it uses the verified Edge + SQL + durable readback contract.
+      if (!meetingId || pendingAttendance.current.has(id)) return;
+      pendingAttendance.current.add(id);
+      void (async () => {
+        try {
+          const mode = id === currentUser.id ? "Online"
+            : meeting?.mode === "Hybrid" ? "In-Person" : "Online";
+          if (status === "Not Joined") {
+            const saved = await readLiveAttendance(meetingId, id);
+            if (saved.attendanceRevision === 0) {
+              applyVerifiedAttendance(saved);
+              return;
+            }
+          }
+          const saved = await commitLiveAttendance(meetingId, id, status, mode);
+          applyVerifiedAttendance(saved);
+          void refreshAttendanceRec?.().catch(() => undefined);
+          void refreshQuorumEvents?.().catch(() => undefined);
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Attendance was not confirmed by the server.");
+          // On failure we still reconcile from SQL; no stale browser state may
+          // unlock a quorum or an ineligible vote.
+          try {
+            const saved = await readLiveAttendance(meetingId, id);
+            applyVerifiedAttendance(saved);
+          } catch {
+            setServerQuorum(null);
+          }
+        } finally {
+          pendingAttendance.current.delete(id);
+        }
+      })();
+      return;
+    }
+    // Preserve existing in-person/offline attendance behaviour unchanged.
     setAttendanceMap(prev => ({ ...prev, [id]: status }));
     const participant = participants.find(p => p.id === id);
     const link        = meetingLinks.find(l => l.user_id === id);
@@ -1027,7 +1064,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent]);
+  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent, currentUser.id, applyVerifiedAttendance, refreshAttendanceRec, refreshQuorumEvents]);
 
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
