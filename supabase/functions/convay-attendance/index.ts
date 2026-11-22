@@ -172,7 +172,10 @@ Deno.serve(async req => {
     if (!session || !["active", "paused"].includes(session.session_status ?? "")) {
       return reply(req, 409, { error: "This meeting is not in an active session." });
     }
-    const serverMode = meeting.meeting_mode ?? meeting.mode;
+    if (meeting.mode && meeting.meeting_mode && meeting.mode !== meeting.meeting_mode) {
+      return reply(req, 409, { error: "Saved meeting mode is inconsistent. Refresh the meeting." });
+    }
+    const serverMode = meeting.mode ?? meeting.meeting_mode;
     const onlineMode = serverMode === "Hybrid" || serverMode === "Virtual";
     if (onlineMode && actorIsSelf && (action === "commit" && attendanceMode === "Online")) {
       const decision = checkOnlineAdmission({
