@@ -335,13 +335,50 @@ begin
         when coalesce(a.payload->>'check_in_time','')<>'' then 'Present'
         else 'Not Joined' end) in ('Present','Temporarily Away');
 
+  -- Resolve the same active rule model as the approved governance registry:
+  -- meeting-specific > governance body > legacy display-name matching.
   select q.payload into v_rule from public.convay_entity_records q
   where q.entity_key='bms.quorumrules'
-    and q.payload->>'body_name'=v_meeting.payload->>'committee'
     and q.payload->>'status'='Active'
+    and (
+      q.payload->>'meeting_id'=v_actual_mid
+      or (
+        nullif(q.payload->>'meeting_id','') is null
+        and (
+          q.payload->>'governance_body_id'=v_meeting.payload->>'committee'
+          or q.payload->>'body_name'=v_meeting.payload->>'committee'
+          or exists (
+            select 1 from public.convay_entity_records g
+            where g.entity_key='bms.governanceBodies'
+              and q.payload->>'governance_body_id' in (g.record_id,g.payload->>'body_id')
+              and v_meeting.payload->>'committee' in
+                (g.record_id,g.payload->>'body_id',g.payload->>'body_name')
+          )
+        )
+      )
+    )
+  order by (q.payload->>'meeting_id'=v_actual_mid) desc, q.record_id
   limit 1;
-  v_min:=coalesce(nullif(pg_catalog.regexp_replace(coalesce(v_rule->>'minimum_members',''),'[^0-9]','','g'),'')::integer,0);
-  v_percent:=coalesce(nullif(pg_catalog.regexp_replace(coalesce(v_rule->>'quorum_percent',''),'[^0-9.]','','g'),'')::numeric,0);
+  v_min:=coalesce(
+    nullif(v_rule->>'minimum_members_count','')::integer,
+    nullif(pg_catalog.regexp_replace(coalesce(v_rule->>'minimum_members',''),'[^0-9]','','g'),'')::integer,0);
+  v_percent:=coalesce(
+    nullif(v_rule->>'minimum_percentage','')::numeric,
+    nullif(pg_catalog.regexp_replace(coalesce(v_rule->>'quorum_percent',''),'[^0-9.]','','g'),'')::numeric,0);
+  if v_min<0 or v_min>100000 or v_percent<0 or v_percent>100 then
+    raise exception 'Invalid configured quorum limits' using errcode='23514';
+  end if;
+  -- A newer role-based rule must never silently fall back to a weaker legacy
+  -- threshold if required role IDs cannot be resolved to persisted link roles.
+  if v_rule->>'rule_type'='role_based'
+    and pg_catalog.jsonb_typeof(v_rule->'required_role_ids')='array'
+    and pg_catalog.jsonb_array_length(v_rule->'required_role_ids')>0 then
+    v_required_roles_met:=false;
+  end if;
+  if v_rule->>'count_virtual_attendance'='false'
+     and v_mode='Virtual' then
+    v_required_roles_met:=false;
+  end if;
   if v_percent<0 or v_percent>100 then
     raise exception 'Invalid configured quorum percentage' using errcode='23514';
   end if;
