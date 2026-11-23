@@ -455,7 +455,7 @@ export function SubscribersPage() {
                     options={[{value:"member",label:"Company member"},
                       {value:"tenant_admin",label:"Company Super Admin"}]}/>
                   <Button variant="secondary" size="sm"
-                    disabled={companyWorking||companyLoading||!/^\\S+@\\S+\\.\\S+$/.test(memberEmail.trim())}
+                    disabled={companyWorking||companyLoading||!/^\S+@\S+\.\S+$/.test(memberEmail.trim())}
                     onClick={()=>setPendingMembership({action:"enroll",tenantId:companyProfile.company.id,
                       email:memberEmail.trim(),role:memberRole,requestId:memberRequestId})}>
                     Assign verified account
