@@ -5,6 +5,8 @@ import type { AppDispatch } from "../store/store";
 import { useRouteNav } from "./useRouteNav";
 import { useUIState } from "./useUI";
 import { getVisibleNav } from "../data/navigation";
+import { mayVisitPath } from "../services/supabase/convayAccess";
+import { firstPermittedLandingPath } from "../layouts/permissionAwareLanding";
 import {
   toggleSecNavState,
   setMobileDrawerOpen,
@@ -18,7 +20,9 @@ export function useNavigation() {
   const { isDesktop } = useUIState();
 
   const handleLogoClick = useCallback(() => {
-    startTransition(() => navigate("/home/overview"));
+    const destination = mayVisitPath("/home/overview")
+      ? "/home/overview" : firstPermittedLandingPath(getVisibleNav()) ?? "/home/overview";
+    startTransition(() => navigate(destination));
     dispatch(setMobileDrawerOpen(false));
   }, [navigate, dispatch]);
 
