@@ -5,6 +5,7 @@ import type { RootState } from "./store/store";
 import type { ReactNode } from "react";
 import { AppRoot } from "./layouts/AppRoot";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { SubscribersPage } from "./pages/subscribers/SubscribersPage";
 
 // ─── Static page imports (no lazy — dynamic import() fails in Make proxy) ────
 
@@ -121,6 +122,8 @@ export const router = createBrowserRouter([
       { path: "governance-org",     Component: PlaceholderPage },
       { path: "archive-reports",    Component: PlaceholderPage },
       { path: "administration",     Component: PlaceholderPage },
+      { path: "subscribers",        Component: PlaceholderPage },
+      { path: "subscribers/overview", element: <AdminOnly><SubscribersPage /></AdminOnly> },
 
       // ── Home ──────────────────────────────────────────────────────────────
       { path: "home/overview",    Component: DashboardPage },
