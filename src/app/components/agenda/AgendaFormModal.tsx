@@ -628,11 +628,17 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
     if (swi < 0 || swi >= sibs.length) return;
     setSaving(true);
     try {
-      await convayAuth.applyBatch([
+      const firstRevision = agendaReg.getRevision?.(id);
+      const secondRevision = agendaReg.getRevision?.(sibs[swi].id);
+      if (!Number.isSafeInteger(firstRevision) || !Number.isSafeInteger(secondRevision)
+        || (firstRevision ?? 0) < 1 || (secondRevision ?? 0) < 1) {
+        throw new Error("Agenda order is stale. Refresh before reordering.");
+      }
+      await convayAuth.applyAgendaBatch([
         { entity_key: "bms.agenda", action: "update", record_id: id,
-          payload: { display_order: swi + 1 } },
+          expected_revision: firstRevision!, payload: { display_order: swi + 1 } },
         { entity_key: "bms.agenda", action: "update", record_id: sibs[swi].id,
-          payload: { display_order: idx + 1 } },
+          expected_revision: secondRevision!, payload: { display_order: idx + 1 } },
       ]);
       await agendaReg.refresh?.();
     } catch (error) {
