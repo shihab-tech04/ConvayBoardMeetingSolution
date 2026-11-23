@@ -23,6 +23,8 @@ export interface MeetingPreJoinPanelProps {
     venue?: string;
   };
   initialRole: PreJoinRole;
+  /** Media publish allowance mirrors the trusted issuer's saved meeting role. */
+  publisherAllowed?: boolean;
   allowedRoles?: PreJoinRole[];
   onJoin: (options: { micOn: boolean; camOn: boolean; role: PreJoinRole }) => void;
   onBack: () => void;
@@ -65,10 +67,17 @@ function formatTime12h(raw?: string): string {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function MeetingPreJoinPanel({
-  meeting, initialRole, onJoin, onBack,
+  meeting, initialRole, publisherAllowed, onJoin, onBack,
 }: MeetingPreJoinPanelProps) {
-  const [micOn,   setMicOn]   = useState(true);
-  const [camOn,   setCamOn]   = useState(true);
+  const canPublishMedia = publisherAllowed ?? (initialRole !== "Observer" && initialRole !== "Guest");
+  const [micOn,   setMicOn]   = useState(canPublishMedia);
+  const [camOn,   setCamOn]   = useState(canPublishMedia);
+  useEffect(() => {
+    if (!canPublishMedia) {
+      setMicOn(false);
+      setCamOn(false);
+    }
+  }, [canPublishMedia]);
   const [permErr, setPermErr] = useState("");
   const [cameraPreviewActive, setCameraPreviewActive] = useState(false);
   const videoRef  = useRef<HTMLVideoElement>(null);
@@ -76,7 +85,7 @@ export function MeetingPreJoinPanel({
 
   useEffect(() => {
     let active = true;
-    if (!camOn) {
+    if (!camOn || !canPublishMedia) {
       setCameraPreviewActive(false);
       streamRef.current?.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -115,7 +124,7 @@ export function MeetingPreJoinPanel({
       streamRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
     };
-  }, [camOn]);
+  }, [camOn, canPublishMedia]);
 
   const dateStr = meeting?.meeting_date
     ? new Date(meeting.meeting_date + "T12:00:00").toLocaleDateString("en-GB", {
@@ -182,8 +191,12 @@ export function MeetingPreJoinPanel({
                 </div>
               )}
 
+              {/* Subscribe-only visitors must never request media capture. */}
+              {!canPublishMedia && <p role="status" className="meeting-prejoin__alert-text">
+                View-only meeting access — microphone, camera and screen sharing are unavailable for this role.
+              </p>}
               {/* Device controls */}
-              <div className="meeting-prejoin__device-controls" role="group" aria-label="Device controls">
+              {canPublishMedia && <div className="meeting-prejoin__device-controls" role="group" aria-label="Device controls">
                 <button
                   className={`meeting-prejoin__dev-btn meeting-prejoin__dev-btn--${micOn ? "on" : "off"}`}
                   onClick={() => setMicOn(v => !v)}
@@ -200,7 +213,7 @@ export function MeetingPreJoinPanel({
                 >
                   {camOn ? <Video size={19} aria-hidden="true" /> : <VideoOff size={19} aria-hidden="true" />}
                 </button>
-              </div>
+              </div>}
 
             </div>
 
@@ -317,10 +330,14 @@ export function MeetingPreJoinPanel({
 
             {/* Actions — pushed to bottom */}
             <div className="meeting-prejoin__actions">
-              <PrimaryButton fullWidth size="lg" onClick={() => onJoin({ micOn, camOn, role: initialRole })}>
+              <PrimaryButton fullWidth size="lg" onClick={() => onJoin({
+                micOn: canPublishMedia && micOn,
+                camOn: canPublishMedia && camOn,
+                role: initialRole,
+              })}>
                 Join Meeting
               </PrimaryButton>
-              {!devicesAlreadyOff && (
+              {canPublishMedia && !devicesAlreadyOff && (
                 <SecondaryButton fullWidth size="lg" onClick={() => onJoin({ micOn: false, camOn: false, role: initialRole })}>
                   Join with devices off
                 </SecondaryButton>
