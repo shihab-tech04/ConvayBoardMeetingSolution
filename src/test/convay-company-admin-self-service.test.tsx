@@ -19,6 +19,12 @@ vi.mock("../app/services/saas/companyDirectory",()=>({
   revokeCompanyMember:(...args:unknown[])=>hooks.revoke(...args),
 }));
 vi.mock("sonner",()=>({toast:{success:hooks.toast}}));
+vi.mock("../app/pages/subscribers/MeetingTemplateMarketplace",()=>({
+  MeetingTemplateMarketplace:({companyOnly,initialCompanyId}:{companyOnly:boolean;initialCompanyId:string})=>
+    <div data-testid="company-template-editor" data-scope={initialCompanyId}>
+      {companyOnly?"Company-only template editor":"Global template editor"}
+    </div>,
+}));
 vi.mock("../app/components/buttons/Button",()=>({
   Button:({children,loading:_loading,variant:_variant,size:_size,...props}:React.ButtonHTMLAttributes<HTMLButtonElement>
     &{loading?:boolean;variant?:string;size?:string})=>
@@ -106,6 +112,15 @@ describe("Company Super Admin self-service, production SQL only",()=>{
    fireEvent.click(within(dialog).getByRole("button",{name:"Revoke membership"}));
    await waitFor(()=>expect(hooks.revoke).toHaveBeenCalledWith(
      tenantId,memberId,expect.stringMatching(/^[a-f0-9-]{36}$/i)));
+ });
+ it("reuses the SQL template wizard only with the currently verified company scope",async()=>{
+   render(<CompanyAdminWorkspacePage/>);
+   await screen.findByText("Member Alpha");
+   expect(screen.queryByTestId("company-template-editor")).not.toBeInTheDocument();
+   fireEvent.click(screen.getByRole("button",{name:"Manage meeting templates"}));
+   const editor=screen.getByTestId("company-template-editor");
+   expect(editor).toHaveAttribute("data-scope",tenantId);
+   expect(editor).toHaveTextContent("Company-only template editor");
  });
  it("keeps Platform Super Admin separation and SQL authorization on route and navigation",()=>{
    const nav=readFileSync(resolve(process.cwd(),"src/app/data/navigation.ts"),"utf8");
