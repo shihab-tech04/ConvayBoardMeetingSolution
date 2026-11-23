@@ -18,6 +18,23 @@ export function parseOptionalMeetingAgendas(raw: unknown): SelectedAgendaEntry[]
   }
 }
 
+/** Single readiness policy shared by picker, review and authoritative save validation.
+ * Existing approved agendas may predate the optional readiness marker; a
+ * missing marker is derived from approval plus all active child approvals.
+ * An explicit non-ready marker always blocks scheduling. */
+export function isAgendaMeetingReady(
+  agenda: AgendaSubmission,
+  allAgendas: readonly AgendaSubmission[],
+): boolean {
+  if (agenda.archived_at || agenda.parent_agenda_id != null || agenda.approval_status !== "Approved") return false;
+  const readiness = (agenda as { meeting_readiness?: string }).meeting_readiness;
+  if (readiness && readiness !== "Meeting Ready") return false;
+  const id = agenda.agenda_id ?? agenda.id;
+  return allAgendas
+    .filter(item => item.parent_agenda_id === id && !item.archived_at)
+    .every(item => item.approval_status === "Approved");
+}
+
 /** Empty selection is valid; a stale, draft, archived or non-ready selection isn't. */
 export function validateOptionalMeetingAgendas(
   selected: readonly SelectedAgendaEntry[] | null,
@@ -38,8 +55,7 @@ export function validateOptionalMeetingAgendas(
     const agenda = allAgendas.find(a => (a.agenda_id ?? a.id) === id);
     if (!agenda || agenda.archived_at || agenda.parent_agenda_id != null) {
       errors.push("A selected agenda is missing, archived or not a parent agenda. Remove it to continue without an agenda.");
-    } else if (agenda.approval_status !== "Approved" ||
-      (agenda as { meeting_readiness?: string }).meeting_readiness !== "Meeting Ready") {
+    } else if (!isAgendaMeetingReady(agenda, allAgendas)) {
       errors.push(`Agenda "${agenda.agenda_title || id}" must be Approved and Meeting Ready, or removed to continue without an agenda.`);
     }
   }
