@@ -347,7 +347,7 @@ export function MeetingPreJoinPanel({
             <p className="meeting-prejoin__device-note">Camera and microphone are optional. You can join with both turned off.</p>
             {/* Actions — pushed to bottom */}
             <div className="meeting-prejoin__actions">
-              {joinBlockedReason && onForceStart && <PrimaryButton fullWidth size="lg" disabled={forceStartBusy} onClick={onForceStart}>
+              {joinBlockedReason && !meetingClosed && onForceStart && <PrimaryButton fullWidth size="lg" disabled={forceStartBusy} onClick={onForceStart}>
                 {forceStartBusy ? "Starting LiveKit meeting…" : startLabel}
               </PrimaryButton>}
               <PrimaryButton fullWidth size="lg" disabled={Boolean(joinBlockedReason)} onClick={() => onJoin({
