@@ -99,7 +99,7 @@ describe("MT-CONFIG-01 versioned meeting template SQL ↔ application contract",
   it("supports explicit published starter copying without automatic company provisioning",()=>{
     expect(sql).toContain("p_action='copy'");
     expect(sql).toContain("v_source.published_revision");
-    expect(sql).toContain("v_source.tenant_id");
+    expect(sql).toContain("s.tenant_id is null");
     expect(sql).toContain("Copying a starter requires a tenant");
     expect(sql).toContain("Only published Convay starters are visible");
   });
