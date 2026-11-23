@@ -9,6 +9,7 @@ export interface OnlineMeeting {
   meeting_mode?: string;
   approval_status?: string;
   status?: string;
+  workflow_status?: string;
   chairperson?: string;
   secretary?: string;
   organizer?: string;
@@ -41,7 +42,7 @@ export function checkOnlineAdmission(ctx: AdmissionContext): AdmissionDecision {
   // override a Physical meeting stored in the other field.
   const modes = [ctx.meeting.mode, ctx.meeting.meeting_mode]
     .filter((value): value is string => typeof value === "string" && value.trim() !== "");
-  if (!modes.length || modes.some(mode => mode !== "Virtual" && mode !== "Hybrid")) {
+  if (!modes.length || new Set(modes).size !== 1 || modes.some(mode => mode !== "Virtual" && mode !== "Hybrid")) {
     return { allowed: false, status: 409, error: "This meeting has no online room." };
   }
   if (!ctx.isSuperAdmin && !ctx.permissions.includes("mtg_join")) {
@@ -50,13 +51,18 @@ export function checkOnlineAdmission(ctx: AdmissionContext): AdmissionDecision {
   // Inspect both lifecycle aliases rather than trusting the first field.
   // Conflicting Draft/Cancelled/Ended values cannot authorize a room.
   const blockedStates = new Set(["draft", "cancelled", "canceled", "rejected", "completed", "ended", "archived"]);
-  const states = [ctx.meeting.approval_status, ctx.meeting.status]
+  const states = [ctx.meeting.approval_status, ctx.meeting.status, ctx.meeting.workflow_status]
     .filter((value): value is string => typeof value === "string" && value.trim() !== "")
     .map(value => value.trim().toLowerCase());
   if (!states.length || states.some(state => blockedStates.has(state))) {
     return { allowed: false, status: 409, error: "This meeting cannot be joined at its current status." };
   }
   // A URL or scheduled meeting is not proof that the organizer has started it.
+  // Match the persisted session to this meeting; a foreign session cannot prove that it started.
+  const canonicalMeetingId = ctx.meeting.meeting_id ?? ctx.meeting.id;
+  if (ctx.session?.meeting_id && ctx.session.meeting_id !== canonicalMeetingId) {
+    return { allowed: false, status: 409, error: "The online session does not match this meeting." };
+  }
   const sessionState = ctx.session?.session_status;
   if (sessionState !== "active" && sessionState !== "paused") {
     return { allowed: false, status: 409, error: "The online meeting has not started or has ended." };
