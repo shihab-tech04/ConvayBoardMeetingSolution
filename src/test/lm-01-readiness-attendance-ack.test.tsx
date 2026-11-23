@@ -84,6 +84,17 @@ describe("LM-01/07 pre-meeting attendance ACK before Start Meeting", () => {
     expect(onStartMeeting).not.toHaveBeenCalled();
   });
 
+  it("restores Start Meeting after a failed start command so the user can retry", async () => {
+    const onStartMeeting = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    renderReady(onStartMeeting);
+    fireEvent.click(screen.getByRole("button", { name: "Start Meeting" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/not started/i));
+    expect(screen.getByRole("button", { name: "Start Meeting" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Start Meeting" }));
+    await waitFor(() => expect(onStartMeeting).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: /Starting meeting/i })).toHaveProperty("disabled", true);
+  });
+
   it("does not advance a meeting if the screen unmounts before the write ACK", async () => {
     let accept!: (v: boolean) => void;
     store.add.mockImplementation(() => new Promise<boolean>(resolve => { accept = resolve; }));
