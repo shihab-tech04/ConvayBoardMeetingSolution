@@ -139,7 +139,10 @@ export function createEntityRegistry<T extends { id: string }>(
       try {
         const result = await convayAuth.registry<T>(storageKey, "list");
         if (!isCurrent()) return; // Old account's readback is obsolete.
-        state.items = result.records.map(x => x.payload);
+        // Preserve the authoritative SQL modified time for Agenda Management.
+        // The main registry record otherwise contains only client-authored fields.
+        state.items = result.records.map(x => storageKey === "bms.agenda" && x.updated_at
+          ? { ...x.payload, updated_at: x.updated_at } : x.payload);
         state.versions = new Map(result.records.map(x => [x.payload.id, x.revision]));
         state.loaded = true;
         state.error = null;
