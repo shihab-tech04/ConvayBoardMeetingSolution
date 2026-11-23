@@ -29,8 +29,7 @@ import { KpiRow } from "../../components/cards/KpiRow";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { collectAgendaRegisterDescendants, collectAgendaRegisterAncestors } from "./agendaRegisterDescendants";
 import { buildAgendaPreviewOutline } from "./agendaPreviewOutline";
-import { isAgendaOwnedBy, resolveAgendaOwnerUserId } from "./agendaOwnerIdentity";
-import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
+ import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
 import { sanitizeAgendaHtml } from "../../utils/sanitizeAgendaHtml";
 import { convayAuth } from "../../services/supabase/convayAuth";
 
@@ -80,9 +79,18 @@ function computeCascadeStatus(
 ): string {
   const descendants = getDescendants(parentId, allItems);
   const active = descendants.filter(d => (overrides.get(d.id) ?? d.approval_status) !== "Archived");
-  if (active.length === 0) return "Approved";
+  // A child review must never silently approve its parent. Parent approval
+  // requires a separate, explicit approver action and audit event.
+  const parentStatus = allItems.find(a => a.id === parentId)?.approval_status ?? "Draft";
+  // Child activity cannot submit a Draft/Reopened/Revision Requested parent
+  // on behalf of its author. The parent must be explicitly submitted first.
+  if (["Draft", "Incomplete", "Reopened", "Revision Requested", "Rejected"].includes(parentStatus)) {
+    return parentStatus;
+  }
+  const alreadyApproved = parentStatus === "Approved";
+  if (active.length === 0) return alreadyApproved ? "Approved" : "Pending Approval";
   const allApproved = active.every(d => (overrides.get(d.id) ?? d.approval_status) === "Approved");
-  if (allApproved) return "Approved";
+  if (allApproved) return alreadyApproved ? "Approved" : "Pending Approval";
   const anyApproved = active.some(d => (overrides.get(d.id) ?? d.approval_status) === "Approved");
   return anyApproved ? "Partially Approved" : "Pending Approval";
 }
@@ -251,8 +259,7 @@ export function Register4ListPage() {
   );
 
   // Ownership must use stable account identifiers, never a non-unique display name.
-  const currentOwnerUserId = resolveAgendaOwnerUserId(bmsUserReg.items, currentUser);
-
+ 
   function resolveUserName(userId: string): string {
     if (!userId) return "";
     return bmsUserReg.items.find(u => u.id === userId)?.name ?? userId;
@@ -276,15 +283,17 @@ export function Register4ListPage() {
       submit:           "agd_submit",
       approve:          "agd_approve",
       reject:           "agd_approve",
-      request_revision: "agd_approve",
+      request_revision: "agd_review",
       reopen:           "agd_approve",
       archive:          "agd_approve",
+      restore:          "agd_approve",
       view_history:     "agd_view",
       create:           "agd_submit",
       edit:             "agd_submit",
     };
     const permId = permMap[action];
     if (permId && myPermissions.includes(permId)) return true;
+    if (action === "request_revision" && myPermissions.includes("agd_approve")) return true;
     // Super Admin / Board Secretary fallback (same as resolveAgendaActions)
     return myRole === "Super Admin";
   }
@@ -373,9 +382,9 @@ export function Register4ListPage() {
     if (!item) return;
     // Retain the established owner-submit path, but resolve ownership by stable BMS ID.
     // All persisted updates remain subject to authoritative server/RLS permission checks.
-    const permitted = action === "submit"
-      ? (hasPermission("submit") || isAgendaOwnedBy(item.owner_user_id, currentOwnerUserId))
-      : hasPermission(action);
+    // SQL requires agd_submit even for the record owner; do not offer an
+    // action the server will inevitably deny.
+    const permitted = hasPermission(action);
     if (!permitted) {
       toast.error(`You don't have permission to ${action.replace(/_/g, " ")} agendas.`);
       return;
@@ -421,7 +430,7 @@ export function Register4ListPage() {
     setSubmitSaving(true);
     try {
       if (action === "submit") {
-        const permitted = hasPermission("submit") || isAgendaOwnedBy(item.owner_user_id, currentOwnerUserId);
+        const permitted = hasPermission("submit");
         await submitAgendaWithHistory(
           item, registry, { name: currentUser.name, role: currentUser.designation },
           note, permitted,
@@ -456,7 +465,10 @@ export function Register4ListPage() {
           expected_revision: requireAgendaRevision(agendaId),
           payload: makePatch(item, next, previous, action) });
         const snapshot = registry.items.map(a => a.id === agendaId ? { ...a, approval_status: next } : a);
-        cascadeStatusUp(agendaId, next, snapshot, (parentId, newStatus, oldStatus) => {
+        // A standalone reviewer may request revisions without gaining
+        // approver authority to update parent status/history. Parent readiness
+        // is still checked against every child in meeting selection and SQL.
+        if (action !== "request_revision" || hasPermission("approve")) cascadeStatusUp(agendaId, next, snapshot, (parentId, newStatus, oldStatus) => {
           const parent = registry.items.find(a => a.id === parentId);
           if (!parent) throw new Error("The agenda hierarchy changed. Refresh before reviewing.");
           ops.push({ entity_key: "bms.agenda", action: "update", record_id: parentId,
@@ -510,6 +522,12 @@ export function Register4ListPage() {
               payload: {
                 approval_status: "Archived", archived_at: at,
                 archived_by: currentUser.name, meeting_readiness: "Archived",
+                approval_history: [...(row.approval_history ?? []), {
+                  status: "Archived", prev_status: row.approval_status ?? "Draft",
+                  action: "archive", by: currentUser.name,
+                  actor_role: currentUser.designation, at,
+                  note: "Archived with hierarchy", reason: "",
+                }],
               },
             })));
             await registry.refresh?.();
@@ -517,6 +535,49 @@ export function Register4ListPage() {
             toast.success(`Archived ${members.length} agenda item(s).`);
           } catch (error) {
             toast.error(error instanceof Error ? error.message : "Archive was not saved.");
+            await registry.refresh?.().catch(() => undefined);
+          }
+        })();
+      },
+    });
+  }
+
+  function restoreAgenda(id: string) {
+    const item = registry.items.find(a => a.id === id);
+    if (!item || item.approval_status !== "Archived" || !hasPermission("restore")) {
+      toast.error("Only an authorized approver may restore an archived agenda.");
+      return;
+    }
+    const members = [item, ...getDescendants(id, registry.items)]
+      .filter(row => row.approval_status === "Archived");
+    setConfirmDialog({
+      title: "Restore Agenda",
+      message: `Restore "${item.agenda_title}" and ${members.length - 1} archived descendant(s)? Restored agendas return to Draft and must be submitted and approved again. Existing approval history is preserved.`,
+      confirmLabel: "Restore",
+      danger: false,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        void (async () => {
+          try {
+            const at = new Date().toISOString();
+            await convayAuth.applyAgendaBatch(members.map(row => ({
+              entity_key: "bms.agenda" as const, action: "update" as const,
+              record_id: row.id, expected_revision: requireAgendaRevision(row.id),
+              payload: {
+                approval_status: "Draft", archived_at: null, archived_by: null,
+                meeting_readiness: "In Review",
+                approval_history: [...(row.approval_history ?? []), {
+                  status: "Draft", prev_status: "Archived", action: "restore",
+                  by: currentUser.name, actor_role: currentUser.designation, at,
+                  note: "Restored for fresh review", reason: "",
+                }],
+              },
+            })));
+            await registry.refresh?.();
+            closeDrawer();
+            toast.success(`Restored ${members.length} agenda item(s) as Draft.`);
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Restore was not saved.");
             await registry.refresh?.().catch(() => undefined);
           }
         })();
@@ -1058,9 +1119,8 @@ export function Register4ListPage() {
   const drawerFooterActions: ReactNode = (() => {
     if (!drawerItem) return null;
     const status   = drawerItem.approval_status ?? "Draft";
-    const isOwner  = isAgendaOwnedBy(drawerItem.owner_user_id, currentOwnerUserId);
-    const canEdit  = (isOwner || hasPermission("edit")) && ["Draft", "Revision Requested", "Reopened"].includes(status);
-    const canSubmit = SUBMITTABLE_STATUSES.has(status) && (isOwner || hasPermission("submit"));
+    const canEdit  = hasPermission("edit") && ["Draft", "Revision Requested", "Reopened"].includes(status);
+    const canSubmit = SUBMITTABLE_STATUSES.has(status) && hasPermission("submit");
 
     if (drawerChildId) {
       return (
@@ -1106,11 +1166,10 @@ export function Register4ListPage() {
   const drawerOverflowActions = (() => {
     if (!drawerItem) return undefined;
     const status   = drawerItem.approval_status ?? "Draft";
-    const isOwner  = isAgendaOwnedBy(drawerItem.owner_user_id, currentOwnerUserId);
     const items: Array<{ label: string; onClick: () => void; danger?: boolean }> = [];
     const id = drawerChildId ?? drawerItem.id;
 
-    if (SUBMITTABLE_STATUSES.has(status) && (isOwner || hasPermission("submit")))
+    if (SUBMITTABLE_STATUSES.has(status) && hasPermission("submit"))
       items.push({ label: "Submit for Approval", onClick: () => openApprovalDialog(id, "submit") });
     if (APPROVAL_QUEUE_STATUSES.has(status) && hasPermission("approve"))
       items.push({ label: "Approve", onClick: () => openApprovalDialog(id, "approve") });
@@ -1121,7 +1180,9 @@ export function Register4ListPage() {
     if (status === "Approved" && hasPermission("reopen"))
       items.push({ label: "Reopen", onClick: () => openApprovalDialog(id, "reopen") });
     if (!drawerChildId) {
-      if (hasPermission("archive"))
+      if (status === "Archived" && hasPermission("restore"))
+        items.push({ label: "Restore", onClick: () => restoreAgenda(drawerItem.id) });
+      else if (hasPermission("archive"))
         items.push({ label: "Archive", onClick: () => archiveAgenda(drawerItem.id), danger: true });
     }
 
