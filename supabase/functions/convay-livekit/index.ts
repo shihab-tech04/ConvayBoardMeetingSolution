@@ -121,7 +121,15 @@ Deno.serve(async req => {
     if (!url || !/^wss:\/\/[a-z0-9.-]+(?::\d+)?\/?$/i.test(url) || !key || !secret) {
       return response(req, 503, { error: "Online meeting service is not yet configured." });
     }
-    const room = await opaqueId("room", meeting.id ?? meetingId);
+    // A recovered meeting must never reuse its ended LiveKit room. An ended
+    // participant's old provider token must not grant access to this new session.
+    if (session.reopen_started_at && (!session.id || !/^SES-[A-Za-z0-9_-]+-R[0-9]+$/.test(session.id))) {
+      return response(req, 409, { error: "Recovered meeting session identity is invalid." });
+    }
+    const roomIdentity = session.reopen_started_at
+      ? `${meeting.id ?? meetingId}:${session.id}`
+      : (meeting.id ?? meetingId);
+    const room = await opaqueId("room", roomIdentity);
     const roomService = new RoomServiceClient(url.replace(/^wss:/i, "https:"), key, secret);
     let liveRoom = (await roomService.listRooms([room])).find(item => item.name === room) ?? null;
     if (!liveRoom) {
