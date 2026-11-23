@@ -81,7 +81,13 @@ function computeCascadeStatus(
   const active = descendants.filter(d => (overrides.get(d.id) ?? d.approval_status) !== "Archived");
   // A child review must never silently approve its parent. Parent approval
   // requires a separate, explicit approver action and audit event.
-  const alreadyApproved = allItems.find(a => a.id === parentId)?.approval_status === "Approved";
+  const parentStatus = allItems.find(a => a.id === parentId)?.approval_status ?? "Draft";
+  // Child activity cannot submit a Draft/Reopened/Revision Requested parent
+  // on behalf of its author. The parent must be explicitly submitted first.
+  if (["Draft", "Incomplete", "Reopened", "Revision Requested", "Rejected"].includes(parentStatus)) {
+    return parentStatus;
+  }
+  const alreadyApproved = parentStatus === "Approved";
   if (active.length === 0) return alreadyApproved ? "Approved" : "Pending Approval";
   const allApproved = active.every(d => (overrides.get(d.id) ?? d.approval_status) === "Approved");
   if (allApproved) return alreadyApproved ? "Approved" : "Pending Approval";
