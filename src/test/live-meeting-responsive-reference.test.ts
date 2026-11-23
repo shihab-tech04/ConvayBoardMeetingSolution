@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 
 // This contract protects the approved desktop layout and the owner-supplied
 // mobile adaptation without replacing the current LiveKit/SQL meeting engine.
-const source = readFileSync(new URL("../app/pages/meetings/LiveMeetingWorkspace.tsx", import.meta.url), "utf8");
-const css = readFileSync(new URL("../styles/live-meeting-responsive.css", import.meta.url), "utf8");
+const source = readFileSync("src/app/pages/meetings/LiveMeetingWorkspace.tsx", "utf8");
+const css = readFileSync("src/styles/live-meeting-responsive.css", "utf8");
 
 describe("Live Meeting responsive reference adaptation", () => {
   it("keeps the current production meeting, LiveKit and quorum contracts", () => {
@@ -17,7 +17,7 @@ describe("Live Meeting responsive reference adaptation", () => {
   });
 
   it("loads a scoped responsive stylesheet without altering other product screens", () => {
-    expect(source).toContain('import "../../styles/live-meeting-responsive.css"');
+    expect(source).toContain('import "../../../styles/live-meeting-responsive.css"');
     expect(css).toContain(".convay-live-root");
     expect(css).not.toMatch(/(^|\n)\s*(body|html|button|input)\s*\{/);
     expect(source).toContain('className="convay-live-root"');
