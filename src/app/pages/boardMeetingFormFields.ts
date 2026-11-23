@@ -344,7 +344,7 @@ export const GOVERNANCE_BODY_FORM_FIELDS: FormField[] = [
   { key: "establishment_date",label: "Establishment Date",     type: "date" },
   { key: "status",            label: "Status",                 type: "select",   options: ["Active", "Inactive", "Suspended", "Dissolved"], defaultValue: "Active" },
   { key: "mandate",           label: "Mandate",                type: "textarea", span: true, rows: 4, placeholder: "Describe the purpose and mandate of this governance body" },
-  { key: "charter",           label: "Charter / Terms of Reference",type: "file",span: true, maxFiles: 1, maxSizeMB: 10, accept: [".pdf", ".doc", ".docx"] },
+  { key: "charter",           label: "Charter / Terms of Reference",type: "file",span: true, maxFiles: 1, maxSizeMB: 10, accept: [".pdf", ".doc", ".docx"], disabled: true, helper: "Secure charter upload is not connected yet. Save the governance body without an attachment; this field remains unavailable until authorized storage integration is verified." },
 ];
 
 // ─── Organization Unit form ───────────────────────────────────────────────────
