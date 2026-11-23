@@ -14,7 +14,7 @@ describe("GV-360 Organization unit audit and membership provenance", () => {
     expect(sql).toContain("BEFORE UPDATE OR DELETE ON convay_private.org_member_assignment_events");
     expect(sql).toContain("returning event_id into v_event_id");
     expect(sql).toContain("'audit_event_id','org-member-'||v_event_id::text");
-    expect(sql).toContain("from convay_private.org_member_assignment_receipts");
+    expect(sql.toLowerCase()).toContain("from convay_private.org_member_assignment_receipts");
     expect(sql).toContain("WHERE actor_id=v_actor AND request_id=p_request_id");
   });
   it("uses the signed-in server actor and restricts global history to authorized readers", () => {
