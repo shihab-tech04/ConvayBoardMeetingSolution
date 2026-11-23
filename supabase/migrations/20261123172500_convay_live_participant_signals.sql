@@ -49,19 +49,7 @@ begin
   v_metadata := coalesce(new.payload->'metadata','{}'::jsonb);
   if v_kind in ('hand_raise','reaction') then
     v_mid := new.payload->>'meeting_id';
-    if v_mid !~ '^[A-Za-z0-9_-]{1,180}  if v_kind='chat' then
-    v_metadata := v_metadata || jsonb_build_object('sender',v_name);
-  elsif v_kind='comment' then
-    v_metadata := v_metadata || jsonb_build_object('author',v_name);
-  end if;
-  new.payload := jsonb_set(
-    jsonb_set(new.payload,'{metadata}',v_metadata,true),
-    '{created_at}',to_jsonb(now()),true
-  );
-  return new;
-end
-$function$
- then
+    if v_mid !~ '^[A-Za-z0-9_-]{1,180}$' then
       raise exception 'Valid meeting identity required for live signals' using errcode='22023';
     end if;
     select count(*) into v_active_sessions from public.convay_entity_records s
