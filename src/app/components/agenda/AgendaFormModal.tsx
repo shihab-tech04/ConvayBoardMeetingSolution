@@ -573,46 +573,103 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Document link helpers ─────────────────────────────────────────────────
 
-  function linkDoc(docId: string, childAgendaId: string) {
-    if (linkReg.items.some(l => l.agenda_id === childAgendaId && l.document_id === docId)) return;
+  async function linkDoc(docId: string, childAgendaId: string) {
+    if (documentLinkBusy || linkReg.items.some(l => l.agenda_id === childAgendaId && l.document_id === docId)) return;
     const existing = linkReg.items.filter(l => l.agenda_id === childAgendaId);
     const lid = generateId("ADL", linkReg.items.map(l => l.id));
-    linkReg.add({
-      id: lid, agenda_id: childAgendaId, document_id: docId,
-      linked_at: new Date().toISOString(), linked_by: currentUser.name,
-      is_primary: existing.length === 0, display_order: existing.length + 1,
-    } as AgendaDocumentLink);
+    setDocumentLinkBusy(true);
+    try {
+      const saved = await linkReg.add({
+        id: lid, agenda_id: childAgendaId, document_id: docId,
+        linked_at: new Date().toISOString(), linked_by: currentUser.name,
+        is_primary: existing.length === 0, display_order: existing.length + 1,
+      } as AgendaDocumentLink);
+      if (saved !== true) throw new Error("Document link was not saved in SQL.");
+      await linkReg.refresh?.();
+      toast.success("Document linked.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to link document.");
+      await linkReg.refresh?.().catch(() => undefined);
+    } finally { setDocumentLinkBusy(false); }
   }
 
-  function unlinkDoc(docId: string, childAgendaId: string) {
-    const l = linkReg.items.find(x => x.agenda_id === childAgendaId && x.document_id === docId);
-    if (l) linkReg.remove(l.id);
+  async function unlinkDoc(docId: string, childAgendaId: string) {
+    if (documentLinkBusy) return;
+    const link = linkReg.items.find(x => x.agenda_id === childAgendaId && x.document_id === docId);
+    if (!link) return;
+    setDocumentLinkBusy(true);
+    try {
+      const removed = await linkReg.remove(link.id);
+      if (removed !== true) throw new Error("Document was not unlinked in SQL.");
+      await linkReg.refresh?.();
+      toast.success("Document unlinked.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to unlink document.");
+      await linkReg.refresh?.().catch(() => undefined);
+    } finally { setDocumentLinkBusy(false); }
   }
 
   function toggleDocLink(docId: string) {
     const cid = cf.id ?? pendingChildIdRef.current;
-    if (!cid) return;
+    if (!cid || documentLinkBusy) return;
     if (linkReg.items.some(l => l.agenda_id === cid && l.document_id === docId))
-      unlinkDoc(docId, cid);
+      void unlinkDoc(docId, cid);
     else
-      linkDoc(docId, cid);
+      void linkDoc(docId, cid);
   }
 
   // ── Child reorder / remove ────────────────────────────────────────────────
 
-  function moveChild(id: string, dir: "up" | "down") {
+  async function moveChild(id: string, dir: "up" | "down") {
+    if (saving) return;
     const sibs = [...children];
     const idx = sibs.findIndex(c => c.id === id);
     const swi = dir === "up" ? idx - 1 : idx + 1;
     if (swi < 0 || swi >= sibs.length) return;
-    agendaReg.update(id,         { display_order: swi + 1 } as never);
-    agendaReg.update(sibs[swi].id, { display_order: idx + 1 } as never);
+    setSaving(true);
+    try {
+      await convayAuth.applyBatch([
+        { entity_key: "bms.agenda", action: "update", record_id: id,
+          payload: { display_order: swi + 1 } },
+        { entity_key: "bms.agenda", action: "update", record_id: sibs[swi].id,
+          payload: { display_order: idx + 1 } },
+      ]);
+      await agendaReg.refresh?.();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Reorder was not saved.");
+      await agendaReg.refresh?.().catch(() => undefined);
+    } finally { setSaving(false); }
   }
 
-  function removeChild(id: string) {
-    linkReg.items.filter(l => l.agenda_id === id).forEach(l => linkReg.remove(l.id));
-    agendaReg.remove(id);
-    if (cf.id === id) { setCf({ ...EMPTY_CHILD }); setChildMode(false); setCDirty(false); }
+  async function removeChild(id: string) {
+    if (saving) return;
+    const child = agendaReg.items.find(a => a.id === id);
+    if (!child || !EDITABLE_STATUSES.has(child.approval_status)
+      || (savedParent && !EDITABLE_STATUSES.has(savedParent.approval_status))) {
+      toast.error("Only editable draft/reopened child agendas may be removed.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const linked = linkReg.items.filter(link => link.agenda_id === id);
+      const operations = [
+        ...linked.map(link => ({
+          entity_key: "bms.agendaDocumentLinks", action: "delete" as const,
+          record_id: link.id,
+        })),
+        { entity_key: "bms.agenda", action: "delete" as const, record_id: id },
+      ];
+      await convayAuth.applyBatch(operations);
+      await Promise.all([agendaReg.refresh?.(), linkReg.refresh?.()]);
+      if (cf.id === id) { setCf({ ...EMPTY_CHILD }); setChildMode(false); setCDirty(false); }
+      toast.success("Child agenda removed.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Child agenda was not removed.");
+      await Promise.all([
+        agendaReg.refresh?.().catch(() => undefined),
+        linkReg.refresh?.().catch(() => undefined),
+      ]);
+    } finally { setSaving(false); }
   }
 
   // ── Guard child dirty ─────────────────────────────────────────────────────
