@@ -27,6 +27,9 @@ export interface MeetingPreJoinPanelProps {
   publisherAllowed?: boolean;
   /** Never offer a join before the SQL live session can admit participants. */
   joinBlockedReason?: string;
+  /** Server-verified admin-only override; never offered to ordinary invitees. */
+  onForceStart?: () => void;
+  forceStartBusy?: boolean;
   allowedRoles?: PreJoinRole[];
   onJoin: (options: { micOn: boolean; camOn: boolean; role: PreJoinRole }) => void;
   onBack: () => void;
@@ -69,7 +72,7 @@ function formatTime12h(raw?: string): string {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function MeetingPreJoinPanel({
-  meeting, initialRole, publisherAllowed, joinBlockedReason, onJoin, onBack,
+  meeting, initialRole, publisherAllowed, joinBlockedReason, onForceStart, forceStartBusy = false, onJoin, onBack,
 }: MeetingPreJoinPanelProps) {
   const canPublishMedia = publisherAllowed ?? (initialRole !== "Observer" && initialRole !== "Guest");
   const [micOn,   setMicOn]   = useState(canPublishMedia);
@@ -336,6 +339,9 @@ export function MeetingPreJoinPanel({
             </p>}
             {/* Actions — pushed to bottom */}
             <div className="meeting-prejoin__actions">
+              {joinBlockedReason && onForceStart && <PrimaryButton fullWidth size="lg" disabled={forceStartBusy} onClick={onForceStart}>
+                {forceStartBusy ? "Starting LiveKit meeting…" : "Force Start Now"}
+              </PrimaryButton>}
               <PrimaryButton fullWidth size="lg" disabled={Boolean(joinBlockedReason)} onClick={() => onJoin({
                 micOn: canPublishMedia && micOn,
                 camOn: canPublishMedia && camOn,
