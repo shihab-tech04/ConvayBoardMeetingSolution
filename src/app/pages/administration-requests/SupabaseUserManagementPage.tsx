@@ -21,6 +21,7 @@ import { createLatestUserDirectoryRead, isUserDirectoryStatsUnavailable } from "
 import { userDirectoryCountLabel } from "./userDirectorySubtitle";
 import { requireUserMutationAck } from "./userMutationAck";
 import { requireRoleAssignmentReadback } from "./roleAssignmentReadback";
+import { canCompleteInvitationRoleStep, needsRoleAssignment } from "./invitationRoleState";
 
 type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
@@ -37,7 +38,7 @@ const columns: ColDef[] = [
 ];
 const filters: FilterDef[] = [
   { key: "status", label: "Account Status", type: "select", options: ["All", "Active", "Awaiting verification", "Finish account setup", "Inactive", "Suspended"] },
-  { key: "role", label: "Role", type: "select", options: ["All", "Super Admin", "User"] },
+  { key: "role", label: "Role", type: "select", options: ["All", "Super Admin", "User", "Needs assignment"] },
 ];
 function displayStatus(status: string) {
   return status.charAt(0).toUpperCase() + status.slice(1);
@@ -69,6 +70,7 @@ export function SupabaseUserManagementPage() {
   const [confirm, setConfirm] = useState<{ id: string; action: StatusAction } | null>(null);
   const [form, setForm] = useState<FormState>(blank);
   const [roleAssignId, setRoleAssignId] = useState<string | null>(null);
+  const [roleAssignFromInvite, setRoleAssignFromInvite] = useState(false);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [assignError, setAssignError] = useState("");
 
@@ -115,10 +117,13 @@ export function SupabaseUserManagementPage() {
     if (q && ![u.username, u.display_name, u.email, u.employee_id, u.phone]
       .some(text => String(text ?? "").toLowerCase().includes(q))) return false;
     if (applied.status && applied.status !== "All" && displayAccountStatus(u) !== applied.status) return false;
-    if (applied.role && applied.role !== "All"
+    if (applied.role === "Needs assignment") {
+      if (!needsRoleAssignment(u, access.user_assignments)) return false;
+    } else if (applied.role && applied.role !== "All"
       && (u.account_role === "super_admin" ? "Super Admin" : "User") !== applied.role) return false;
     return true;
-  }), [users, search, applied]);
+  }), [users, search, applied, access.user_assignments]);
+  const pendingRoleCount = users.filter(u => needsRoleAssignment(u, access.user_assignments)).length;
 
   const pageRows = filtered.slice((page - 1) * 10, page * 10).map(u => ({
     id: u.user_id,
@@ -128,7 +133,8 @@ export function SupabaseUserManagementPage() {
     userType: u.user_type || "Internal Employee",
     primaryRole: u.account_role === "super_admin" ? "Super Admin" :
       access.user_assignments.filter(a => a.user_id === u.user_id)
-        .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ") || "Unassigned",
+        .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ")
+        || (needsRoleAssignment(u, access.user_assignments) ? "Unassigned — needs role" : "Unassigned"),
     accountStatus: displayAccountStatus(u),
     lastActive: u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleString() : "—",
   }));
@@ -147,12 +153,17 @@ export function SupabaseUserManagementPage() {
 
   const openRoleAssignment = (user: ConvayProfile) => {
     setSelectedId(null);
+    setRoleAssignFromInvite(false);
     setRoleAssignId(user.user_id);
     setSelectedRoles(access.user_assignments.filter(a => a.user_id === user.user_id).map(a => a.role_id));
     setAssignError("");
   };
   const saveRoleAssignments = async () => {
     if (!roleAssignId || working) return;
+    if (!canCompleteInvitationRoleStep(roleAssignFromInvite, selectedRoles)) {
+      setAssignError("Select at least one active role to finish invitation access setup.");
+      return;
+    }
     setWorking(true);
     setAssignError("");
     try {
@@ -162,6 +173,7 @@ export function SupabaseUserManagementPage() {
       const confirmedSnapshot = await reloadAccessSnapshot();
       requireRoleAssignmentReadback(confirmation, confirmedSnapshot, roleAssignId, selectedRoles);
       setRoleAssignId(null);
+      setRoleAssignFromInvite(false);
       toast.success("User roles updated and verified");
     } catch (error) {
       setAssignError(error instanceof Error ? error.message : "Unable to assign roles");
@@ -257,6 +269,7 @@ export function SupabaseUserManagementPage() {
       setForm(blank);
       await loadUsers();
       if (invitedUserId) {
+        setRoleAssignFromInvite(true);
         setSelectedRoles([]);
         setRoleAssignId(invitedUserId);
         setAssignError("");
@@ -330,6 +343,12 @@ export function SupabaseUserManagementPage() {
         ))}
       </div>
       {loadError && <p role="alert" className="text-red-600 text-sm my-3">{loadError}</p>}
+      {!statsUnavailable && pendingRoleCount > 0 && (
+        <p role="status" className="text-sm text-slate-600 my-3">
+          {pendingRoleCount} {pendingRoleCount === 1 ? "account needs" : "accounts need"} an authorized role before workspace access.
+          Use Filter → Role → Needs assignment, then View Details → Assign Roles.
+        </p>
+      )}
       <UnifiedDataTable
         title="Users" countLabel="users" singularLabel="user" totalCount={filtered.length}
         cols={columns} rows={pageRows}
@@ -388,6 +407,9 @@ export function SupabaseUserManagementPage() {
               access.user_assignments.filter(a => a.user_id === selected.user_id)
                 .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ") || "Unassigned"}</p>
             <p>Status: {displayAccountStatus(selected)}</p>
+            {needsRoleAssignment(selected, access.user_assignments) && (
+              <p role="status">Workspace access: Pending role assignment. Select Assign Roles below to grant only the permissions this user needs.</p>
+            )}
             {selected.invitation_status && selected.invitation_status !== "accepted" && (
               <p>Email verification: {selected.email_verified_at ? "Verified — the invitee must finish setting a password." : "Pending — access stays inactive until the invitee verifies this address."}</p>
             )}
@@ -440,13 +462,14 @@ export function SupabaseUserManagementPage() {
       <AppModal open={roleAssignId !== null}
         title="Assign User Roles"
         size="md"
-        onClose={() => { if (!working) setRoleAssignId(null); }}
+        onClose={() => { if (!working) { setRoleAssignId(null); setRoleAssignFromInvite(false); } }}
         footer={<div className="flex justify-end gap-2">
-          <Button variant="ghost" size="lg" onClick={() => setRoleAssignId(null)} disabled={working}>Cancel</Button>
+          <Button variant="ghost" size="lg" onClick={() => { setRoleAssignId(null); setRoleAssignFromInvite(false); }} disabled={working}>Cancel</Button>
           <Button variant="primary" size="lg" onClick={() => { void saveRoleAssignments(); }} loading={working}>Save Roles</Button>
         </div>}>
         <div className="flex flex-col gap-3">
           <p>Select which application roles this user may use. Permissions take effect from the selected roles. An invited user can complete password setup without a role, but will see an access-pending screen until an authorized role is assigned.</p>
+          {roleAssignFromInvite && <p role="status">Invitation sent. Choose at least one role to finish the administrator's access setup for this user.</p>}
           {access.roles.filter(r => r.status === "Active" && !r.is_system_role).length === 0 &&
             <p>No custom roles yet. Create one from Role Management.</p>}
           {access.roles.filter(r => r.status === "Active" && !r.is_system_role).map(r => (
