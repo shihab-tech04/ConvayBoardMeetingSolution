@@ -33,8 +33,10 @@ const freshDraft=():Draft=>({
     fields:[{id:"field_"+crypto.randomUUID().slice(0,8),label:"Meeting title",type:"text",required:true}],
   }]},
 });
-export function MeetingTemplateMarketplace() {
-  const [scope,setScope]=useState("global");
+export function MeetingTemplateMarketplace({
+  companyOnly=false,initialCompanyId,
+}: { companyOnly?: boolean; initialCompanyId?: string }) {
+  const [scope,setScope]=useState(companyOnly&&initialCompanyId?initialCompanyId:"global");
   const tenantId=scope==="global"?null:scope;
   const [companies,setCompanies]=useState<CompanyDirectory|null>(null);
   const [templates,setTemplates]=useState<MeetingTemplateDirectoryEntry[]>([]);
@@ -112,6 +114,7 @@ export function MeetingTemplateMarketplace() {
     if(busy)return;
     setBusy(true);setError("");
     try{
+      if(companyOnly&&!tenantId) throw new Error("Verified company scope is required");
       if(draft.title.trim().length<3||draft.title.trim().length>160)
         throw new Error("Template title must be 3–160 characters");
       if(!/^[a-z][a-z0-9_-]{2,63}$/.test(draft.key))
@@ -169,7 +172,7 @@ export function MeetingTemplateMarketplace() {
       <section style={panel}>
         <AppSelectField id="saas-template-scope" label="Template owner" value={scope}
           disabled={busy||loading} onChange={value=>{setScope(value);setRequestId(crypto.randomUUID());}}
-          options={[{value:"global",label:"Convay starter marketplace"},
+          options={[...(companyOnly?[]:[{value:"global",label:"Convay starter marketplace"}]),
             ...(companies?.companies??[]).filter(c=>c.lifecycle_state!=="offboarded")
               .map(c=>({value:c.id,label:c.display_name+" · "+c.lifecycle_state}))]}/>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginTop:14}}>
