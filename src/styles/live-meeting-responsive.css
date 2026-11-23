@@ -21,6 +21,9 @@
 .convay-live-sidebar-body { min-width: 0; min-height: 0; overscroll-behavior: contain; }
 .convay-live-mobile-sidebar-header { display: none; }
 .convay-live-sidebar-tabs button { flex-shrink: 0; }
+.convay-live-media { min-width: 0; width: 100%; }
+.convay-live-media-gallery { min-width: 0; }
+.convay-live-media select { max-width: min(100%, 13rem); min-height: 36px; border: 1px solid #475569; border-radius: 6px; color: #e2e8f0; background: #1e293b; }
 .convay-live-root :is(button, input, textarea, select):focus-visible {
   outline: 2px solid #93c5fd;
   outline-offset: 2px;
@@ -84,7 +87,7 @@
   }
   .convay-live-board-trigger { margin-left: auto; white-space: nowrap; color: #cbd5e1 !important; }
   .convay-live-stage { padding: .5rem !important; gap: .45rem !important; overflow-y: auto !important; }
-  .convay-live-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: .4rem !important; }
+  .convay-live-gallery, .convay-live-media-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: .4rem !important; }
   .convay-live-document-split { flex-direction: column !important; overflow-y: auto; }
   .convay-live-document-body { padding: .75rem !important; flex-basis: auto; min-height: 12rem; }
   .convay-live-dock {
@@ -191,7 +194,7 @@
 @media (max-width: 380px) {
   .convay-live-topbar { padding-inline: .45rem !important; }
   .convay-live-viewbar > button { padding-inline: .35rem !important; font-size: .65rem !important; }
-  .convay-live-gallery { grid-template-columns: minmax(0, 1fr) !important; }
+  .convay-live-gallery, .convay-live-media-gallery { grid-template-columns: minmax(0, 1fr) !important; }
 }
 @media (max-height: 540px) and (max-width: 767px) {
   .convay-live-topbar { min-height: 50px; max-height: 33dvh; padding-block: .25rem !important; }
