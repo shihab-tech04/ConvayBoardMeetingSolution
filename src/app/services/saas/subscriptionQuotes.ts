@@ -154,3 +154,44 @@ export function assertSavedQuote(
   }
   return quote;
 }
+
+/** Only immutable database events count as verified billing administration history. */
+export type SubscriptionAuditEvent = {
+  id: number; quote_id: string; invoice_id: string | null; actor_id: string;
+  operation: string; details: Record<string, unknown>; created_at: string;
+};
+export type SubscriptionAuditReadback = {
+  quote_id: string; quote_revision: number; events: SubscriptionAuditEvent[];
+};
+export function assertSubscriptionAuditReadback(
+  payload: SubscriptionAuditReadback, quoteId: string, revision: number,
+): SubscriptionAuditEvent[] {
+  if (!payload || payload.quote_id !== quoteId || payload.quote_revision !== revision
+    || !Array.isArray(payload.events)) {
+    throw new Error("SQL audit readback did not match this quote. Refresh before retrying.");
+  }
+  let previousId = Number.POSITIVE_INFINITY;
+  for (const event of payload.events) {
+    if (!Number.isSafeInteger(event.id) || event.id <= 0 || event.id >= previousId
+      || event.quote_id !== quoteId || !event.operation || !event.created_at) {
+      throw new Error("SQL returned an invalid billing audit event.");
+    }
+    previousId = event.id;
+  }
+  return payload.events;
+}
+
+export async function subscriptionAuditRead(quoteId: string): Promise<SubscriptionAuditReadback> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(quoteId)) {
+    throw new Error("Invalid subscription quote identifier");
+  }
+  const response = await convayAuth.authenticatedRequest("/rest/v1/rpc/convay_subscription_audit_read", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ p_quote_id: quoteId }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(typeof data?.message === "string" ? data.message : "Unable to verify billing history in SQL");
+  }
+  return data as SubscriptionAuditReadback;
+}
