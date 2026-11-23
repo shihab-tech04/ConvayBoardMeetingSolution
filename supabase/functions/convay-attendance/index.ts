@@ -167,8 +167,13 @@ Deno.serve(async req => {
       && !permissions.includes("mtg_join")) {
       return reply(req, 403, { error: "Meeting join permission required." });
     }
-    const session = sessions.find(s => s.session_status === "active" || s.session_status === "paused")
-      ?? sessions[0] ?? null;
+    // The SQL attendance RPC rejects duplicate active/paused sessions.
+    // Reject before contacting LiveKit rather than selecting an arbitrary row.
+    const activeSessions = sessions.filter(s => s.session_status === "active" || s.session_status === "paused");
+    if (activeSessions.length !== 1) {
+      return reply(req, 409, { error: "Meeting session state is inconsistent." });
+    }
+    const session = activeSessions[0];
     if (!session || !["active", "paused"].includes(session.session_status ?? "")) {
       return reply(req, 409, { error: "This meeting is not in an active session." });
     }
