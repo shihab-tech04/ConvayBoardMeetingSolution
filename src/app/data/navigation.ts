@@ -74,6 +74,8 @@ export function getVisibleNav(): MainNavDef[] {
           return { ...sub, children: accessibleThird };
         })
         .filter(sub => {
+          if (main.id === "company-management") return !access.is_super_admin &&
+            (access.company_admin_tenant_ids?.length ?? 0) > 0;
           if (main.id === "administration" || main.id === "subscribers") return access.is_super_admin &&
             (!sub.children || sub.children.length > 0);
           if (sub.id === "users-assignments") return access.is_super_admin;
@@ -179,6 +181,12 @@ export const NAVIGATION: MainNavDef[] = [
       },
       { id: "audit-trail", label: "Audit Trail", labelKey: "navigation.archiveReports.auditTrail", icon: History, visibility: "phase2" },
     ],
+  },
+  {
+    id: "company-management",
+    label: "My Company",
+    icon: Building2,
+    children: [{ id: "overview", label: "Company Management", icon: Building2 }],
   },
   {
     id: "subscribers",
