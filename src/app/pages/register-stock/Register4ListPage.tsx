@@ -295,6 +295,16 @@ export function Register4ListPage() {
   // ── Actions ───────────────────────────────────────────────────────────────
 
   function openAdd() {
+    // Mirror the SQL registry's agd_submit capability. A read-only user must
+    // never be sent into a form that can only fail on Save.
+    if (!hasPermission("create")) {
+      toast.error("You do not have permission to create agendas.");
+      return;
+    }
+    if (registry.loading || registry.error) {
+      toast.error("Agenda data is not ready. Refresh it before creating an agenda.");
+      return;
+    }
     setEditAgendaId(null); setInitialChildId(null); setModalOpen(true);
   }
   function openEdit(agendaId: string, childId?: string | null) {
@@ -1126,7 +1136,7 @@ export function Register4ListPage() {
             <h1 className="table-page__title">Agenda Management</h1>
             <p className="table-page__desc">Build, organize, review, and approve agendas and their supporting documents.</p>
           </div>
-          {activeView === "all" && (
+          {activeView === "all" && hasPermission("create") && !registry.error && (
             <div className="table-page__actions">
               <Button type="button" variant="primary" size="lg" leadingIcon={Plus} onClick={openAdd}>
                 Add Agenda
@@ -1135,6 +1145,15 @@ export function Register4ListPage() {
           )}
         </div>
       </div>
+
+      {registry.error && (
+        <div role="alert" style={{ margin: "12px 24px 0", padding: "12px 14px", border: "1px solid var(--color-border)", borderRadius: 8, background: "var(--color-surface)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ color: "var(--color-text-primary)", fontSize: 13 }}>
+            Agenda data could not be loaded: {registry.error}
+          </span>
+          <Button type="button" variant="secondary" size="sm" onClick={() => { void registry.refresh?.().catch(() => undefined); }}>Retry loading</Button>
+        </div>
+      )}
 
       {/* ── KPI row — always visible ───────────────────────────────── */}
       <div style={{ padding: "16px 24px 0" }}>
