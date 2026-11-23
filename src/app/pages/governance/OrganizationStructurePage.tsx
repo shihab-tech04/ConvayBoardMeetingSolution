@@ -1061,24 +1061,6 @@ export function OrganizationStructurePage() {
     setExpanded(new Set());
   }, []);
 
-  const emitAudit = useCallback((unitId: string, action: string, details: string) => {
-    const now = new Date().toISOString();
-    return auditReg.add({
-      id:              generateId("AUD", auditReg.items.map(a => a.id)),
-      created_at:      now,
-      event_id:        `AUDIT-OU-${Date.now()}`,
-      entity_type:     "OrgUnit",
-      entity_id:       unitId,
-      action,
-      actor:           currentUser?.name ?? "System",
-      actor_role:      currentUser?.role ?? "",
-      timestamp:       now,
-      ip_address:      "",
-      details,
-      approval_status: "Approved",
-    });
-  }, [auditReg, currentUser]);
-
   const handleFormConfirm = useCallback(async (values: UnitFormValues): Promise<boolean> => {
     if (editingUnit ? !perm.edit_units : !perm.create_units) return false;
     const now = new Date().toISOString();
@@ -1158,7 +1140,17 @@ export function OrganizationStructurePage() {
           unit_type: values.unit_type,
           status: values.status,
           code: values.code || undefined,
+          description: values.description || undefined,
+          phone: values.phone || undefined,
+          email: values.email || undefined,
+          address: values.address || undefined,
+          effective_start_at: values.effective_start_at || undefined,
           parent_unit_id: values.parent_unit_id || undefined,
+          parent_unit: allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? "—",
+          path_ids: values.parent_unit_id
+            ? [...buildPathIds(values.parent_unit_id, units), savedRecordId] : [savedRecordId],
+          path_label: values.parent_unit_id
+            ? `${buildPathLabel(values.parent_unit_id, units)} › ${values.unit_name}` : values.unit_name,
           head_user_id: values.head_user_id || undefined,
           deputy_user_id: values.deputy_user_id || undefined,
         },
@@ -1179,18 +1171,36 @@ export function OrganizationStructurePage() {
   const handleActivate = useCallback(async (unit: OrgUnit): Promise<void> => {
     if (!perm.activate_units) return;
     const now = new Date().toISOString();
+    // The server's convay_entity_track trigger records this change atomically.
+    // A direct client bms.audit INSERT is forbidden by the registry contract.
     const result = await persistOrgUnitChange(
       () => orgReg.update(unit.id, {
         status: "Active", updated_at: now, updated_by: currentUser?.id,
       }),
-      () => emitAudit(unit.id, "org_status_changed", `Status changed to Active (was ${unit.status})`),
+      () => true,
     );
     if (result === "not-saved") {
       toast.error("Activation was not saved. Check permissions and retry.");
-    } else if (result === "audit-unverified") {
-      toast.warning("Activation was saved, but its activity journal could not be confirmed.");
+      return;
     }
-  }, [perm.activate_units, orgReg, currentUser, emitAudit]);
+    if (!orgReg.refresh) {
+      toast.warning("Activation acknowledged but SQL readback is unavailable. Refresh before editing.");
+      return;
+    }
+    const confirmed = await verifyOrgUnitSqlReadback(
+      orgReg.refresh, orgReg.getById,
+      {
+        id: unit.id, unit_name: unit.unit_name, unit_type: unit.unit_type,
+        status: "Active", code: unit.code,
+        description: unit.description, phone: unit.phone, email: unit.email,
+        address: unit.address, effective_start_at: unit.effective_start_at,
+        parent_unit_id: unit.parent_unit_id, parent_unit: unit.parent_unit,
+        path_ids: unit.path_ids, path_label: unit.path_label,
+        head_user_id: unit.head_user_id, deputy_user_id: unit.deputy_user_id,
+      },
+    );
+    if (!confirmed) toast.warning("Activation acknowledged but SQL readback is unverified. Refresh before editing.");
+  }, [perm.activate_units, orgReg, currentUser]);
 
   const handleDeactivate = useCallback((unit: OrgUnit) => {
     if (!perm.deactivate_units) return;

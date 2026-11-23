@@ -78,6 +78,29 @@ describe("GV-01 authenticated SQL readback after a server-acknowledged write", (
     expect(read).not.toHaveBeenCalled();
   });
 
+  it("compares every saved contact, date, parent label, path and leadership field", async () => {
+    const complete = {
+      ...expected,
+      description: "Tax governance", phone: "+880 123456789", email: "unit@example.test",
+      address: "Dhaka", effective_start_at: "2026-11-23",
+      parent_unit: "Head Office", path_label: "Organization › Head Office › Finance",
+      path_ids: ["OU-001", "OU-009"],
+    };
+    await expect(verifyOrgUnitSqlReadback(async () => {}, () => complete, complete))
+      .resolves.toBe(true);
+    for (const field of [
+      "description", "phone", "email", "address", "effective_start_at",
+      "parent_unit", "path_label",
+    ] as const) {
+      const stale = { ...complete, [field]: "stale" };
+      await expect(verifyOrgUnitSqlReadback(async () => {}, () => stale, complete))
+        .resolves.toBe(false);
+    }
+    await expect(verifyOrgUnitSqlReadback(
+      async () => {}, () => ({ ...complete, path_ids: ["OU-009"] }), complete,
+    )).resolves.toBe(false);
+  });
+
   it("handles absent optional unit fields without a false mismatch", async () => {
     const root = {
       id: "OU-ROOT", unit_name: "Meridian", unit_type: "Organization", status: "Active",
