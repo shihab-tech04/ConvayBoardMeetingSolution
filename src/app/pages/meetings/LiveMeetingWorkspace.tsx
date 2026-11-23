@@ -574,7 +574,10 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const canEditAttendance = hasLeadership && hasGrant("mtg_attendance");
   const canDraftMinutes = hasLeadership && hasGrant("min_create");
   // The trusted token issuer independently enforces real media permissions.
-  const canOfferScreenShare = !isOnlineMeeting || mayOfferRegularScreenShare(myRole, hasGrant("mtg_join"));
+  const canPublishMedia = !isOnlineMeeting
+    || access.is_super_admin
+    || mayOfferRegularScreenShare(myRole, hasGrant("mtg_join"));
+  const canOfferScreenShare = canPublishMedia;
   // Full system administration does not grant ballot eligibility; real
   // membership, attendance and recusal checks still apply.
 
@@ -1602,9 +1605,10 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       <MeetingPreJoinPanel
         meeting={meeting}
         initialRole={myRole as PreJoinRole}
+        publisherAllowed={canPublishMedia}
         onJoin={opts => {
-          setMyMicOn(opts.micOn);
-          setMyCamOn(opts.camOn);
+          setMyMicOn(canPublishMedia && opts.micOn);
+          setMyCamOn(canPublishMedia && opts.camOn);
           setPhase("meeting");
           // Online attendance only begins after a confirmed media connection.
           if (!isOnlineMeeting && myLink) setAttendance(currentUser.id, "Present");
@@ -1793,7 +1797,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
             {isOnlineMeeting && (
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
-                <LiveMeetingMedia meetingId={meetingId} micOn={myMicOn} camOn={myCamOn} sharing={shareRequested}
+                <LiveMeetingMedia meetingId={meetingId}
+                  micOn={canPublishMedia && myMicOn} camOn={canPublishMedia && myCamOn}
+                  sharing={canPublishMedia && shareRequested}
                   onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={confirmed => {
                     setIsSharing(confirmed);
                     if (!confirmed) setShareRequested(false);
@@ -2594,12 +2600,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           {/* ── BOTTOM DOCK ──────────────────────────────────────────────────── */}
           <div style={{ height: 64, background: "#1e293b", borderTop: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0 1rem", flexShrink: 0 }}>
             <>
-            <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
+            {canPublishMedia && <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
               {myMicOn ? <Mic size={18} /> : <MicOff size={18} />}
-            </DockButton>
-            <DockButton active={myCamOn} danger={!myCamOn} label={myCamOn  ? "Stop Video"  : "Start Video"}  onClick={() => setMyCamOn(v => !v)}>
+            </DockButton>}
+            {canPublishMedia && <DockButton active={myCamOn} danger={!myCamOn} label={myCamOn  ? "Stop Video"  : "Start Video"}  onClick={() => setMyCamOn(v => !v)}>
               {myCamOn ? <Video size={18} /> : <VideoOff size={18} />}
-            </DockButton>
+            </DockButton>}
+            {!canPublishMedia && <span role="status" style={{ color: "#cbd5e1", fontSize: "0.78rem" }}>View only</span>}
             {canOfferScreenShare && (
               <DockButton active={isSharing} label={isSharing ? "Stop Share" : shareRequested ? "Cancel Share" : "Share Screen"} onClick={() => {
                 if (isOnlineMeeting) setShareRequested(requested => !requested);
