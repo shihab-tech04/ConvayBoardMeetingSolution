@@ -88,7 +88,16 @@ export async function createGovernanceBody(
     establishment_date: patch.establishment_date ?? "", mandate: patch.mandate ?? "",
     status: patch.status ?? "Active", created_at: identity.created_at,
   };
-  if (await gateway.create(body) !== true) throw new Error("The governance body was not saved by SQL.");
+  if (await gateway.create(body) !== true) {
+    // A second administrator may have saved the same name/type between our
+    // preflight read and the server write. Re-read before giving recovery advice.
+    const latest = await gateway.list().catch(() => [] as GovernanceBody[]);
+    if (latest.some(row => row.id === body.id || row.body_id === body.id) ||
+        duplicates(latest, body.body_name, body.body_type)) {
+      throw new Error("This governance body already exists. Refresh the list instead of creating a duplicate.");
+    }
+    throw new Error("The governance body was not saved by SQL.");
+  }
   const readback = await gateway.list();
   assertReadback(readback.find((item) => item.id === body.id), body);
   return body;
@@ -105,8 +114,13 @@ export async function updateGovernanceBody(
   if (!Object.keys(patch).length) return true;
   if (duplicates(current, patch.body_name ?? previous.body_name, patch.body_type ?? previous.body_type, id))
     throw new Error("Another governance body already has that name and type.");
-  if (await gateway.update(id, patch) !== true)
+  if (await gateway.update(id, patch) !== true) {
+    const latest = await gateway.list().catch(() => [] as GovernanceBody[]);
+    if (duplicates(latest, patch.body_name ?? previous.body_name, patch.body_type ?? previous.body_type, id)) {
+      throw new Error("Another governance body already has that name and type. Refresh the list.");
+    }
     throw new Error("The governance body update was not confirmed by SQL.");
+  }
   const readback = await gateway.list();
   assertReadback(readback.find((row) => row.id === id), { id, ...patch });
   return true;
