@@ -9,7 +9,7 @@ describe("AG-364 separate Agenda author, reviewer, approver and parent signoff",
     expect(agenda).toContain('if (allApproved) return alreadyApproved ? "Approved" : "Pending Approval";');
     expect(agenda).toContain('return parentStatus;');
     expect(agenda).toContain('["Draft", "Incomplete", "Reopened", "Revision Requested", "Rejected"].includes(parentStatus)');
-    expect(agenda).toContain('const alreadyApproved = allItems.find(a => a.id === parentId)?.approval_status === "Approved";');
+    expect(agenda).toContain('const alreadyApproved = parentStatus === "Approved";');
     expect(sql).toContain("Agenda approval requires an explicit approver decision");
     expect(sql).toContain("Submit an agenda for review before approval");
     expect(sql).toContain("Approve all active child agendas before approving their parent");
