@@ -29,12 +29,10 @@ export function sanitizeAgendaHtml(html: string): string {
         el.replaceWith(...Array.from(el.childNodes));
         continue;
       }
+      const sourceHref = el.tagName === "A" ? el.getAttribute("href") ?? "" : "";
       for (const attr of Array.from(el.attributes)) el.removeAttribute(attr.name);
       if (el.tagName === "A") {
-        const raw = (child as HTMLAnchorElement).getAttribute("href");
-        // Read from the original markup before stripping attributes.
-        const source = el.outerHTML.match(/href\s*=\s*["']([^"']*)["']/i)?.[1] ?? raw ?? "";
-        const uri = source.trim();
+        const uri = sourceHref.trim();
         if (/^(https?:\/\/|mailto:)/i.test(uri)) {
           el.setAttribute("href", uri);
           el.setAttribute("rel", "nofollow noopener noreferrer");
