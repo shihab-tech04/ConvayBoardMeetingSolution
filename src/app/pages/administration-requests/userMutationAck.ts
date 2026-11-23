@@ -7,6 +7,7 @@ export type UserAckAction = "invite" | "update" | "set_status" | "set_password" 
 export interface ExpectedUserAck {
   userId?: string;
   email?: string;
+  roleId?: string;
   displayName?: string;
   status?: "active" | "inactive" | "suspended";
 }
@@ -16,6 +17,7 @@ type UserAckRecord = {
   email?: unknown;
   account_status?: unknown;
   invitation_status?: unknown;
+  assigned_role_id?: unknown;
 };
 type UserAckResponse = { user?: UserAckRecord; ok?: unknown } | null | undefined;
 
@@ -44,6 +46,7 @@ export function requireUserMutationAck(
       || normalizeEmail(user!.email) !== normalizeEmail(expected.email)
       || user!.invitation_status !== "pending"
       || user!.account_status !== "inactive") fail();
+    if (expected.roleId && user!.assigned_role_id !== expected.roleId) fail();
   }
   if (action === "update" && expected.displayName !== undefined
     && user!.display_name !== expected.displayName) fail();

@@ -25,8 +25,8 @@ import { canCompleteInvitationRoleStep, needsRoleAssignment } from "./invitation
 
 type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
-interface FormState { name: string; username: string; email: string; password: string; phone: string; employeeId: string; userType: string; }
-const blank: FormState = { name: "", username: "", email: "", password: "", phone: "", employeeId: "", userType: "Internal Employee" };
+interface FormState { name: string; username: string; email: string; password: string; phone: string; employeeId: string; userType: string; roleId: string; }
+const blank: FormState = { name: "", username: "", email: "", password: "", phone: "", employeeId: "", userType: "Internal Employee", roleId: "" };
 const columns: ColDef[] = [
   fc("employeeId", "ID"),
   fc("name", "User"),
@@ -124,6 +124,7 @@ export function SupabaseUserManagementPage() {
     return true;
   }), [users, search, applied, access.user_assignments]);
   const pendingRoleCount = users.filter(u => needsRoleAssignment(u, access.user_assignments)).length;
+  const activeInviteRoles = access.roles.filter(role => role.status === "Active" && !role.is_system_role);
 
   const pageRows = filtered.slice((page - 1) * 10, page * 10).map(u => ({
     id: u.user_id,
@@ -193,13 +194,16 @@ export function SupabaseUserManagementPage() {
     setFormError("");
     setEditId(null);
     setMode("invite");
+    void reloadAccessSnapshot().catch(() => {
+      setFormError("Unable to refresh roles. Reload User Management and try again.");
+    });
   };
   const openEdit = (user: ConvayProfile) => {
     setSelectedId(null);
     setEditId(user.user_id);
     setForm({ name: user.display_name, username: user.username, email: user.email,
       password: "", phone: user.phone ?? "", employeeId: user.employee_id ?? "",
-      userType: user.user_type ?? "Internal Employee" });
+      userType: user.user_type ?? "Internal Employee", roleId: "" });
     setFormError("");
     setMode("edit");
   };
@@ -208,7 +212,7 @@ export function SupabaseUserManagementPage() {
     setEditId(user.user_id);
     setForm({ name: user.display_name, username: user.username, email: user.email,
       password: "", phone: user.phone ?? "", employeeId: user.employee_id ?? "",
-      userType: user.user_type ?? "Internal Employee" });
+      userType: user.user_type ?? "Internal Employee", roleId: "" });
     setFormError("");
     setMode("password");
   };
@@ -225,27 +229,26 @@ export function SupabaseUserManagementPage() {
       const businessError = validateUserBusinessFields(form);
       if (businessError) { setFormError(businessError); return; }
     }
+    if (mode === "invite" && !activeInviteRoles.some(role => role.id === form.roleId)) {
+      setFormError("Select an active role before sending the invitation.");
+      return;
+    }
     if (mode === "password" && form.password.length < 6) {
       setFormError("Password must be at least 6 characters");
       return;
     }
     setWorking(true);
     setFormError("");
-    let invitedUserId: string | null = null;
     try {
       if (mode === "invite") {
         const confirmed = await convayAuth.users("invite", {
           name: form.name.trim(), username: form.username.trim() || undefined,
-          email: form.email.trim(),
+          email: form.email.trim(), role_id: form.roleId,
           phone: form.phone.trim() || undefined,
           ...userBusinessFields(form),
         });
-        requireUserMutationAck("invite", confirmed, { email: form.email.trim() });
-        // The verified user API returns the durable profile ID. Use it to
-        // continue directly to explicit admin role assignment (no auto-grant).
-        const acknowledgedUserId = (confirmed as { user?: { user_id?: unknown } }).user?.user_id;
-        if (typeof acknowledgedUserId === "string") invitedUserId = acknowledgedUserId;
-        toast.success("Invitation sent. Assign the user's roles before they can access the workspace.");
+        requireUserMutationAck("invite", confirmed, { email: form.email.trim(), roleId: form.roleId });
+        toast.success("Invitation sent and selected role assigned.");
       } else if (mode === "edit" && editing) {
         const confirmed = await convayAuth.users("update", {
           user_id: editing.user_id, name: form.name.trim(), username: form.username.trim(),
@@ -268,12 +271,6 @@ export function SupabaseUserManagementPage() {
       setEditId(null);
       setForm(blank);
       await loadUsers();
-      if (invitedUserId) {
-        setRoleAssignFromInvite(true);
-        setSelectedRoles([]);
-        setRoleAssignId(invitedUserId);
-        setAssignError("");
-      }
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "Unable to save user");
     } finally {
@@ -426,7 +423,8 @@ export function SupabaseUserManagementPage() {
         icon={<UserPlus size={16}/>} size="md"
         footer={<div className="flex justify-end gap-2">
           <Button variant="ghost" size="lg" onClick={closeForm} disabled={working}>Cancel</Button>
-          <Button variant="primary" size="lg" onClick={() => void save()} loading={working}>
+          <Button variant="primary" size="lg" onClick={() => void save()} loading={working}
+            disabled={mode === "invite" && activeInviteRoles.length === 0}>
             {mode === "invite" ? "Send invitation" : mode === "password" ? "Save Password" : "Save Changes"}
           </Button>
         </div>}
@@ -444,13 +442,22 @@ export function SupabaseUserManagementPage() {
                 helper={mode === "edit" ? "Email changes require a separate verified process." : "The user must verify this address before access is activated."}/>
               <AppSelectField id="convay-user-type" label="User Type" required value={form.userType}
                 onChange={v => setField("userType", v)} options={[...USER_TYPES]}/>
+              {mode === "invite" && (
+                <AppSelectField id="convay-user-role" label="Assign Role" required
+                  value={form.roleId} onChange={value => { setField("roleId", value); setFormError(""); }}
+                  options={activeInviteRoles.length > 0
+                    ? [{ value: "", label: "Select a role" }, ...activeInviteRoles.map(role => ({ value: role.id, label: role.name }))]
+                    : []}
+                  emptyMessage="No active assignable roles. Create one in Manage Roles."
+                />
+              )}
               <AppTextField id="convay-employee-id" label="Employee ID (optional)" value={form.employeeId}
                 onChange={v => setField("employeeId", v)} placeholder="Employee ID or reference"/>
               <AppTextField id="convay-user-phone" label="Phone (optional)" value={form.phone}
                 onChange={v => setField("phone", v)} placeholder="Phone number"/>
             </>
           )}
-          {mode === "invite" && <p className="text-sm text-slate-600">Convay will email a secure invitation link. After sending, assign a role in the next step. The account stays inactive until the recipient verifies this address and chooses a password; workspace access also requires an assigned role with permissions.</p>}
+          {mode === "invite" && <p className="text-sm text-slate-600">Convay emails the invitation and assigns the selected role together. Access activates after the recipient verifies their email and creates a password.</p>}
           {mode === "password" && (
             <AppPasswordField id="convay-user-password" label="Password" value={form.password}
               onChange={v => setField("password", v)} autoComplete="new-password"

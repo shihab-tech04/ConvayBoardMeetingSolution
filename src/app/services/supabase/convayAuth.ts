@@ -45,6 +45,7 @@ export type UserMutation = {
   phone?: string;
   user_type?: string;
   employee_id?: string;
+  role_id?: string;
   status?: string;
   user_id?: string;
 };
