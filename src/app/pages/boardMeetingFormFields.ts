@@ -339,12 +339,12 @@ export const GOVERNANCE_BODY_FORM_FIELDS: FormField[] = [
   { key: "body_type",         label: "Body Type",              type: "select",   required: true, options: ["Board", "Committee", "Sub-Committee", "Advisory Panel", "Working Group"] },
   { key: "chairperson",       label: "Chairperson",            type: "text",     required: true },
   { key: "secretary",         label: "Secretary",              type: "text" },
-  { key: "quorum_requirement",label: "Quorum Requirement",     type: "text",     placeholder: "e.g. 50%+1 or 3 members" },
+  { key: "quorum_requirement",label: "Quorum Requirement",     type: "text",     placeholder: "e.g. 50%+1 or 3 members", helper: "Planning note only. After saving the body, configure its authoritative quorum policy in Administration → Meeting Configuration → Quorum Rules." },
   { key: "voting_method",     label: "Voting Method",          type: "select",   options: ["Simple Majority", "Two-Third Majority", "Unanimous", "Consensus"] },
   { key: "establishment_date",label: "Establishment Date",     type: "date" },
   { key: "status",            label: "Status",                 type: "select",   options: ["Active", "Inactive", "Suspended", "Dissolved"], defaultValue: "Active" },
   { key: "mandate",           label: "Mandate",                type: "textarea", span: true, rows: 4, placeholder: "Describe the purpose and mandate of this governance body" },
-  { key: "charter",           label: "Charter / Terms of Reference",type: "file",span: true, maxFiles: 1, maxSizeMB: 10, accept: [".pdf", ".doc", ".docx"] },
+  { key: "charter",           label: "Charter / Terms of Reference",type: "file",span: true, maxFiles: 1, maxSizeMB: 10, accept: [".pdf", ".doc", ".docx"], disabled: true, helper: "Secure charter upload is not connected yet. Save the governance body without an attachment; this field remains unavailable until authorized storage integration is verified." },
 ];
 
 // ─── Organization Unit form ───────────────────────────────────────────────────

@@ -28,6 +28,7 @@ export function InvalidListPage() {
 
   const cfg: PageCfg = {
     title: "Governance Bodies",
+    entityPlural: "governance bodies",
     titleKey: "invalidList.title",
     desc: "Manage governance bodies, their membership, quorum rules, and meeting configuration.",
     descKey: "invalidList.desc",
