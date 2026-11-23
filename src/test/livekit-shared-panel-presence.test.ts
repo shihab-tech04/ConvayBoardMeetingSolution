@@ -5,8 +5,8 @@ const signalSql = readFileSync("supabase/migrations/20261123172500_convay_live_p
 const types = readFileSync("src/app/data/boardMeetingData.ts", "utf8");
 describe("LiveKit online panel, every entry gated by SQL and shared participant signals", () => {
   it("does not mount a media room before exactly one authoritative live SQL session", () => {
-    expect(panel).toContain('if (isOnlineMeeting && phase === "meeting" && activeJoinSessions.length !== 1)');
-    expect(panel).toContain('isOnlineMeeting && activeJoinSessions.length === 1 && (');
+    expect(panel).toContain('if (isOnlineMeeting && phase === "meeting" && !canonicalRoomEntry.canJoin)');
+    expect(panel).toContain('isOnlineMeeting && canonicalRoomEntry.canJoin && (');
     expect(panel).toContain('setPhase("prejoin")');
   });
   it("does not misreport unconfigured quorum as lost (0/0)", () => {
