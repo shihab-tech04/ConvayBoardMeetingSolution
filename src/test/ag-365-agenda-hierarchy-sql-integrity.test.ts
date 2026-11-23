@@ -18,7 +18,7 @@ describe("AG-365 SQL-enforced Agenda hierarchy and meeting readiness", () => {
     expect(sql).toContain("Remove descendants before deleting their parent agenda");
     expect(sql).toContain("Reopen or restore this agenda before removing it");
     expect(modal).toContain('await convayAuth.applyBatch(operations)');
-    expect(modal).toContain('if (childMode)');
+    expect(modal).toContain('const linked = linkReg.items.filter(link => link.agenda_id === id)');
   });
   it("rejects meeting linkage whenever any active grandchild needs approval", () => {
     expect(sql).toContain("guard_agenda_recursive_meeting_readiness()");
