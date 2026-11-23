@@ -33,7 +33,8 @@ export function getSourceMimeType(source: DocumentSource): string {
 export async function resolveDocumentFile(source: DocumentSource): Promise<File> {
   switch (source.kind) {
     case "stored": {
-      const file = await documentContentStore.getOriginalFile(source.documentId);
+      // A pinned version must never silently fall through to mutable latest.
+      const file = await documentContentStore.getOriginalFile(source.documentId, source.versionId);
       if (!file) {
         throw Object.assign(new Error("File not found"), { code: "NOT_FOUND" });
       }

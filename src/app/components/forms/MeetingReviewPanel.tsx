@@ -17,6 +17,7 @@ import type {
 } from "../../data/boardMeetingData";
 import type { BmsUser } from "../../data/bmsUsers";
 import { meetingAccessBlockers } from "../../pages/return-register/meetingAccess";
+import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "../../pages/return-register/meetingAgendaSelection";
 
 // ── Props ──────────────────────────────────────────────────────────────────────
 
@@ -307,19 +308,16 @@ export function MeetingReviewPanel({
     if (participantStats.quorum === 0)
       out.push({ label: "At least one quorum-eligible participant is required",  step: 1 });
 
-    if (agendaEntries.length === 0)
-      out.push({ label: "At least one approved agenda must be selected",         step: 2 });
-    if (agendaEntries.length > 0 && agendaStats.draftAgendas.length > 0)
-      out.push({ label: `${agendaStats.draftAgendas.length} selected agenda${agendaStats.draftAgendas.length > 1 ? "s are" : " is"} not yet Approved — approval required before scheduling`, step: 2 });
-    if (agendaEntries.length > 0 && agendaStats.allApproved && !agendaStats.allMeetingReady)
-      out.push({ label: "All selected agendas must be Meeting Ready before scheduling", step: 2 });
+    // An agenda-free meeting is ready to schedule when the other gates pass.
+    // Check explicitly selected agendas using the same rules as Step 3 and Save.
+    validateOptionalMeetingAgendas(
+      parseOptionalMeetingAgendas(values.selected_agenda_ids_json), allAgendas,
+    ).forEach(label => out.push({ label, step: 2 }));
 
     meetingAccessBlockers(values).forEach(label => out.push({ label, step: 3 }));
 
-    if (!quorumStats.configured)
-      out.push({ label: "Quorum rules must be configured",                       step: 3 });
-    if (quorumStats.configured && !quorumStats.met)
-      out.push({ label: `Projected quorum not met (${quorumStats.eligible} eligible, ${quorumStats.required} required)`, step: 3 });
+    // Quorum is assessed at meeting time; an unconfigured or not-yet-met
+    // projection is information, not a scheduling blocker.
 
     if (docStats.missingAccess > 0)
       out.push({ label: `${docStats.missingAccess} document access conflict${docStats.missingAccess > 1 ? "s" : ""} must be resolved`, step: 2 });
@@ -444,7 +442,7 @@ export function MeetingReviewPanel({
               <Row label="Readiness"       value={agendaStats.allApproved ? "All Approved" : "Some not Approved"} warn={!agendaStats.allApproved} />
             </>
           ) : (
-            <Empty text="No agendas selected" />
+            <Empty text="No agenda attached (optional)" />
           )}
         </SummaryCard>
 
@@ -472,7 +470,7 @@ export function MeetingReviewPanel({
           <Row label="Mode"             value={mode} />
           {(mode === "Physical" || mode === "Hybrid") && <Row label="Venue"          value={v(values, "venue")}            warn={!v(values, "venue")} />}
           {(mode === "Virtual"  || mode === "Hybrid") && <Row label="Platform"       value={v(values, "virtual_platform")} />}
-          {(mode === "Virtual"  || mode === "Hybrid") && <Row label="Meeting Link"   value={v(values, "virtual_link")}     warn={!v(values, "virtual_link")} />}
+          {(mode === "Virtual" || mode === "Hybrid") && <Row label="LiveKit Join Link" value={v(values, "virtual_link") || (v(values, "virtual_platform") === "LiveKit" ? "Assigned when saved" : "")} warn={!v(values, "virtual_link") && v(values, "virtual_platform") !== "LiveKit"} />}
           {v(values, "invitation_date")  && <Row label="Invitation Date" value={v(values, "invitation_date")} />}
           {v(values, "board_pack_date")  && <Row label="Board Pack Date" value={v(values, "board_pack_date")} />}
         </SummaryCard>
@@ -491,7 +489,7 @@ export function MeetingReviewPanel({
               }
             </div>
           ) : (
-            <Empty text="Quorum not configured" />
+            <Empty text="Quorum not configured — scheduling is allowed" />
           )}
         </SummaryCard>
 

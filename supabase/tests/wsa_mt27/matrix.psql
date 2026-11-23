@@ -1,0 +1,294 @@
+\set ON_ERROR_STOP on
+-- Execute in disposable PostgreSQL 17, rolled back after all assertions.
+begin;
+\ir ../wsf_ten_foundation/foundation.sql
+\ir fixture.sql
+\ir activation_candidate.sql
+
+do $gate$
+begin
+ if (select count(*) from pg_policies
+   where schemaname='public' and tablename='convay_entity_records'
+    and policyname='convay_mt27_forbid_generic_meeting_delete'
+    and permissive='RESTRICTIVE')<>1 then raise exception 'MT-27 restrictive policy absent'; end if;
+ if has_function_privilege('anon','public.convay_delete_draft_meeting(text,text,bigint)','execute')
+ then raise exception 'Anonymous delete RPC executable'; end if;
+ if has_table_privilege('authenticated','convay_private.mt27_delete_receipts','SELECT')
+ then raise exception 'Receipt journal exposed'; end if;
+ raise notice 'MT-27 CHECK 00 grants, private journal and direct-delete deny PASS';
+end $gate$;
+
+-- MT-27: explicit source statuses, including malformed/missing variants.
+-- These are synthetic records in this rollback-only PostgreSQL transaction.
+insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id,created_by)
+values
+ ('bms.meetings','status-missing','{"id":"status-missing"}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333'),
+ ('bms.meetings','status-blank','{"id":"status-blank","approval_status":"  ","status":""}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333'),
+ ('bms.meetings','approval-only','{"id":"approval-only","approval_status":"Draft"}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333'),
+ ('bms.meetings','status-only','{"id":"status-only","status":"Draft"}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333'),
+ ('bms.meetings','status-conflict','{"id":"status-conflict","approval_status":"Draft","status":"Completed"}'::jsonb,
+  '55555555-5555-4555-8555-555555555555','33333333-3333-4333-8333-333333333333');
+
+set local role authenticated;
+select set_config('request.jwt.claim.sub','33333333-3333-4333-8333-333333333333',true);
+select set_config('request.jwt.claims',
+ '{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"77777777-7777-4777-8777-777777777777"}',true);
+
+do $direct$
+declare n integer;
+begin
+ delete from public.convay_entity_records
+   where entity_key='bms.meetings' and record_id='fixture-meeting-1';
+ get diagnostics n=row_count;
+ if n<>0 then raise exception 'MT-27 direct REST delete bypass'; end if;
+ raise notice 'MT-27 CHECK 01 direct registry DELETE denied PASS';
+end $direct$;
+
+do $batch$
+declare denied boolean:=false;
+begin
+ begin
+ perform public.convay_apply_entity_batch(
+  '[{"entity_key":"bms.meetings","record_id":"fixture-meeting-1","action":"delete"}]'::jsonb);
+ exception when others then denied:=true; end;
+ if not denied then raise exception 'MT-27 batch DELETE bypass'; end if;
+ raise notice 'MT-27 CHECK 02 generic batch DELETE denied PASS';
+end $batch$;
+
+do $revision$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('fixture-meeting-1','stale-key',2);
+ exception when sqlstate '40001' then denied:=true; end;
+ if not denied then raise exception 'MT-27 stale revision accepted'; end if;
+ raise notice 'MT-27 CHECK 03 stale revision denied PASS';
+end $revision$;
+
+do $state$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('scheduled-a','scheduled-key',1);
+ exception when sqlstate '40001' then denied:=true; end;
+ if not denied then raise exception 'MT-27 scheduled deletion accepted'; end if;
+ raise notice 'MT-27 CHECK 04 non-Draft denied PASS';
+end $state$;
+
+do $explicit_state$
+declare rid text; denied boolean;
+begin
+ foreach rid in array array['status-missing','status-blank','status-conflict'] loop
+   denied:=false;
+   begin
+     perform public.convay_delete_draft_meeting(rid,'reject-'||rid,1);
+   exception when sqlstate '40001' then denied:=true; end;
+   if not denied then
+     raise exception 'MT-27 missing, blank or contradictory Draft accepted: %',rid;
+   end if;
+   if not exists(select 1 from public.convay_entity_records
+       where entity_key='bms.meetings' and record_id=rid) then
+     raise exception 'MT-27 rejected record lost: %',rid;
+   end if;
+ end loop;
+ raise notice 'MT-27 CHECK 18 missing/blank/contradictory status denied PASS';
+end $explicit_state$;
+
+do $single_state$
+declare rid text; ack jsonb;
+begin
+ foreach rid in array array['approval-only','status-only'] loop
+   ack:=public.convay_delete_draft_meeting(rid,'delete-'||rid,1);
+   if ack->>'outcome'<>'deleted' then
+     raise exception 'MT-27 valid explicit single Draft field rejected: %',rid;
+   end if;
+   if exists(select 1 from public.convay_entity_records
+       where entity_key='bms.meetings' and record_id=rid) then
+     raise exception 'MT-27 valid Draft not deleted: %',rid;
+   end if;
+ end loop;
+ raise notice 'MT-27 CHECK 19 approval-only/status-only Draft deletion PASS';
+end $single_state$;
+
+do $hold$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('held-a','hold-key',1);
+ exception when sqlstate '40001' then denied:=true; end;
+ if not denied then raise exception 'MT-27 retention hold bypass'; end if;
+ raise notice 'MT-27 CHECK 05 legal hold denied PASS';
+end $hold$;
+
+do $history$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('linked-a','linked-key',1);
+ exception when sqlstate '23503' then denied:=true; end;
+ if not denied then raise exception 'MT-27 attendance history erased'; end if;
+ raise notice 'MT-27 CHECK 06 protected linked attendance denied PASS';
+end $history$;
+
+do $success$
+declare ack jsonb; retry jsonb;
+begin
+ ack:=public.convay_delete_draft_meeting('fixture-meeting-1','stable-key',1);
+ if ack->>'outcome'<>'deleted' then raise exception 'MT-27 first ACK wrong %',ack; end if;
+ if exists(select 1 from public.convay_entity_records
+   where entity_key='bms.meetings' and record_id='fixture-meeting-1')
+ then raise exception 'MT-27 original draft still exists'; end if;
+ retry:=public.convay_delete_draft_meeting('fixture-meeting-1','stable-key',1);
+ if retry->>'outcome'<>'already_deleted' then raise exception 'MT-27 retry not idempotent'; end if;
+ raise notice 'MT-27 CHECK 07 owned Draft deleted and exact retry idempotent PASS';
+end $success$;
+
+do $reuse$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('draft-a-child','stable-key',1);
+ exception when sqlstate '22023' then denied:=true; end;
+ if not denied then raise exception 'MT-27 request ID reused for another draft'; end if;
+ raise notice 'MT-27 CHECK 08 idempotency key reused for different ID denied PASS';
+end $reuse$;
+
+do $child$
+declare ack jsonb;
+begin
+ ack:=public.convay_delete_draft_meeting('draft-a-child','cleanup-key',1);
+ if ack->>'outcome'<>'deleted' then raise exception 'MT-27 draft child delete failed'; end if;
+ if exists(select 1 from public.convay_entity_records where record_id in ('draft-a-child','child-a'))
+ then raise exception 'MT-27 draft child links orphaned'; end if;
+ raise notice 'MT-27 CHECK 09 atomic owned Draft setup-link cleanup PASS';
+end $child$;
+
+-- A deleted parent ID must not be silently re-created after idempotent ACK.
+reset role;
+do $tombstone$
+declare denied boolean:=false;
+begin
+ begin
+  insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id,created_by)
+   values('bms.meetings','fixture-meeting-1','{"id":"fixture-meeting-1","approval_status":"Draft"}',
+     '55555555-5555-4555-8555-555555555555',
+     '33333333-3333-4333-8333-333333333333');
+ exception when sqlstate '23505' then denied:=true; end;
+ if not denied then raise exception 'MT-27 reused deleted meeting identity'; end if;
+ raise notice 'MT-27 CHECK 12 deleted meeting identity tombstone PASS';
+end $tombstone$;
+-- Confirm non-meeting ordinary registry DELETE remains functional.
+insert into convay_private.fixture_grants values
+ ('33333333-3333-4333-8333-333333333333','bms.agenda','read'),
+ ('33333333-3333-4333-8333-333333333333','bms.agenda','delete');
+insert into public.convay_entity_records(entity_key,record_id,payload,created_by,tenant_id)
+ values('bms.agenda','fixture-agenda-a','{"id":"fixture-agenda-a"}',
+   '33333333-3333-4333-8333-333333333333',
+   '55555555-5555-4555-8555-555555555555');
+set local role authenticated;
+do $nonmeeting$
+declare n integer;
+begin
+ delete from public.convay_entity_records where entity_key='bms.agenda' and record_id='fixture-agenda-a';
+ get diagnostics n=row_count;
+ if n<>1 then raise exception 'MT-27 unrelated valid DELETE unexpectedly blocked'; end if;
+ raise notice 'MT-27 CHECK 13 non-meeting registry DELETE preserved PASS';
+end $nonmeeting$;
+
+-- Missing request ID or revision never writes an idempotency receipt.
+do $inputs$
+declare invalid_key boolean:=false; invalid_revision boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('held-a','',1);
+ exception when sqlstate '22023' then invalid_key:=true; end;
+ begin perform public.convay_delete_draft_meeting('held-a','invalid-revision',0);
+ exception when sqlstate '22023' then invalid_revision:=true; end;
+ if not invalid_key or not invalid_revision then
+   raise exception 'MT-27 malformed request/revision accepted'; end if;
+ raise notice 'MT-27 CHECK 14 missing request ID and invalid revision denied PASS';
+end $inputs$;
+
+-- User C is a current member of SAME tenant with matching module grants.
+-- Ownership is separate from RBAC and tenant authorization.
+reset role;
+insert into auth.users(id) values ('cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+insert into public.user_profiles values('cccccccc-cccc-4ccc-8ccc-cccccccccccc','active');
+insert into auth.sessions values(
+ '99999999-9999-4999-8999-999999999999',
+ 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',now()+interval '1 day');
+insert into convay_private.tenant_memberships(tenant_id,user_id) values(
+ '55555555-5555-4555-8555-555555555555',
+ 'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+insert into convay_private.fixture_grants values
+ ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','bms.meetings','read'),
+ ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','bms.meetings','delete');
+set local role authenticated;
+select set_config('request.jwt.claim.sub','cccccccc-cccc-4ccc-8ccc-cccccccccccc',true);
+select set_config('request.jwt.claims',
+ '{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"99999999-9999-4999-8999-999999999999"}',true);
+do $owner$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('held-a','different-creator',1);
+ exception when sqlstate '42501' then denied:=true; end;
+ if not denied then raise exception 'MT-27 same-tenant non-owner could delete'; end if;
+ raise notice 'MT-27 CHECK 15 same-tenant unauthorized owner denied PASS';
+end $owner$;
+-- Revoked DB membership overrides still-present signed JWT + module permission.
+reset role;
+update convay_private.tenant_memberships
+ set membership_state='revoked',revoked_at=now()
+ where user_id='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+set local role authenticated;
+do $revoked$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('held-a','revoked-member',1);
+ exception when sqlstate '42501' then denied:=true; end;
+ if not denied then raise exception 'MT-27 revoked membership permitted delete'; end if;
+ raise notice 'MT-27 CHECK 16 revoked tenant membership denied PASS';
+end $revoked$;
+-- Valid A member but delete grant revoked.
+reset role;
+delete from convay_private.fixture_grants
+ where actor_id='33333333-3333-4333-8333-333333333333'
+   and entity_key='bms.meetings' and action='delete';
+set local role authenticated;
+select set_config('request.jwt.claim.sub','33333333-3333-4333-8333-333333333333',true);
+select set_config('request.jwt.claims',
+ '{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"77777777-7777-4777-8777-777777777777"}',true);
+do $permission$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('held-a','role-revoked',1);
+ exception when sqlstate '42501' then denied:=true; end;
+ if not denied then raise exception 'MT-27 revoked module permission permitted delete'; end if;
+ raise notice 'MT-27 CHECK 17 revoked module permission denied PASS';
+end $permission$;
+
+-- Same grant, valid B tenant and session must not delete A-owned draft.
+select set_config('request.jwt.claim.sub','44444444-4444-4444-8444-444444444444',true);
+select set_config('request.jwt.claims',
+ '{"app_metadata":{"active_tenant_id":"66666666-6666-4666-8666-666666666666"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+do $tenant$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('scheduled-a','foreign-key',1);
+ exception when sqlstate '40001' then denied:=true; end;
+ if not denied then raise exception 'MT-27 cross-tenant deletion accepted'; end if;
+ raise notice 'MT-27 CHECK 10 foreign-tenant actor denied PASS';
+end $tenant$;
+
+-- B cannot use A tenant claim; only freshly validated DB membership counts.
+select set_config('request.jwt.claims',
+ '{"user_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+do $claim$
+declare denied boolean:=false;
+begin
+ begin perform public.convay_delete_draft_meeting('draft-b','forged-key',1);
+ exception when sqlstate '42501' then denied:=true; end;
+ if not denied then raise exception 'MT-27 forged user_metadata allowed'; end if;
+ raise notice 'MT-27 CHECK 11 user_metadata cannot authorize tenant PASS';
+end $claim$;
+
+rollback;
+-- No production or persisted fixture mutation; all staged DDL is rolled back.

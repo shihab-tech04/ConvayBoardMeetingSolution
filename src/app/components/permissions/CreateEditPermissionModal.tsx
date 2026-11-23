@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { KeyRound } from "lucide-react";
 import { AppModal } from "../modals/AppModal";
 import { Button } from "../buttons/Button";
@@ -6,6 +6,7 @@ import { AppTextField } from "../forms/AppTextField";
 import { AppSelectField } from "../forms/AppSelectField";
 import { SToggle } from "../forms/SToggle";
 import { usePermissionRegistry, type CustomPermission } from "../../hooks/usePermissionRegistry";
+import { mayDismissPermissionDraft, shouldHydratePermissionDraft } from "./permissionDraftLifecycle";
 
 interface Props {
   open: boolean;
@@ -33,6 +34,9 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
   const toGroupLabel = (id: string)   => permissionGroups.find((g) => g.id === id)?.label ?? "";
 
   const [saving, setSaving] = useState(false);
+  const inFlight = useRef(false);
+  const hydratedIdentity = useRef<string | null>(null);
+  const requestClose = () => { if (mayDismissPermissionDraft(inFlight.current)) onClose(); };
   const [saveError, setSaveError] = useState("");
   const [name, setName]           = useState("");
   const [groupLabel, setGroupLabel] = useState(groupOpts[0] ?? "");
@@ -46,7 +50,14 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
   const [endpointErr, setEndpointErr] = useState("");
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) { hydratedIdentity.current = null; return; }
+    const identity = editing ? `edit:${editing.id}` : "create";
+    if (!shouldHydratePermissionDraft({
+      open, identity, hydratedIdentity: hydratedIdentity.current,
+      groupsReady: permissionGroups.length > 0, saving: inFlight.current,
+    })) return;
+    hydratedIdentity.current = identity;
+    setSaveError("");
     if (editing) {
       setName(editing.label);
       setGroupLabel(toGroupLabel(editing.groupId));
@@ -60,13 +71,14 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
       setMethod("GET"); setService(""); setAccess("PUBLIC"); setActive(true);
     }
     setNameErr(""); setEndpointErr("");
-  }, [open, editing]);
+  }, [open, editing, permissionGroups]);
 
   const validate = (): boolean => {
     let ok = true;
     const groupId = toGroupId(groupLabel);
     const id = isEdit ? editing!.id : genId(groupId, name.trim());
 
+    if (!groupId) { setSaveError("Select a valid permission group."); ok = false; }
     if (!name.trim()) { setNameErr("Permission Name is required."); ok = false; }
     else if (!isEdit && existingIds.includes(id)) {
       setNameErr("A permission with this name already exists in the selected group."); ok = false;
@@ -84,7 +96,8 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
   };
 
   const handleSave = async () => {
-    if (!validate() || saving) return;
+    if (inFlight.current || !validate()) return;
+    inFlight.current = true;
     setSaving(true);
     setSaveError("");
     try {
@@ -103,14 +116,14 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
     onClose();
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Unable to save permission");
-    } finally { setSaving(false); }
+    } finally { inFlight.current = false; setSaving(false); }
   };
 
-  const canSave = name.trim() && endpoint.trim() && service.trim();
+  const canSave = Boolean(name.trim() && endpoint.trim() && service.trim() && toGroupId(groupLabel));
 
   const footer = (
     <div className="crm-footer">
-      <Button variant="ghost" size="lg" onClick={onClose}>Cancel</Button>
+      <Button variant="ghost" size="lg" onClick={requestClose} disabled={saving}>Cancel</Button>
       <Button variant="primary" size="lg" onClick={() => void handleSave()} loading={saving} disabled={!canSave || saving}>
         {isEdit ? "Save Changes" : "Add Permission"}
       </Button>
@@ -120,7 +133,7 @@ export function CreateEditPermissionModal({ open, editing, existingIds, existing
   return (
     <AppModal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       title={isEdit ? "Edit Permission" : "Add New Permission"}
       icon={<KeyRound size={15} strokeWidth={2} />}
       size="md"

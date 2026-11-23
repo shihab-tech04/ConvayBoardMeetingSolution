@@ -26,3 +26,43 @@ describe("MT-11 stable meeting draft identity", () => {
       .toThrow("Only a meeting in Draft status can be continued.");
   });
 });
+
+
+describe("MT-14 ambiguous meeting identity denial", () => {
+  const draft = { id: "record-a", meeting_id: "MTG-100", approval_status: "Draft" };
+
+  it("continues exactly one matching record through either ID", () => {
+    expect(resolveMeetingDraftTarget("record-a", [draft])).toEqual({
+      recordId: "record-a", meetingId: "MTG-100",
+    });
+    expect(resolveMeetingDraftTarget("MTG-100", [draft])).toEqual({
+      recordId: "record-a", meetingId: "MTG-100",
+    });
+  });
+
+  it("denies duplicate human meeting IDs even when both appear to be Drafts", () => {
+    expect(() => resolveMeetingDraftTarget("MTG-100", [
+      draft,
+      { id: "record-b", meeting_id: "MTG-100", approval_status: "Draft" },
+    ])).toThrow("ambiguous");
+  });
+
+  it("denies a human meeting ID that collides with another record ID", () => {
+    expect(() => resolveMeetingDraftTarget("MTG-100", [
+      draft,
+      { id: "MTG-100", meeting_id: "MTG-200", approval_status: "Scheduled" },
+    ])).toThrow("ambiguous");
+  });
+
+  it("does not accept conflicting saved Draft and non-Draft lifecycle states", () => {
+    expect(() => resolveMeetingDraftTarget("MTG-100", [
+      { ...draft, status: "Scheduled" },
+    ])).toThrow("Only a meeting in Draft status");
+  });
+
+  it("never silently chooses the first duplicated registry record ID", () => {
+    expect(() => resolveMeetingDraftTarget("record-a", [
+      draft, { ...draft, meeting_id: "MTG-999" },
+    ])).toThrow("ambiguous");
+  });
+});

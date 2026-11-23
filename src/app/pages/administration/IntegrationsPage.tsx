@@ -178,6 +178,7 @@ export function IntegrationsPage() {
     status: read.state === "ready" ? activeStatus : "All",
     search,
   });
+  const hasActiveFilters = activeCategory !== "All" || activeStatus !== "All" || search.trim().length > 0;
 
   return (
     <div style={{ minHeight: "100vh", background: "var(--background)", color: "var(--foreground)" }}>
@@ -275,6 +276,29 @@ export function IntegrationsPage() {
               <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--muted-foreground)" }}>
                 <Link2 size={40} style={{ margin: "0 auto 1rem", opacity: 0.35, display: "block" }} />
                 <p style={{ fontSize: "0.95rem" }}>No integrations match your search.</p>
+                {hasActiveFilters && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveCategory("All");
+                      setActiveStatus("All");
+                      setSearch("");
+                    }}
+                    style={{
+                      marginTop: "0.25rem",
+                      padding: "0.35rem 0.6rem",
+                      borderRadius: 7,
+                      background: "transparent",
+                      border: "1px solid var(--border)",
+                      color: "var(--primary)",
+                      fontSize: "0.75rem",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
               </div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>

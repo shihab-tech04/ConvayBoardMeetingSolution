@@ -12,6 +12,7 @@ import { CreateEditPermissionModal } from "../../components/permissions/CreateEd
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import type { ColDef, FilterDef, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
+import { PERMISSION_METHOD_FILTER_OPTIONS, matchesPermissionMethod } from "./permissionMethodFilter";
 
 const PER_PAGE = 10;
 
@@ -65,7 +66,7 @@ export function PermissionListPage() {
   // ── Filter definitions ───────────────────────────────────────────────────
   const filters: FilterDef[] = useMemo(() => [
     { key: "group",  label: "Group",  type: "select", options: ["All Groups", ...permissionGroups.map((g) => g.label)] },
-    { key: "method", label: "Method", type: "select", options: ["All", "GET", "POST", "PUT", "DELETE"] },
+    { key: "method", label: "Method", type: "select", options: [...PERMISSION_METHOD_FILTER_OPTIONS] },
     { key: "access", label: "Access", type: "select", options: ["All", "PUBLIC", "AUTH", "AUTHORIZE"] },
     { key: "status", label: "Status", type: "select", options: ["All", "Active", "Inactive"] },
     { key: "type",   label: "Type",   type: "select", options: ["All", "Base", "Custom"] },
@@ -105,7 +106,7 @@ export function PermissionListPage() {
       String(r.typeLabel).toLowerCase().includes(q);
 
     const matchGroup  = !applied.group  || applied.group  === "All Groups" || r.groupLabel === applied.group;
-    const matchMethod = !applied.method || applied.method === "All"        || r.method     === applied.method;
+    const matchMethod = matchesPermissionMethod(String(r.method), applied.method);
     const matchAccess = !applied.access || applied.access === "All"        || r.accessLabel === applied.access;
     const matchStatus = !applied.status || applied.status === "All"        || r.status     === applied.status;
     const matchType   = !applied.type   || applied.type   === "All"        || r.typeLabel  === applied.type;

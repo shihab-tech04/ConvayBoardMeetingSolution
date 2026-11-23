@@ -13,19 +13,19 @@
  *  - Only one active Permanent Head per unit.
  *  - Effective dates required.
  *  - Previous assignments are preserved in history (status → "ended").
- *  - Unit head_user_id updated immediately.
+ *  - Unit projection and immutable history updated atomically by SQL only.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X, Crown, Search, CheckCircle, UserMinus, Plus, Clock } from "lucide-react";
 
 import type { OrgUnit, UnitHeadAssignment } from "../../../data/boardMeetingData";
-import { useUnitHeadRegistry, useAuditEventRegistry, generateId } from "../../../data/boardMeetingData";
-import { useOrgUnitRegistry } from "../../../data/boardMeetingData";
-import type { BmsUser } from "../../../data/bmsUsers";
+import { useUnitHeadRegistry } from "../../../data/boardMeetingData";
+import { convayAuth } from "../../../services/supabase/convayAuth";
+import { commitUnitHeadMutation, type UnitHeadMutation } from "./unitHeadMutation";
+import { toast } from "sonner";
 import { useBmsUserRegistry } from "../../../data/bmsUsers";
-import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { isUnitAssignable } from "../../../utils/orgHierarchy";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -57,10 +57,7 @@ function AssignmentTypeBadge({ type }: { type: AssignmentType }) {
 
 export function ManageHeadModal({ unit, onClose, onSuccess }: Props) {
   const headReg     = useUnitHeadRegistry();
-  const orgReg      = useOrgUnitRegistry();
   const bmsUsers    = useBmsUserRegistry();
-  const auditReg    = useAuditEventRegistry();
-  const currentUser = useCurrentUser();
 
   const [mode, setMode] = useState<"list" | "assign" | "end">("list");
   const [search, setSearch] = useState("");
@@ -88,7 +85,7 @@ export function ManageHeadModal({ unit, onClose, onSuccess }: Props) {
 
   // Eligible users (active or pending)
   const eligibleUsers = useMemo(
-    () => bmsUsers.items.filter((u) => u.account_status === "active" || u.account_status === "pending_activation"),
+    () => bmsUsers.items.filter((u) => u.account_status === "active"),
     [bmsUsers.items],
   );
 
@@ -111,104 +108,134 @@ export function ManageHeadModal({ unit, onClose, onSuccess }: Props) {
 
   // ── Actions ───────────────────────────────────────────────────────────────────
 
-  function handleAssign() {
-    if (!selectedUserId) { setError("Select a user."); return; }
-    if (!startDate)      { setError("Effective start date is required."); return; }
+  const saveInFlight = useRef(false);
+  const requestToken = useRef<{ fingerprint: string; id: string } | null>(null);
+  function stableRequestId(fingerprint: string) {
+    if (requestToken.current?.fingerprint === fingerprint) return requestToken.current.id;
+    const id = crypto.randomUUID();
+    requestToken.current = { fingerprint, id };
+    return id;
+  }
 
+  async function sendServerMutation(intent: UnitHeadMutation) {
+    return commitUnitHeadMutation(intent, {
+      send: async (payload) => {
+        // Server derives actor, permission, active membership and tenant from JWT.
+        // Do not send a browser-provided actor or forged tenant attribute.
+        const parameters: Record<string, unknown> = {
+          p_action: payload.operation,
+          p_unit_id: payload.unit_id,
+          p_request_id: payload.request_id,
+        };
+        if (payload.operation === "assign") {
+          parameters.p_user_id = payload.user_id;
+          parameters.p_assignment_type = payload.assignment_type;
+          parameters.p_start_date = payload.start_date;
+          parameters.p_end_date = payload.end_date;
+          parameters.p_reason = payload.reason;
+        } else {
+          parameters.p_record_id = payload.record_id;
+        }
+        const response = await convayAuth.authenticatedRequest(
+          "/rest/v1/rpc/convay_manage_unit_head",
+          { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parameters) },
+        );
+        return response.json();
+      },
+      readAssignment: async (id) => {
+        const result = await convayAuth.registry<UnitHeadAssignment>("bms.unitheads", "list");
+        return result.records.find((entry) => entry.payload.id === id) ?? null;
+      },
+      readUnit: async (id) => {
+        const result = await convayAuth.registry<OrgUnit>("bms.orgunits", "list");
+        return result.records.find((entry) => entry.payload.id === id) ?? null;
+      },
+    });
+  }
+
+  async function completeVerifiedMutation() {
+    let refreshError = false;
+    try { await headReg.refresh?.(); } catch { refreshError = true; }
+    requestToken.current = null;
+    setMode("list");
+    resetForm();
+    if (refreshError) {
+      toast.warning("The server confirmed the change, but the list refresh failed. Refresh to see current assignments.");
+    }
+    try { onSuccess?.(); } catch {
+      toast.warning("Saved on the server; refresh the governance view to update the summary.");
+    }
+  }
+
+  async function handleAssign() {
+    if (saveInFlight.current) return;
+    if (!selectedUserId) { setError("Select a user."); return; }
+    if (!startDate) { setError("Effective start date is required."); return; }
     if (assignmentType === "Permanent Head" && hasActivePermanentHead) {
       setError("This unit already has an active Permanent Head. End that assignment first.");
       return;
     }
-
     if (!isUnitAssignable(unit)) {
       setError("This unit is inactive and cannot receive new assignments.");
       return;
     }
-
-    setSaving(true);
-    const now = new Date().toISOString();
-
-    const newAssignment: UnitHeadAssignment = {
-      id:              generateId("UHA", headReg.items.map((a) => a.id)),
-      assignment_id:   `UHA-${Date.now()}`,
-      created_at:      now,
-      unit_id:         unit.id,
-      user_id:         selectedUserId,
-      assignment_type: assignmentType,
-      start_date:      startDate,
-      end_date:        endDate || undefined,
-      assigned_by:     currentUser?.id ?? "system",
-      reason:          reason || undefined,
-      status:          "active",
-    };
-
-    headReg.add(newAssignment);
-
-    // Update unit's head_user_id or deputy_user_id
-    if (assignmentType === "Permanent Head" || assignmentType === "Acting Head") {
-      orgReg.update(unit.id, { head_user_id: selectedUserId, head: getUserName(selectedUserId), updated_at: now });
-    } else if (assignmentType === "Deputy") {
-      orgReg.update(unit.id, { deputy_user_id: selectedUserId, updated_at: now });
+    // Display filtering is advisory. SQL must separately prove active board
+    // membership, unit/tenant scope and sufficient role at mutation time.
+    if (!eligibleUsers.some((user) => user.id === selectedUserId &&
+          user.account_status === "active")) {
+      setError("Only an active account can be considered for a leadership assignment.");
+      return;
     }
-
-    auditReg.add({
-      id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-      created_at:      now,
-      event_id:        `AUDIT-HEAD-${Date.now()}`,
-      entity_type:     "OrgUnit",
-      entity_id:       unit.id,
-      action:          "org_head_assigned",
-      actor:           currentUser?.name ?? "System",
-      actor_role:      currentUser?.designation ?? "",
-      timestamp:       now,
-      ip_address:      "",
-      details:         `${assignmentType} assigned: ${getUserName(selectedUserId)} (effective ${startDate})`,
-      approval_status: "Approved",
-    });
-
-    setSaving(false);
-    onSuccess?.();
-    setMode("list");
-    resetForm();
+    saveInFlight.current = true;
+    setSaving(true);
+    setError("");
+    const data = {
+      operation: "assign" as const,
+      unit_id: unit.id,
+      user_id: selectedUserId,
+      assignment_type: assignmentType,
+      start_date: startDate,
+      end_date: endDate || null,
+      reason: reason.trim(),
+    };
+    try {
+      await sendServerMutation({
+        ...data, request_id: stableRequestId(JSON.stringify(data)),
+      });
+      await completeVerifiedMutation();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message :
+        "Unable to verify the leadership assignment. Refresh and retry.");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
   }
 
-  function handleEndAssignment() {
+  async function handleEndAssignment() {
+    if (saveInFlight.current) return;
     if (!endingAssignmentId) { setError("Select an assignment to end."); return; }
-    const now = new Date().toISOString();
-    const a = headReg.items.find((x) => x.id === endingAssignmentId);
-    if (!a) return;
-
-    headReg.update(endingAssignmentId, { status: "ended", end_date: now.slice(0, 10) });
-
-    // Clear head/deputy if this was the active one
-    if (a.assignment_type === "Permanent Head" || a.assignment_type === "Acting Head") {
-      if (unit.head_user_id === a.user_id) {
-        orgReg.update(unit.id, { head_user_id: undefined, head: "", updated_at: now });
-      }
-    } else if (a.assignment_type === "Deputy") {
-      if (unit.deputy_user_id === a.user_id) {
-        orgReg.update(unit.id, { deputy_user_id: undefined, updated_at: now });
-      }
+    const assignment = activeAssignments.find((entry) => entry.id === endingAssignmentId);
+    if (!assignment) { setError("Assignment not found. Refresh before retrying."); return; }
+    saveInFlight.current = true;
+    setSaving(true);
+    setError("");
+    const data = {
+      operation: "end" as const, unit_id: unit.id, record_id: assignment.id,
+    };
+    try {
+      await sendServerMutation({
+        ...data, request_id: stableRequestId(JSON.stringify(data)),
+      });
+      await completeVerifiedMutation();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message :
+        "Unable to verify termination. Refresh and retry.");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
     }
-
-    auditReg.add({
-      id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-      created_at:      now,
-      event_id:        `AUDIT-HEAD-END-${Date.now()}`,
-      entity_type:     "OrgUnit",
-      entity_id:       unit.id,
-      action:          "org_head_ended",
-      actor:           currentUser?.name ?? "System",
-      actor_role:      currentUser?.designation ?? "",
-      timestamp:       now,
-      ip_address:      "",
-      details:         `${a.assignment_type} ended: ${getUserName(a.user_id)}`,
-      approval_status: "Approved",
-    });
-
-    onSuccess?.();
-    setMode("list");
-    resetForm();
   }
 
   function resetForm() {
@@ -227,7 +254,7 @@ export function ManageHeadModal({ unit, onClose, onSuccess }: Props) {
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !saveInFlight.current) onClose(); }}
     >
       <div className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[92vh]">
         {/* Header */}
@@ -239,7 +266,7 @@ export function ManageHeadModal({ unit, onClose, onSuccess }: Props) {
               <p className="text-xs text-muted-foreground">{unit.unit_name}</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={16} /></button>
+          <button onClick={onClose} disabled={saving} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={16} /></button>
         </div>
 
         {/* List mode */}
@@ -406,7 +433,7 @@ export function ManageHeadModal({ unit, onClose, onSuccess }: Props) {
             </div>
 
             <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-border flex-shrink-0">
-              <button onClick={() => { resetForm(); setMode("list"); }} className="px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg">Back</button>
+              <button onClick={() => { resetForm(); setMode("list"); }} disabled={saving} className="px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg">Back</button>
               <button
                 onClick={handleAssign}
                 disabled={saving || !selectedUserId || !startDate}
@@ -446,10 +473,10 @@ export function ManageHeadModal({ unit, onClose, onSuccess }: Props) {
               <button onClick={() => { resetForm(); setMode("list"); }} className="px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg">Back</button>
               <button
                 onClick={handleEndAssignment}
-                disabled={!endingAssignmentId}
+                disabled={saving || !endingAssignmentId}
                 className="px-4 py-2 text-sm font-medium text-white bg-destructive hover:bg-destructive/90 rounded-lg disabled:opacity-40"
               >
-                End Assignment
+                {saving ? "Ending…" : "End Assignment"}
               </button>
             </div>
           </>

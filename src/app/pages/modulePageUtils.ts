@@ -34,6 +34,8 @@ export interface MobileCardMapping {
 
 export interface PageCfg {
   title: string; titleKey?: string;
+  /** Optional grammatical plural for counts, search and empty states. */
+  entityPlural?: string;
   desc: string; descKey?: string;
   cols: ColDef[];
   /** Optional separate column definitions for the details drawer (supports groups). If absent, drawer auto-generates from cols. */
@@ -44,9 +46,14 @@ export interface PageCfg {
   /** Per-row dynamic replacement for drawerActions — used only when provided. */
   drawerActionsResolver?: (row: TableRow) => RowAction[];
   rows: TableRow[];
+  /** Opens a row after its authoritative registry data is available. */
+  initialDrawerRowId?: string;
   /** Optional authoritative registry load state for pages backed by Supabase. */
   dataLoading?: boolean;
   dataError?: string | null;
+  /** Optional page-specific copy for an unavailable authoritative registry. */
+  dataErrorTitle?: string;
+  dataErrorDescription?: string;
   onDataRetry?: () => void | Promise<void>;
   kpis?: KpiDef[];
   entryBtn?: string;
@@ -91,6 +98,8 @@ export interface PageCfg {
     values: Record<string, EntryFormValue>,
     onValuesChange: (patch: Record<string, EntryFormValue>) => void,
   ) => React.ReactNode>;
+  /** Optional create-wizard preflight. Return a visible error rather than advancing with invalid data. */
+  validateCreateStep?: (step: number, values: Record<string, EntryFormValue>) => string | null;
   /** Called after a row is created. Use to sync with external registries. */
   onRowCreate?: (values: Record<string, unknown>) => void | boolean | Promise<void | boolean>;
   /** Hold the create wizard open until the authoritative save succeeds. */

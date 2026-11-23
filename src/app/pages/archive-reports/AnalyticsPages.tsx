@@ -2,6 +2,12 @@ import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
+import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
+import { buildGovernanceReportFilters } from "./governanceReportView";
+import { resolutionBelongsToMeeting } from "./resolutionRegisterView";
+import { buildDecisionRegisterFilters } from "./decisionRegisterView";
+import { hasReportableFinancialImpact } from "./financialImpactReportView";
+import { countOverdueActions, isActionClosed, todayInLocalTime } from "./actionRegisterView";
 import {
   MEETING_DRAWER_COLS,
   GOV_BODY_DRAWER_COLS,
@@ -9,6 +15,7 @@ import {
 } from "../boardMeetingDrawerSchemas";
 import {
   useMeetingRegistry,
+  useQuorumEventRegistry,
   useDecisionRegistry,
   useActionItemRegistry,
   useResolutionRegistry,
@@ -19,6 +26,7 @@ import {
 
 export function MeetingPerformanceAnalyticsPage() {
   const registry = useMeetingRegistry();
+  const quorumReg = useQuorumEventRegistry();
 
   const rows: TableRow[] = registry.items.map(m => ({
     id:               m.id,
@@ -31,6 +39,7 @@ export function MeetingPerformanceAnalyticsPage() {
     agenda_count:     m.agenda_count,
     participant_count: m.participant_count,
     quorum_forecast:  m.quorum_forecast,
+    quorum_observed:  latestRecordedQuorumStatus(m.meeting_id, quorumReg.items),
     readiness:        m.readiness,
     approval_status:  m.approval_status,
   }));
@@ -38,7 +47,7 @@ export function MeetingPerformanceAnalyticsPage() {
   const completed  = rows.filter(r => r.approval_status === "Completed" || r.approval_status === "Minutes Approved").length;
   const cancelled  = rows.filter(r => r.approval_status === "Cancelled").length;
   const scheduled  = rows.filter(r => r.approval_status === "Scheduled").length;
-  const quorumMet  = rows.filter(r => r.quorum_forecast === "Met" || r.quorum_forecast === "Yes").length;
+  const quorumMet  = rows.filter(r => r.quorum_observed === "Met").length;
 
   const kpis: KpiDef[] = [
     { label: "Total Meetings", value: String(rows.length),  tone: "primary" },
@@ -57,13 +66,13 @@ export function MeetingPerformanceAnalyticsPage() {
       fc("meeting_date",     "Date",         { headerKey: "headers.date" }),
       fc("agenda_count",     "Agenda Items", { headerKey: "headers.totalEntry" }),
       fc("participant_count","Participants", { headerKey: "headers.type" }),
-      fc("quorum_forecast",  "Quorum",       { headerKey: "headers.reason" }),
+      fc("quorum_observed",  "Quorum",       { headerKey: "headers.reason" }),
       BADGE("approval_status", "Status"),
     ],
     mobileCardMapping: {
       primary:    "meeting_title",
       identifier: "meeting_id",
-      meta:       ["committee", "meeting_type", "quorum_forecast"],
+      meta:       ["committee", "meeting_type", "quorum_observed"],
       status:     "approval_status",
       date:       "meeting_date",
     },
@@ -72,7 +81,13 @@ export function MeetingPerformanceAnalyticsPage() {
     drawerTitle: "Meeting Details",
     drawerCols:  MEETING_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(registry.loading || quorumReg.loading),
+    dataError: registry.error ?? quorumReg.error ?? null,
+    onDataRetry: async () => {
+      await Promise.all([registry.refresh?.(), quorumReg.refresh?.()]);
+    },
+    // Never present zero meeting/quorum metrics before both authorized reads succeed.
+    kpis: registry.loading || quorumReg.loading || registry.error || quorumReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
@@ -134,7 +149,10 @@ export function ParticipationAnalyticsPage() {
     drawerTitle: "Meeting Details",
     drawerCols:  MEETING_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(registry.loading),
+    dataError: registry.error ?? null,
+    onDataRetry: registry.refresh,
+    kpis: registry.loading || registry.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
@@ -148,7 +166,7 @@ export function GovernanceReportPage() {
 
   const rows: TableRow[] = governanceReg.items.map(g => {
     const bodyMeetings    = meetingReg.items.filter(m => m.committee === g.body_name);
-    const bodyResolutions = resolutionReg.items.filter(r => bodyMeetings.some(m => m.meeting_id === r.source_meeting));
+    const bodyResolutions = resolutionReg.items.filter(r => bodyMeetings.some(m => resolutionBelongsToMeeting(r, m.meeting_id)));
     return {
       id:                 g.id,
       body_id:            g.body_id,
@@ -193,12 +211,17 @@ export function GovernanceReportPage() {
       status:     "status",
       date:       "establishment_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildGovernanceReportFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Governance Body Details",
     drawerCols:  GOV_BODY_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(meetingReg.loading || governanceReg.loading || resolutionReg.loading),
+    dataError: meetingReg.error ?? governanceReg.error ?? resolutionReg.error ?? null,
+    onDataRetry: async () => {
+      await Promise.all([meetingReg.refresh?.(), governanceReg.refresh?.(), resolutionReg.refresh?.()]);
+    },
+    kpis: meetingReg.loading || governanceReg.loading || resolutionReg.loading || meetingReg.error || governanceReg.error || resolutionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
@@ -208,7 +231,6 @@ export function GovernanceReportPage() {
 export function DecisionsActionsAnalyticsPage() {
   const decisionReg = useDecisionRegistry();
   const actionReg   = useActionItemRegistry();
-  const today       = new Date().toISOString().slice(0, 10);
 
   const rows: TableRow[] = decisionReg.items.map(d => {
     const linked = actionReg.items.filter(a => a.source_decision === d.decision_id);
@@ -222,15 +244,13 @@ export function DecisionsActionsAnalyticsPage() {
       effective_date:        d.effective_date,
       financial_impact:      d.financial_impact,
       linked_actions:        String(linked.length),
-      completed_actions:     String(linked.filter(a => a.implementation_status === "Completed").length),
+      completed_actions:     String(linked.filter(a => isActionClosed({ ...a })).length),
       implementation_status: d.implementation_status,
       approval_status:       d.approval_status,
     };
   });
 
-  const overdueActions = actionReg.items.filter(
-    a => a.due_date && a.due_date < today && a.implementation_status !== "Completed"
-  ).length;
+  const overdueActions = countOverdueActions(actionReg.items.map(a => ({ ...a })), todayInLocalTime(new Date()));
 
   const kpis: KpiDef[] = [
     { label: "Total Decisions", value: String(decisionReg.items.length),                                                     tone: "primary" },
@@ -258,12 +278,17 @@ export function DecisionsActionsAnalyticsPage() {
       status:     "implementation_status",
       date:       "effective_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildDecisionRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Decision Details",
     drawerCols:  DECISION_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(decisionReg.loading || actionReg.loading),
+    dataError: decisionReg.error ?? actionReg.error ?? null,
+    onDataRetry: async () => {
+      await Promise.all([decisionReg.refresh?.(), actionReg.refresh?.()]);
+    },
+    kpis: decisionReg.loading || actionReg.loading || decisionReg.error || actionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }
@@ -273,9 +298,8 @@ export function DecisionsActionsAnalyticsPage() {
 export function FinancialResourceImpactPage() {
   const decisionReg = useDecisionRegistry();
 
-  const withImpact = decisionReg.items.filter(
-    d => d.financial_impact && d.financial_impact !== "N/A" && d.financial_impact !== ""
-  );
+  // Only SQL-confirmed, meaningful impact values enter this report.
+  const withImpact = decisionReg.items.filter(d => hasReportableFinancialImpact(d.financial_impact));
 
   const rows: TableRow[] = withImpact.map(d => ({
     id:                    d.id,
@@ -318,12 +342,15 @@ export function FinancialResourceImpactPage() {
       amount:     "financial_impact",
       date:       "effective_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildDecisionRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Decision Details",
     drawerCols:  DECISION_DRAWER_COLS,
     rows,
-    kpis,
+    dataLoading: Boolean(decisionReg.loading),
+    dataError: decisionReg.error ?? null,
+    onDataRetry: decisionReg.refresh,
+    kpis: decisionReg.loading || decisionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
 }

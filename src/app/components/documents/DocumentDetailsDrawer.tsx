@@ -42,7 +42,14 @@ import {
   type BoardPackDocumentLink,
 } from "../../data/documentWorkspaceData";
 import { useUserRegistry } from "../../hooks/useUserRegistry";
-import { usePermissionRegistry } from "../../hooks/usePermissionRegistry";
+import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { documentActionGranted, documentActionSessionUnchanged } from "./documentActionAccess";
+import { matchesExactDocumentLinkReference } from "./documentLinkedRecordReference";
+import {
+  resolveUniqueActiveDocumentUserId,
+  documentShareGrantReadback,
+  documentShareRevokeReadback,
+} from "./documentAccessReadback";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getDocumentRepository } from "../../services/repositories/documentRepository";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
@@ -50,6 +57,7 @@ import type { DocumentRepository, DocumentAccessEntry } from "../../services/typ
 import { getDocumentWorkspaceType } from "../../utils/documentFormat";
 import { canRestoreVersion, isLockedVersion } from "./documentVersionLock";
 import { documentAcknowledgementLabel, formatDocumentBytes as formatBytes, formatDocumentDate as formatDate } from "./documentDetailFormatting";
+import { confirmDocumentAcknowledgement, isCurrentVersionAcknowledged } from "./documentAcknowledgementAck";
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -83,10 +91,12 @@ function newAuditId(): string { return `AUD-${Date.now()}-${Math.random().toStri
 // ── Permission hook ────────────────────────────────────────────────────────────
 
 function useDocPermissions() {
-  const reg = usePermissionRegistry();
+  // Subscribe for instant UI updates. Each action reads the CURRENT SQL-backed
+  // actor snapshot instead of the global catalogue of defined permissions.
+  const access = useAccessSnapshot();
   return useCallback(
-    (permId: string) => reg.flatPermissions.some(p => p.id === permId && p.status === "Active"),
-    [reg.flatPermissions],
+    (permId: string) => documentActionGranted(permId, readAccessSnapshot()),
+    [access],
   );
 }
 
@@ -133,7 +143,7 @@ function OverviewTab({ doc }: { doc: BoardDocument }) {
   const meetingLabel = useMemo(() => {
     if (!doc.related_meeting) return null;
     const m = meetingReg.items.find(
-      m => m.meeting_id === doc.related_meeting || doc.related_meeting.startsWith(m.meeting_id),
+      m => matchesExactDocumentLinkReference(doc.related_meeting, m.meeting_id),
     );
     return m?.meeting_title ?? doc.related_meeting;
   }, [doc.related_meeting, meetingReg.items]);
@@ -141,7 +151,7 @@ function OverviewTab({ doc }: { doc: BoardDocument }) {
   const agendaLabel = useMemo(() => {
     if (!doc.related_agenda) return null;
     const a = agendaReg.items.find(
-      a => a.agenda_id === doc.related_agenda || doc.related_agenda.startsWith(a.agenda_id),
+      a => matchesExactDocumentLinkReference(doc.related_agenda, a.agenda_id),
     );
     return (a as { agenda_title?: string })?.agenda_title ?? doc.related_agenda;
   }, [doc.related_agenda, agendaReg.items]);
@@ -235,8 +245,11 @@ function AccessTab({
   can: (id: string) => boolean;
 }) {
   const { users } = useUserRegistry();
+  const actorAccess = useAccessSnapshot();
+  const requestEpoch = useRef(0);
   const [entries, setEntries]     = useState<DocumentAccessEntry[]>([]);
   const [loading, setLoading]     = useState(true);
+  const [accessError, setAccessError] = useState<string | null>(null);
   const [showForm, setShowForm]   = useState(false);
   const [selUser, setSelUser]     = useState("");
   const [selRole, setSelRole]     = useState("Viewer");
@@ -245,41 +258,95 @@ function AccessTab({
   const canShare = can("doc_share");
   const docId = doc.doc_id ?? doc.id;
 
-  const reload = useCallback(async () => {
-    if (!repo) return;
+  const reload = useCallback(async (): Promise<DocumentAccessEntry[] | null> => {
+    const requestId = ++requestEpoch.current;
+    const accessAtStart = readAccessSnapshot();
+    if (!repo) return null;
     setLoading(true);
-    try { setEntries(await repo.listAccess(docId)); }
-    catch { setEntries([]); }
-    finally { setLoading(false); }
-  }, [repo, docId]);
+    setEntries([]);
+    setAccessError(null);
+    if (!documentActionGranted("doc_view", accessAtStart)) {
+      setLoading(false);
+      setAccessError("You do not have permission to view this document's access list.");
+      return null;
+    }
+    try {
+      const latest = await repo.listAccess(docId);
+      if (requestId !== requestEpoch.current ||
+          readAccessSnapshot() !== accessAtStart) return null;
+      if (!Array.isArray(latest)) throw new Error("Invalid access-list response.");
+      setEntries(latest);
+      return latest;
+    } catch {
+      if (requestId === requestEpoch.current &&
+          readAccessSnapshot() === accessAtStart) {
+        setEntries([]);
+        setAccessError("Unable to load document access. Retry this request.");
+      }
+      return null;
+    } finally {
+      if (requestId === requestEpoch.current &&
+          readAccessSnapshot() === accessAtStart) setLoading(false);
+    }
+  }, [repo, docId, actorAccess]);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => {
+    void reload();
+    return () => { requestEpoch.current += 1; };
+  }, [reload]);
 
   const handleAdd = async () => {
     if (!repo || !selUser) { toast.error("Select a user to add."); return; }
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_share", readAccessSnapshot())) {
+      toast.error("You do not have permission to share this document.");
+      return;
+    }
     setSaving(true);
     try {
-      await repo.grantAccess({
+      const subjectId = resolveUniqueActiveDocumentUserId(users, selUser);
+      const permission = ROLE_PERM_MAP[selRole] ?? "view";
+      const saved = await repo.grantAccess({
         document_id: docId,
         subject_type: "user",
-        subject_id: selUser,
-        permission: ROLE_PERM_MAP[selRole] ?? "view",
+        subject_id: subjectId,
+        permission,
         granted_by: "current_user",
       });
+      if (!documentActionSessionUnchanged("doc_share", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or access changed. Refresh the document access list.");
+      }
+      const confirmed = await reload();
+      if (!confirmed || !documentShareGrantReadback(confirmed, saved, docId, subjectId, permission)) {
+        throw new Error("Access grant was submitted, but SQL readback did not confirm it. Refresh and check before retrying.");
+      }
       toast.success("Access granted.");
       setShowForm(false); setSelUser(""); setSelRole("Viewer");
-      await reload();
-    } catch { toast.error("Failed to grant access."); }
-    finally { setSaving(false); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to grant access.");
+    } finally { setSaving(false); }
   };
 
   const handleRevoke = async (entryId: string, name: string) => {
     if (!repo) return;
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_share", readAccessSnapshot())) {
+      toast.error("You do not have permission to revoke document access.");
+      return;
+    }
     try {
       await repo.revokeAccess(entryId);
+      if (!documentActionSessionUnchanged("doc_share", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or access changed. Refresh the document access list.");
+      }
+      const confirmed = await reload();
+      if (!confirmed || !documentShareRevokeReadback(confirmed, entryId)) {
+        throw new Error("Revocation was submitted, but SQL readback did not confirm removal. Refresh before retrying.");
+      }
       toast.success(`Access removed for ${name}.`);
-      await reload();
-    } catch { toast.error("Failed to remove access."); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to remove access.");
+    }
   };
 
   const userOptions = useMemo(
@@ -293,6 +360,12 @@ function AccessTab({
   };
 
   if (loading) return <div className="doc-drawer__loading"><Loader2 size={16} className="spin-icon" /> Loading access…</div>;
+  if (accessError) return (
+    <div className="doc-drawer__empty" role="alert">
+      <div>{accessError}</div>
+      <Button variant="secondary" size="sm" onClick={() => { void reload(); }}>Retry</Button>
+    </div>
+  );
 
   return (
     <>
@@ -1301,36 +1374,74 @@ function BoardPacksTab({ doc, can }: { doc: BoardDocument; can: (id: string) => 
 // ── AcknowledgementsTab ────────────────────────────────────────────────────────
 
 function AcknowledgementsTab({ doc }: { doc: BoardDocument }) {
-  const docId       = doc.doc_id ?? doc.id;
-  const ackReg      = useDocumentAcknowledgementRegistry();
-  const auditReg    = useAuditEventRegistry();
+  const docId = doc.doc_id ?? doc.id;
+  const versionId = doc.version?.trim() || "1.0";
+  const ackReg = useDocumentAcknowledgementRegistry();
   const currentUser = useCurrentUser();
+  const actorName = currentUser.name.trim();
+  const [ackSaving, setAckSaving] = useState(false);
+  const activeRequest = useRef<string | null>(null);
+  const pendingAck = useRef<{
+    key: string; id: string; timestamp: string;
+  } | null>(null);
+  const requestKey = [docId, versionId, actorName].join("\u0000");
+  const currentKey = useRef(requestKey);
+  currentKey.current = requestKey;
+  useEffect(() => {
+    pendingAck.current = null;
+    activeRequest.current = null;
+    setAckSaving(false);
+  }, [requestKey]);
 
   const acks = ackReg.items.filter(a => a.document_id === docId);
-  const alreadyAcked = acks.some(
-    a => a.acknowledged_by.toLowerCase() === currentUser.name.toLowerCase(),
-  );
+  const alreadyAcked = isCurrentVersionAcknowledged(acks, docId, actorName, versionId);
 
-  const handleAcknowledge = () => {
-    if (alreadyAcked) { toast.info("You have already acknowledged this document."); return; }
-    const ackId = `ACK-${Date.now()}`;
-    ackReg.add({
-      id: ackId, ack_id: ackId,
-      document_id: docId,
-      document_name: doc.doc_name,
-      acknowledged_by: currentUser.name,
-      acknowledged_at: new Date().toISOString(),
-      version_id: doc.version,
-    });
-    auditReg.add({
-      id: `AUD-${Date.now()}`, event_id: `AUD-${Date.now()}`,
-      entity_type: "Document", entity_id: docId,
-      action: "Document Acknowledged", actor: currentUser.name, actor_role: "User",
-      timestamp: new Date().toISOString(), ip_address: "",
-      details: `Version ${doc.version ?? "1.0"} explicitly acknowledged`,
-      approval_status: "Logged",
-    });
-    toast.success("Document acknowledged.");
+  const handleAcknowledge = async () => {
+    if (activeRequest.current || ackSaving || ackReg.loading || ackReg.error) return;
+    if (alreadyAcked) {
+      toast.info("You have already acknowledged this document version.");
+      return;
+    }
+    const accessAtStart = readAccessSnapshot();
+    if (!actorName || !documentActionGranted("doc_view", accessAtStart)) {
+      toast.error("You do not have permission to acknowledge this document.");
+      return;
+    }
+    const pending = pendingAck.current?.key === requestKey
+      ? pendingAck.current
+      : { key: requestKey,
+          id: `ACK-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: new Date().toISOString() };
+    pendingAck.current = pending;
+    activeRequest.current = requestKey;
+    setAckSaving(true);
+    try {
+      await confirmDocumentAcknowledgement(
+        () => ackReg.add({
+          id: pending.id, ack_id: pending.id,
+          document_id: docId, document_name: doc.doc_name,
+          acknowledged_by: actorName, acknowledged_at: pending.timestamp,
+          version_id: versionId,
+        }),
+        async () => { await ackReg.refresh?.(); },
+        () => ackReg.getById(pending.id),
+        { id: pending.id, documentId: docId, actorName, versionId },
+      );
+      if (!documentActionSessionUnchanged("doc_view", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your session changed. Refresh acknowledgements before continuing.");
+      }
+      if (currentKey.current !== requestKey) return;
+      pendingAck.current = null;
+      toast.success("Document acknowledged.");
+    } catch (error) {
+      if (currentKey.current === requestKey) {
+        toast.error(error instanceof Error
+          ? error.message : "Acknowledgement not confirmed. Refresh before retrying.");
+      }
+    } finally {
+      if (activeRequest.current === requestKey) activeRequest.current = null;
+      if (currentKey.current === requestKey) setAckSaving(false);
+    }
   };
 
   return (
@@ -1340,10 +1451,20 @@ function AcknowledgementsTab({ doc }: { doc: BoardDocument }) {
           This document requires explicit acknowledgement. Viewing does not count as acknowledgement.
         </div>
       )}
+      {ackReg.error && (
+        <div className="doc-drawer__empty" role="alert">
+          Unable to load acknowledgements. Refresh the document before continuing.
+        </div>
+      )}
 
       {doc.acknowledgement_required === "Yes" && !alreadyAcked && (
         <div style={{ marginBottom: "1rem" }}>
-          <Button variant="primary" size="sm" leadingIcon={CheckSquare} onClick={handleAcknowledge}>
+          <Button
+            variant="primary" size="sm" leadingIcon={CheckSquare}
+            loading={ackSaving}
+            disabled={ackSaving || Boolean(ackReg.loading || ackReg.error)}
+            onClick={() => { void handleAcknowledge(); }}
+          >
             Acknowledge Document
           </Button>
         </div>
@@ -1352,7 +1473,7 @@ function AcknowledgementsTab({ doc }: { doc: BoardDocument }) {
       {alreadyAcked && (
         <div className="doc-drawer__ack-self">
           <CheckCircle size={13} strokeWidth={2} style={{ color: "var(--color-success,#16a34a)" }} />
-          <span>You have acknowledged this document</span>
+          <span>You have acknowledged this document version</span>
         </div>
       )}
 
@@ -1391,8 +1512,7 @@ function RelatedRecordsTab({ doc }: { doc: BoardDocument }) {
   const meeting = useMemo(() =>
     doc.related_meeting
       ? meetingReg.items.find(m =>
-          m.meeting_id === doc.related_meeting ||
-          doc.related_meeting.startsWith(m.meeting_id),
+          matchesExactDocumentLinkReference(doc.related_meeting, m.meeting_id),
         ) ?? null
       : null,
     [doc.related_meeting, meetingReg.items],
@@ -1401,8 +1521,7 @@ function RelatedRecordsTab({ doc }: { doc: BoardDocument }) {
   const agenda = useMemo(() =>
     doc.related_agenda
       ? agendaReg.items.find(a =>
-          a.agenda_id === doc.related_agenda ||
-          doc.related_agenda.startsWith(a.agenda_id),
+          matchesExactDocumentLinkReference(doc.related_agenda, a.agenda_id),
         ) ?? null
       : null,
     [doc.related_agenda, agendaReg.items],
@@ -1665,14 +1784,24 @@ export function DocumentDetailsDrawer({ open, onClose, document: doc }: Document
 
   const handleDownload = useCallback(async () => {
     if (!doc?.file_name) return;
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_download", accessAtStart)) {
+      toast.error("You do not have permission to download this document.");
+      return;
+    }
     try {
       const file = await documentContentStore.getOriginalFile(docId);
+      if (!documentActionSessionUnchanged("doc_download", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your account or document access changed. Download again after refreshing.");
+      }
       if (!file) { toast.error("Original file not found."); return; }
       const url = URL.createObjectURL(file);
       const a   = document.createElement("a");
       a.href = url; a.download = doc.file_name; a.click();
       URL.revokeObjectURL(url);
-    } catch { toast.error("Download failed."); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Download failed.");
+    }
   }, [doc, docId]);
 
   // ── Workspace type and action labels ───────────────────────────────────────

@@ -29,7 +29,8 @@ import { DynamicDetailsDrawer } from "../../components/drawers/DynamicDetailsDra
 import { UnifiedDataTable } from "../../components/tables/UnifiedDataTable";
 import { KpiRow } from "../../components/cards/KpiRow";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { collectAgendaRegisterDescendants } from "./agendaRegisterDescendants";
+import { collectAgendaRegisterDescendants, collectAgendaRegisterAncestors } from "./agendaRegisterDescendants";
+import { buildAgendaPreviewOutline } from "./agendaPreviewOutline";
 import { isAgendaOwnedBy, resolveAgendaOwnerUserId } from "./agendaOwnerIdentity";
 import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
 
@@ -60,8 +61,8 @@ function formatDate(iso: string | undefined): string {
 // ── Hierarchy helpers ─────────────────────────────────────────────────────────
 
 function getDescendants(id: string, items: AgendaSubmission[]): AgendaSubmission[] {
-  const children = items.filter(a => a.parent_agenda_id === id);
-  return children.flatMap(c => [c, ...getDescendants(c.id, items)]);
+  // Match the canonical register/preview projection; corrupt cycles and duplicate IDs cannot recurse forever.
+  return collectAgendaRegisterDescendants(id, items);
 }
 
 function asRec(a: AgendaSubmission): Record<string, string> {
@@ -93,18 +94,14 @@ function cascadeStatusUp(
   updateFn: (id: string, newStatus: string, prevStatus: string) => void,
 ): void {
   const overrides = new Map<string, string>([[changedId, changedStatus]]);
-  let itemId = changedId;
-  while (true) {
-    const item = allItems.find(a => a.id === itemId);
-    if (!item?.parent_agenda_id) break;
-    const parentId   = item.parent_agenda_id;
-    const parent     = allItems.find(a => a.id === parentId);
-    if (!parent) break;
+  // Validate the entire parent chain before any cascade. A malformed cycle
+  // must not write a partial set of misleading ancestor approval statuses.
+  for (const parent of collectAgendaRegisterAncestors(changedId, allItems)) {
+    const parentId = parent.id;
     const prevStatus = overrides.get(parentId) ?? parent.approval_status ?? "Draft";
-    const newStatus  = computeCascadeStatus(parentId, allItems, overrides);
+    const newStatus = computeCascadeStatus(parentId, allItems, overrides);
     if (newStatus !== prevStatus) updateFn(parentId, newStatus, prevStatus);
     overrides.set(parentId, newStatus);
-    itemId = parentId;
   }
 }
 
@@ -1265,8 +1262,8 @@ export function Register4ListPage() {
         const pvParent = allItems.find(a => a.id === previewParentId);
         if (!pvParent) return null;
         const pvIdx      = parentItems.findIndex(p => p.id === pvParent.id);
-        const pvChildren = directChildren(pvParent.id);
-        const pvAllHier  = [pvParent, ...getDescendants(pvParent.id, allItems)];
+        const pvRows     = buildAgendaPreviewOutline(pvParent.id, String(pvIdx + 1), allItems);
+        const pvAllHier  = [pvParent, ...pvRows.map(row => row.item)];
         const pvApproved = pvAllHier.filter(a => a.approval_status === "Approved").length;
         const pvTotalMin = pvAllHier.reduce((s, a) => s + parseDurationMin(a.estimated_duration), 0);
         const pvTotalDocs = pvAllHier.reduce((s, a) => s + docCount(a.id), 0);
@@ -1309,9 +1306,9 @@ export function Register4ListPage() {
               </div>
             </div>
 
-            {pvChildren.map((child, ci) => (
-              <div key={child.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--color-text-secondary)", flexShrink: 0, paddingTop: 2 }}>{pvIdx + 1}.{ci + 1}</span>
+            {pvRows.map(({ item: child, outline, level }) => (
+              <div key={child.id} aria-label={`Agenda ${outline}: ${child.agenda_title}`} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 8, marginBottom: 8, marginLeft: level > 2 ? 20 : 0 }}>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--color-text-secondary)", flexShrink: 0, paddingTop: 2 }}>{outline}</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
                     <h4 style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)", margin: 0 }}>{child.agenda_title}</h4>
@@ -1326,7 +1323,7 @@ export function Register4ListPage() {
               </div>
             ))}
 
-            {pvChildren.length === 0 && (
+            {pvRows.length === 0 && (
               <p style={{ textAlign: "center", color: "var(--color-text-secondary)", fontSize: 13, padding: "16px 0" }}>No child items added yet.</p>
             )}
           </AppModal>

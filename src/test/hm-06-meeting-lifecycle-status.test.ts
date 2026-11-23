@@ -13,14 +13,23 @@ describe("HM-06 meeting lifecycle indicators", () => {
     expect(stage("Awaiting Approval")).toBe("Awaiting Approval");
     expect(stage("Approved")).toBe("Ready to Publish");
     expect(stage("Ready to Start")).toBe("Ready to Start");
-    expect(stage("In Progress")).toBe("Meeting Live");
+    expect(stage("In Progress", "2026-11-05")).toBe("Meeting Live");
     expect(stage("Completed")).toBe("Post-Meeting Follow-up");
   });
 
   it("never mislabels paused or on-break meetings as upcoming meetings", () => {
-    expect(stage("Paused")).toBe("Meeting Paused");
-    expect(stage("On Break")).toBe("Meeting Paused");
-    expect(stage("On Hold")).toBe("Meeting Paused");
+    expect(stage("Paused", "2026-11-05")).toBe("Meeting Paused");
+    expect(stage("On Break", "2026-11-05")).toBe("Meeting Paused");
+    expect(stage("On Hold", "2026-11-05")).toBe("Meeting Paused");
+  });
+
+  it("fails safely when live or paused records have stale, future or invalid dates", () => {
+    for (const status of ["In Progress", "Paused", "On Break", "On Hold"]) {
+      expect(stage(status, "2026-11-04")).toBe("Preparation Required");
+      expect(stage(status, "2026-11-06")).toBe("Preparation Required");
+      expect(stage(status, "2026-02-30")).toBe("Preparation Required");
+      expect(stage(status, "")).toBe("Preparation Required");
+    }
   });
 
   it("maps minutes-related transitions to follow-up", () => {
@@ -33,6 +42,23 @@ describe("HM-06 meeting lifecycle indicators", () => {
     expect(stage("Scheduled", "2026-11-10")).toBe("Upcoming Meeting");
     expect(stage("Published", "2026-11-06")).toBe("Ready to Start");
     expect(stage("Scheduled", "2026-11-05")).toBe("Ready to Start");
+  });
+
+  it("does not call a previously scheduled but stale meeting ready to start", () => {
+    expect(stage("Scheduled", "2026-11-04")).toBe("Preparation Required");
+    expect(stage("Published", "2025-11-05")).toBe("Preparation Required");
+    expect(stage("Scheduled", "2026-11-05")).toBe("Ready to Start");
+    expect(stage("Published", "2026-11-06")).toBe("Ready to Start");
+    expect(stage("Scheduled", "2026-11-07")).toBe("Upcoming Meeting");
+  });
+
+  it("rejects impossible calendar dates while preserving valid leap days", () => {
+    expect(stage("Scheduled", "2026-02-30")).toBe("Preparation Required");
+    expect(stage("Published", "2026-11-31")).toBe("Preparation Required");
+    expect(stage("Published", "2026-13-01")).toBe("Preparation Required");
+    expect(stage("Scheduled", "2024-02-29")).toBe("Preparation Required"); // valid, but now stale
+    expect(resolveLifecycleStage("Published", "2024-02-29", new Date(2024, 1, 28)).stage).toBe("Ready to Start");
+    expect(resolveLifecycleStage("Published", "2024-02-30", new Date(2024, 1, 28)).stage).toBe("Preparation Required");
   });
 
   it("never invents an upcoming meeting from cancelled, rejected or missing-date states", () => {

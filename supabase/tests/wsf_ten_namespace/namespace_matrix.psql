@@ -1,0 +1,189 @@
+\set ON_ERROR_STOP on
+-- WS-F TEN-04 only: real PostgreSQL 17 transactional key collision tests.
+-- Uses synthetic tenant IDs and fixture records; NOT hosted SQL/Auth/Storage.
+BEGIN;
+\ir ../wsf_ten_foundation/foundation.sql
+
+DO $seed$
+declare
+  ta uuid := '55555555-5555-4555-8555-555555555555';
+  tb uuid := '66666666-6666-4666-8666-666666666666';
+begin
+  insert into convay_private.tenants(id,display_name,lifecycle_state) values
+    (ta,'Synthetic tenant A','active'),(tb,'Synthetic tenant B','active');
+  -- Explicit test-only tenant mapping: in production no historical ownership
+  -- may be inferred from profile/email or a convenient default.
+  update public.convay_entity_records set tenant_id=ta
+    where entity_key='bms.meetings' and record_id='fixture-meeting-1';
+  insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id) values
+    ('bms.documents','shared-doc-record',
+      '{"id":"shared-doc-record","doc_id":"DOC-1"}'::jsonb,ta),
+    ('bms.doc.acknowledgements','shared-ack-record',
+      '{"id":"shared-ack-record","document_id":"DOC-1","acknowledged_user_id":"USER-1","version_id":"V1"}'::jsonb,ta),
+    ('bms.votes','shared-vote-record',
+      '{"id":"shared-vote-record","meeting_id":"MTG-1","ballot_session_id":"SESSION-1","voter_id":"VOTER-1","vote_id":"VOTE-1"}'::jsonb,ta);
+
+  if (select count(*) from public.convay_entity_records)<>4 then
+    raise exception 'TEN-04 fixture not seeded';
+  end if;
+  raise notice 'TEN-04 baseline mapped 4 synthetic records PASS';
+end $seed$;
+
+-- Before candidate, even a different tenant with a matching doc external id
+-- is rejected by the original global index.
+DO $pre$
+declare
+  blocked_pk boolean:=false;
+  blocked_doc boolean:=false;
+  blocked_ack boolean:=false;
+  blocked_voter boolean:=false;
+  blocked_vote boolean:=false;
+  ta uuid := '55555555-5555-4555-8555-555555555555';
+  tb uuid := '66666666-6666-4666-8666-666666666666';
+begin
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.meetings','fixture-meeting-1',
+      '{"id":"fixture-meeting-1"}'::jsonb,tb);
+  exception when unique_violation then blocked_pk:=true; end;
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.documents','b-doc-other',
+      '{"id":"b-doc-other","doc_id":"DOC-1"}'::jsonb,tb);
+  exception when unique_violation then blocked_doc:=true; end;
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.doc.acknowledgements','b-ack-other',
+      '{"id":"b-ack-other","document_id":"DOC-1","acknowledged_user_id":"USER-1","version_id":"V1"}'::jsonb,tb);
+  exception when unique_violation then blocked_ack:=true; end;
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.votes','b-voter-other',
+      '{"id":"b-voter-other","meeting_id":"MTG-1","ballot_session_id":"SESSION-1","voter_id":"VOTER-1","vote_id":"NEW"}'::jsonb,tb);
+  exception when unique_violation then blocked_voter:=true; end;
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.votes','b-vote-other',
+      '{"id":"b-vote-other","meeting_id":"MTG-1","ballot_session_id":"NEW","voter_id":"OTHER","vote_id":"VOTE-1"}'::jsonb,tb);
+  exception when unique_violation then blocked_vote:=true; end;
+  if not (blocked_pk and blocked_doc and blocked_ack and blocked_voter and blocked_vote) then
+    raise exception 'TEN-04 baseline global key reproduction failed: pk %,doc %,ack %,voter %,vote %',
+      blocked_pk,blocked_doc,blocked_ack,blocked_voter,blocked_vote;
+  end if;
+  raise notice 'TEN-04 CASE 01 original PK and four global indexes reject foreign tenant equal keys PASS';
+end $pre$;
+
+\ir namespace_candidate.sql
+
+-- Now tenant B can reuse the SAME record_id and each of the four original
+-- globally unique payload identifier combinations without altering any payload.
+DO $cross$
+declare
+  tb uuid := '66666666-6666-4666-8666-666666666666';
+begin
+  insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id) values
+    ('bms.meetings','fixture-meeting-1',
+      '{"id":"fixture-meeting-1","status":"Draft"}'::jsonb,tb),
+    ('bms.documents','shared-doc-record',
+      '{"id":"shared-doc-record","doc_id":"DOC-1"}'::jsonb,tb),
+    ('bms.doc.acknowledgements','shared-ack-record',
+      '{"id":"shared-ack-record","document_id":"DOC-1","acknowledged_user_id":"USER-1","version_id":"V1"}'::jsonb,tb),
+    ('bms.votes','shared-vote-record',
+      '{"id":"shared-vote-record","meeting_id":"MTG-1","ballot_session_id":"SESSION-1","voter_id":"VOTER-1","vote_id":"VOTE-1"}'::jsonb,tb);
+
+  if (select count(*) from public.convay_entity_records where tenant_id=tb)<>4
+     or (select count(*) from public.convay_entity_records
+       where record_id='shared-doc-record')<>2
+  then raise exception 'TEN-04 duplicate across tenants not accepted'; end if;
+  raise notice 'TEN-04 CASE 02 tenant A and B may share all four payload keys and record IDs PASS';
+end $cross$;
+
+-- Existing same-tenant unique invariants MUST remain enforced after
+-- tenant_id prefixes the expression indexes.
+DO $same$
+declare
+  ta uuid := '55555555-5555-4555-8555-555555555555';
+  denied_pk boolean:=false;
+  denied_doc boolean:=false;
+  denied_ack boolean:=false;
+  denied_voter boolean:=false;
+  denied_vote boolean:=false;
+begin
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.meetings','fixture-meeting-1',
+      '{"id":"fixture-meeting-1","status":"Draft"}'::jsonb,ta);
+  exception when unique_violation then denied_pk:=true; end;
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.documents','a-doc-other',
+      '{"id":"a-doc-other","doc_id":"DOC-1"}'::jsonb,ta);
+  exception when unique_violation then denied_doc:=true; end;
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.doc.acknowledgements','a-ack-other',
+      '{"id":"a-ack-other","document_id":"DOC-1","acknowledged_user_id":"USER-1","version_id":"V1"}'::jsonb,ta);
+  exception when unique_violation then denied_ack:=true; end;
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.votes','a-voter-other',
+      '{"id":"a-voter-other","meeting_id":"MTG-1","ballot_session_id":"SESSION-1","voter_id":"VOTER-1","vote_id":"DIFFERENT"}'::jsonb,ta);
+  exception when unique_violation then denied_voter:=true; end;
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.votes','a-vote-other',
+      '{"id":"a-vote-other","meeting_id":"MTG-1","ballot_session_id":"OTHER","voter_id":"DIFFERENT","vote_id":"VOTE-1"}'::jsonb,ta);
+  exception when unique_violation then denied_vote:=true; end;
+
+  if not (denied_pk and denied_doc and denied_ack and denied_voter and denied_vote)
+  then raise exception 'TEN-04 same-tenant uniqueness weakened: %,%,%,%,%',
+    denied_pk,denied_doc,denied_ack,denied_voter,denied_vote; end if;
+  raise notice 'TEN-04 CASE 03 all five same-tenant duplicate protections retained PASS';
+end $same$;
+
+DO $nulls$
+declare denied boolean:=false;
+begin
+  begin
+    insert into public.convay_entity_records(entity_key,record_id,payload,tenant_id)
+    values('bms.meetings','null-owner',
+      '{"id":"null-owner"}'::jsonb,null);
+  exception when not_null_violation then denied:=true; end;
+  if not denied then raise exception 'TEN-04 nullable owner slipped through'; end if;
+  raise notice 'TEN-04 CASE 04 unowned row insertion denied PASS';
+end $nulls$;
+
+ROLLBACK;
+
+-- Original schema/indexes and row content were committed as synthetic fixture
+-- before this test. Candidate DDL and all test rows must be rolled back.
+DO $rollback$
+declare idx text;
+begin
+  if exists(select 1 from information_schema.columns
+    where table_schema='public' and table_name='convay_entity_records' and column_name='tenant_id')
+  then raise exception 'TEN-04 rollback did not remove staged tenant column'; end if;
+  if to_regclass('convay_private.tenants') is not null then
+    raise exception 'TEN-04 rollback did not remove staged tenant tables'; end if;
+  if (select pg_get_constraintdef(oid) from pg_constraint
+    where conrelid='public.convay_entity_records'::regclass and contype='p')
+    is distinct from 'PRIMARY KEY (entity_key, record_id)'
+  then raise exception 'TEN-04 original PK not restored'; end if;
+  if (select count(*) from public.convay_entity_records)<>1 or
+     (select payload->>'status' from public.convay_entity_records
+        where record_id='fixture-meeting-1') is distinct from 'Draft' then
+    raise exception 'TEN-04 original registry row changed'; end if;
+  foreach idx in array array[
+    'convay_document_ack_user_unique',
+    'convay_documents_external_id_unique',
+    'convay_unique_ballot_voter_session',
+    'convay_vote_unique_meeting_ballot'
+  ] loop
+    if not exists(select 1 from pg_indexes where schemaname='public'
+      and tablename='convay_entity_records' and indexname=idx
+      and indexdef not like '%(tenant_id,%')
+    then raise exception 'TEN-04 original global index missing after rollback: %',idx; end if;
+  end loop;
+  raise notice 'TEN-04 CASE 05 full DDL/index/data ROLLBACK preserving preexisting registry PASS';
+  raise notice 'TEN-04 isolated SQL PASS; production native restore and cross-system tenant scoping UNVERIFIED';
+end $rollback$;

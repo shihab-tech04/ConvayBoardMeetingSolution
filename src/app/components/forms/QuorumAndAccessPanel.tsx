@@ -5,7 +5,8 @@
  * and quorum settings filled in the form below, plus document access warnings.
  * Read-only: does not write any values back.
  */
-import React, { useMemo, useEffect, useCallback } from "react";
+import React, { useMemo, useEffect } from "react";
+import { liveMeetingUrl } from "../../utils/liveMeetingLink";
 import {
   ShieldCheck, AlertTriangle, CheckCircle2, XCircle,
   Lock, Info,
@@ -23,25 +24,10 @@ export interface QuorumAndAccessPanelProps {
   governanceBodies: GovernanceBody[];
   quorumRules: QuorumRule[];
   allDocuments: BoardDocument[];
+  onRefreshQuorumRules?: () => Promise<unknown> | void;
 }
 
-// ── Convay link generator ─────────────────────────────────────────────────────
-
-function djb2(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); h = h | 0; }
-  return Math.abs(h);
-}
-
-export function generateConvayMeeting(seed: string) {
-  const h = djb2(seed || "convay-default");
-  const meetingId = String(h).padStart(12, "0").slice(0, 12);
-  const password  = String(h % 1000000).padStart(6, "0");
-  const pwd       = (h * 31337).toString(16).padStart(32, "a").slice(0, 32);
-  const link      = `https://app.convay.com/m/j/${meetingId}?pwd=${pwd}`;
-  const invite    = `Please join Convay meeting now.\n\nMeeting ID: ${meetingId}\nPassword: ${password}\nMeeting link: ${link}`;
-  return { meetingId, password, link, invite };
-}
+// LiveKit links are generated from the actual saved SQL meeting ID, not title hashes.
 
 type QuorumStatus = "met" | "at_risk" | "not_met" | "not_configured";
 
@@ -93,7 +79,7 @@ const STATUS_CONFIG: Record<QuorumStatus, { label: string; icon: React.ElementTy
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies, quorumRules, allDocuments }: QuorumAndAccessPanelProps) {
+export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies, quorumRules, allDocuments, onRefreshQuorumRules }: QuorumAndAccessPanelProps) {
 
   // ── Participant data from Step 1 ─────────────────────────────────────────
   const allLinks  = useMemo(() => parseLinks(values.participant_links_json), [values.participant_links_json]);
@@ -123,28 +109,20 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
   const sc = STATUS_CONFIG[status];
   const Icon = sc.icon;
 
-  // ── Convay meeting generation ──────────────────────────────────────────────
+  // ── Real LiveKit link ──────────────────────────────────────────────────────
   const mode = String(values.mode ?? "Physical");
   const isVirtual = mode === "Virtual" || mode === "Hybrid";
-  const convayMeeting = useMemo(() => {
-    if (!isVirtual) return null;
-    const seed = String(values.meeting_title ?? "") + String(values.meeting_date ?? "") + String(values.committee ?? "");
-    return generateConvayMeeting(seed);
-  }, [isVirtual, values.meeting_title, values.meeting_date, values.committee]);
+  const savedId = String(values._draft_meeting_id ?? values.meeting_id ?? "").trim();
+  const savedLiveUrl = isVirtual && savedId ? liveMeetingUrl(savedId) ?? "" : "";
 
   useEffect(() => {
     if (!onValuesChange) return;
-    if (convayMeeting) {
-      onValuesChange({ virtual_link: convayMeeting.link, virtual_platform: "Convay" });
-    } else {
-      onValuesChange({ virtual_link: "", virtual_platform: "" });
-    }
+    onValuesChange(isVirtual
+      ? { virtual_link: savedLiveUrl, virtual_platform: "LiveKit" }
+      : { virtual_link: "", virtual_platform: "" });
+  // Only synchronize when meeting identity or mode actually changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [convayMeeting?.link]);
-
-  const copyToClipboard = useCallback((text: string) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
-  }, []);
+  }, [isVirtual, savedLiveUrl]);
 
   // Required roles come from the governance rule (not manual form fields)
   const requiredRoles: string[] = useMemo(() => {
@@ -282,8 +260,22 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
           )}
 
           {status === "not_configured" && (
-            <div className="text-[10px] text-[var(--muted-foreground)] italic">
-              Set quorum rules in the form below to see projected status.
+            <div role="status" className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-3 space-y-2">
+              <p className="text-xs font-semibold text-[var(--foreground)]">No active quorum rule is configured for this Board / Committee</p>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                You can continue and schedule this meeting without a quorum rule. Quorum cannot be verified until an authorized administrator configures the governance policy; no threshold will be assumed.
+              </p>
+              <div className="flex flex-wrap gap-3 text-xs font-semibold text-[var(--primary)]">
+                <a href={`${import.meta.env.BASE_URL}administration/meeting-configuration/quorum-rules`}
+                   target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+                  View Quorum Rules
+                </a>
+                {onRefreshQuorumRules && <button type="button"
+                  onClick={() => { void Promise.resolve(onRefreshQuorumRules()).catch(() => {}); }}
+                  className="underline underline-offset-2">
+                  Refresh quorum status
+                </button>}
+              </div>
             </div>
           )}
         </div>

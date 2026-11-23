@@ -1,7 +1,11 @@
 import { useNavigate } from "react-router";
+import { ExternalLink } from "lucide-react";
+import { toast } from "sonner";
+import { archiveRecordPath } from "./archiveRecordPath";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
+import { fc, BADGE } from "../modulePageUtils";
+import { buildMeetingRegisterFilters } from "../return-register/meetingRegisterReadiness";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useMeetingRegistry } from "../../data/boardMeetingData";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
@@ -14,7 +18,14 @@ export function MeetingArchivePage() {
 
   const archived: TableRow[] = registry.items
     .filter(m => ARCHIVE_STATUSES.includes(String(m.approval_status ?? "")))
-    .map(m => ({ ...m, id: m.id }));
+    .map(m => ({
+      ...m,
+      id: m.id,
+      // The SQL meeting model stores meeting_date, not a separate meeting_year.
+      meeting_year: /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(m.meeting_date)
+        ? m.meeting_date.slice(0, 4)
+        : "",
+    }));
 
   const kpis: KpiDef[] = [
     { label: "Archived Meetings",   value: String(archived.length),                                                                   tone: "primary" },
@@ -41,19 +52,28 @@ export function MeetingArchivePage() {
       status:     "approval_status",
       date:       "meeting_date",
     },
-    filters:  BASE_FILTERS,
+    filters:  buildMeetingRegisterFilters(archived),
     actions:  [
       ...ROW_VIEW,
     ],
-    drawerActions: [],
+    drawerActions: [
+      { id: "view_record", label: "Open Full Meeting Record", icon: ExternalLink, color: "#2563eb" },
+    ],
     drawerTitle: "Meeting Details",
     drawerCols: MEETING_DRAWER_COLS,
     rows:     archived,
-    kpis,
+    dataLoading: Boolean(registry.loading),
+    dataError: registry.error ?? null,
+    onDataRetry: async () => { await registry.refresh?.(); },
+    // A failed or pending authorized SQL read is not proof of an empty archive.
+    kpis: registry.loading || registry.error ? [] : kpis,
     onCustomAction(actionId, row) {
       if (actionId === "view_record") {
-        const id = String(row.id ?? row.meeting_id ?? "");
-        if (id) navigate(`/meetings/${id}/record`);
+        try {
+          navigate(archiveRecordPath(row.id ?? row.meeting_id));
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Unable to open this meeting record.");
+        }
       }
     },
   };

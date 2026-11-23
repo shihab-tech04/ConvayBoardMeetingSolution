@@ -56,4 +56,29 @@ describe("NI-14/15 non-delegable integration catalogue states", () => {
     expect(screen.getAllByText("Unverified")).toHaveLength(9);
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
   });
+
+  it("clears category, connection status, and search after an empty result", () => {
+    vi.mocked(useIntegrationConnectionKpis).mockReturnValue({
+      read: { state: "ready", records: [
+        { id: "google-workspace", status: "Connected" },
+        { id: "zoom", status: "Error" },
+      ] },
+      kpis: { state: "ready", counts: { total: 2, connected: 1, errors: 1, pendingSetup: 0, disconnected: 0 } },
+      refresh: retry, allowed: true, accessReady: true,
+    });
+    render(<IntegrationsPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Calendar" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by connection status" }), { target: { value: "Error" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Search integrations" }), { target: { value: "Google" } });
+
+    expect(screen.getByText("No integrations match your search.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+
+    expect((screen.getByRole("textbox", { name: "Search integrations" }) as HTMLInputElement).value).toBe("");
+    expect((screen.getByRole("combobox", { name: "Filter by connection status" }) as HTMLSelectElement).value).toBe("All");
+    expect(screen.getByRole("heading", { name: "SMTP Email Server" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Google Workspace" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Zoom" })).toBeTruthy();
+  });
 });

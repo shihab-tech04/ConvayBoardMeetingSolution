@@ -30,7 +30,7 @@ import { MeetingPreJoinPanel, type PreJoinRole } from "../../components/meetings
 import { PreMeetingReadinessPanel } from "../../components/meetings/PreMeetingReadinessPanel";
 import { DocumentWorkspaceRouter } from "../../components/documents/DocumentWorkspaceRouter";
 import { getEditorProvider } from "../../components/documents/editor/DocumentEditorProvider";
-import type { BoardDocument, Decision, Resolution, ActionItem } from "../../data/boardMeetingData";
+import type { BoardDocument, Decision, Resolution, ActionItem, Minutes, LiveMeetingSession } from "../../data/boardMeetingData";
 import { AppModal } from "../../components/modals/AppModal";
 import { EntryForm } from "../../components/forms/EntryForm";
 import { PrimaryButton } from "../../components/buttons/PrimaryButton";
@@ -41,9 +41,15 @@ import { MOTION_FORM_FIELDS, MINUTES_FORM_FIELDS } from "../boardMeetingFormFiel
 import type { EntryFormValue } from "../../components/forms/EntryForm";
 import { getAgendaDescription } from "../../utils/agendaDescription";
 import { convayAuth } from "../../services/supabase/convayAuth";
+import { commitVerifiedMinutesCapture } from "./regularMeetingMinutesCaptureState";
 import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
+import { OnlinePresenceTransition } from "./onlinePresenceTransition";
+import { RegularAttendanceTransitionQueue, acceptsVerifiedAttendanceRevision } from "./regularMeetingAttendanceQueue";
+import { commitLiveAttendance, readLiveAttendance, type LiveAttendanceSnapshot } from "./regularMeetingAttendanceTransport";
+import { canOfferRegularMeetingPublishing, savedRegularMeetingRole, type RegularMeetingRole } from "./regularMeetingRoleProjection";
+import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,7 +61,7 @@ type AgendaStatus      = "Not Started" | "In Discussion" | "Completed" | "Deferr
 type ViewMode          = "speaker" | "grid" | "document";
 type PanelTab          = "agenda" | "documents" | "participants" | "motions" | "decisions" | "minutes";
 type ConnectionQuality = "excellent" | "good" | "poor" | "offline";
-type MyRole            = "Chairperson" | "Company Secretary" | "Board Member" | "Independent Director" | "Presenter" | "Observer" | "Guest" | "Administrator";
+type MyRole            = RegularMeetingRole;
 
 interface VirtualParticipant {
   id: string;
@@ -401,10 +407,10 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: agendaDocLinks }                                        = useAgendaDocumentLinkRegistry();
   const { items: allDocuments }                                          = useDocumentRegistry();
   const { items: docCommentThreads, add: addDocThread, update: updateDocThread } = useDocumentCommentRegistry();
-  const { items: interactionItems, add: addInteraction }                = useMeetingInteractionRegistry();
-  const { items: liveSessions, add: addSession, update: updateSession, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
-  const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = useAttendanceRegistry();
-  const { add: addQuorumEvent }                                          = useQuorumEventRegistry();
+  const { items: interactionItems, add: addInteraction, refresh: refreshInteractions } = useMeetingInteractionRegistry();
+  const { items: liveSessions, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
+  const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec, refresh: refreshAttendanceRec } = useAttendanceRegistry();
+  const { add: addQuorumEvent, refresh: refreshQuorumEvents }              = useQuorumEventRegistry();
   const { items: govBodies }                                             = useGovernanceRegistry();
   const { items: partGroups }                                            = useParticipantGroupRegistry();
   const { items: quorumRules }                                           = useQuorumRuleRegistry();
@@ -416,6 +422,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (!access.loaded && !access.error) void reloadAccessSnapshot().catch(() => undefined);
   }, [access.loaded, access.error]);
 
+  // Deduplicate provider callbacks per authenticated meeting workspace.
+  // Server-backed attendance/quorum authority remains a separate integration gate.
+  const onlinePresence = useMemo(() => new OnlinePresenceTransition(), [meetingId, currentUser.id]);
   const meeting = meetings.find(m => m.meeting_id === meetingId);
   const isOnlineMeeting = LIVE_MEETINGS_RELEASED && (meeting?.mode === "Virtual" || meeting?.mode === "Hybrid");
 
@@ -527,25 +536,24 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const meetingLinks = allParticipantLinks.filter(l => l.meeting_id === meetingId);
 
   // ── Resolve the canonical current-user participant relationship ───────────
-  const myLink = meetingLinks.find(l => l.user_id === currentUser.id);
-  // Derive the user's meeting role from their canonical participant link.
-  // Falls back to leadership fields when no link exists (pre-creation state).
+  const myLinks = meetingLinks.filter(l => l.user_id === currentUser.id);
+  const myLink = myLinks[0];
+  const leaderById = [meeting?.created_by, meeting?.chairperson,
+    meeting?.secretary, meeting?.organizer].some(id => !!id && id === currentUser.id);
+  // Unknown and conflicting saved roles must never be promoted to Board Member.
+  // Online leaders are derived from authenticated IDs, not display names.
   const myRole: MyRole = (() => {
     if (myLink) {
-      const t = myLink.participant_type ?? "";
-      if (t === "Chairperson" || t === "Chair") return "Chairperson";
-      if (t === "Company Secretary" || t === "Secretary") return "Company Secretary";
-      if (t === "Independent Director") return "Independent Director";
-      if (t === "Presenter") return "Presenter";
-      if (t === "Observer") return "Observer";
-      if (t === "Guest") return "Guest";
-      if (t === "Administrator") return "Administrator";
-      return "Board Member";
+      if (myLinks.length > 1 && !myLinks.every(link =>
+        canOfferRegularMeetingPublishing([link], true, false, false))) return "Observer";
+      return savedRegularMeetingRole(myLink.participant_type);
     }
-    if (meeting?.chairperson === currentUser.id || meeting?.chairperson === currentUser.name) return "Chairperson";
-    if (meeting?.secretary   === currentUser.id || meeting?.secretary   === currentUser.name) return "Company Secretary";
-    if (meeting?.organizer   === currentUser.id || meeting?.organizer   === currentUser.name) return "Administrator";
-    // Missing membership or leadership does not confer a voting role.
+    if (meeting?.chairperson === currentUser.id ||
+      (!isOnlineMeeting && meeting?.chairperson === currentUser.name)) return "Chairperson";
+    if (meeting?.secretary === currentUser.id ||
+      (!isOnlineMeeting && meeting?.secretary === currentUser.name)) return "Company Secretary";
+    if (meeting?.organizer === currentUser.id || meeting?.created_by === currentUser.id ||
+      (!isOnlineMeeting && meeting?.organizer === currentUser.name)) return "Administrator";
     return "Observer";
   })();
 
@@ -565,6 +573,12 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const canCreateTemporaryAgenda = canManageAgenda && hasGrant("agd_submit");
   const canEditAttendance = hasLeadership && hasGrant("mtg_attendance");
   const canDraftMinutes = hasLeadership && hasGrant("min_create");
+  // The trusted token issuer independently enforces real media permissions.
+  const canPublishMedia = !isOnlineMeeting
+    || (access.loaded && canOfferRegularMeetingPublishing(
+      myLinks, hasGrant("mtg_join"), access.is_super_admin, leaderById,
+    ));
+  const canOfferScreenShare = canPublishMedia;
   // Full system administration does not grant ballot eligibility; real
   // membership, attendance and recusal checks still apply.
 
@@ -576,10 +590,69 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [agendaStatuses, setAgendaStatuses]   = useState<Record<number, AgendaStatus>>(initSession.agendaStatuses);
   const [notes,          setNotes]            = useState<Record<number, string>>(initSession.notes);
   const [motions,        setMotions]          = useState<LiveMotion[]>(initSession.motions);
-  const [attendanceMap,  setAttendanceMap]    = useState<Record<string, AttendanceStatus>>(initSession.attendance);
+  // Online attendance is never restored from browser-local session cache.
+  const [attendanceMap,  setAttendanceMap]    = useState<Record<string, AttendanceStatus>>(isOnlineMeeting ? {} : initSession.attendance);
+  const [serverQuorum, setServerQuorum] = useState<LiveAttendanceSnapshot["quorum"] | null>(null);
+  // Confirmed LiveKit transitions can arrive before the preceding SQL ACK.
+  // Never discard a later Left/rejoin while Present is still pending.
+  const attendanceQueue = useMemo(() => new RegularAttendanceTransitionQueue(), [meetingId, currentUser.id]);
   const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
+  const activeAttendanceMeetingRef = useRef(meetingId);
+  activeAttendanceMeetingRef.current = meetingId;
+  const appliedQuorumRevision = useRef<{ meetingId: string; revision: number } | null>(null);
+  const applyVerifiedAttendance = useCallback((snapshot: LiveAttendanceSnapshot) => {
+    const last = appliedQuorumRevision.current;
+    if (!acceptsVerifiedAttendanceRevision(
+      snapshot.meetingId, snapshot.quorum.revision, activeAttendanceMeetingRef.current,
+      last?.meetingId === snapshot.meetingId ? last.revision : -1,
+    )) return;
+    appliedQuorumRevision.current = { meetingId: snapshot.meetingId, revision: snapshot.quorum.revision };
+    const statuses = new Set<AttendanceStatus>(["Not Joined", "Present", "Temporarily Away", "Left", "Excused", "Recused"]);
+    const next: Record<string, AttendanceStatus> = {};
+    for (const [participantId, value] of Object.entries(snapshot.attendanceMap)) {
+      if (statuses.has(value as AttendanceStatus)) next[participantId] = value as AttendanceStatus;
+    }
+    setAttendanceMap(next);
+    setServerQuorum(snapshot.quorum);
+  }, []);
+
+  // The online workspace reads SQL authority on entry and after other actors'
+  // changes. Visibility and polling are read-only; no cache may re-enable quorum.
+  const onlineRosterKey = meetingLinks.map(link => link.user_id).join("|");
+  useEffect(() => {
+    if (!isOnlineMeeting || !access.loaded || !meetingId) return;
+    const target = meetingLinks.find(link => link.user_id === currentUser.id)?.user_id
+      ?? (canEditAttendance ? meetingLinks[0]?.user_id : "");
+    setServerQuorum(null);
+    setAttendanceMap({});
+    if (!target) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const saved = await readLiveAttendance(meetingId, target);
+        if (!cancelled) applyVerifiedAttendance(saved);
+      } catch (error) {
+        if (!cancelled) {
+          setServerQuorum(null);
+          toast.error(error instanceof Error ? error.message : "Authoritative attendance unavailable.");
+        }
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 12000);
+    const onVisible = () => { if (!cancelled) void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnlineMeeting, access.loaded, meetingId, currentUser.id, canEditAttendance, onlineRosterKey, applyVerifiedAttendance]);
+
   const isVotingEligible = useCallback((participantId: string) => {
     if (!participantId || !meetingLinks.some(link => link.user_id === participantId && link.voting_eligible)) return false;
     const status = attendanceMap[participantId] ?? "Not Joined";
@@ -614,7 +687,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       toast.error("The live session has not loaded. Refresh before changing meeting status.");
       return false;
     }
-    const sessionStatus = nextStatus === "in-progress" ? "active" : "paused";
+    // Verify the server-backed session is in a state that permits this exact
+    // transition. A stale or repeated command must never manufacture an event.
+    let sessionStatus: "active" | "paused";
+    try {
+      sessionStatus = requestedLiveSessionStatus(session.session_status, nextStatus);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Refresh the session before continuing.");
+      return false;
+    }
     statusRequestPending.current = true;
     setStatusBusy(true);
     try {
@@ -639,30 +720,22 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting, meetingId, canControlMeeting, liveSessions, refreshMeetings, refreshLiveSessions]);
 
-  // ── Sync canonical session status on mount (canonical > localStorage) ─────
-  // Only runs once. If the Live Session registry already has a record for this
-  // meeting, use its status as the authoritative source so that refresh and
-  // resume correctly restore the running session rather than re-reading a
-  // stale localStorage snapshot.
-  // Meeting comments, motions and votes start empty. Only explicit participant
-  // actions may create governance evidence; never manufacture records on load.
-
-  const hasSyncedCanonical = useRef(false);
+  // ── Reconcile canonical live-session state after EACH server change ────────
+  // An open second client must observe pause/resume/end when registry data
+  // refreshes. Do not freeze the projection after the first snapshot, and do
+  // not allow browser-local cache to resurrect a server-ended meeting.
+  // No governance records are created by this read-only projection.
+  const lastCanonicalStatusKey = useRef("");
   useEffect(() => {
-    if (hasSyncedCanonical.current || !meetingId || !meeting) return;
+    if (!meetingId || !meeting) return;
     const canonical = liveSessions.find(item => item.meeting_id === meetingId);
     if (!canonical) return;
-    const mapping: Record<string, MeetingCtrlStatus> = {
-      active: "in-progress", paused: "paused", ended: "ended", not_started: "not-started",
-    };
-    const baseStatus = mapping[canonical.session_status ?? ""];
-    if (!baseStatus) return;
-    hasSyncedCanonical.current = true;
-    const persistedStatus = meeting.approval_status;
-    const restoredStatus = baseStatus === "paused" && persistedStatus === "On Break" ? "on-break"
-      : baseStatus === "paused" && persistedStatus === "Adjourned" ? "adjourned"
-      : baseStatus;
-    setCtrlStatusRaw(restoredStatus);
+    const next = canonicalLiveControlStatus(canonical.session_status, meeting.approval_status);
+    if (!next) return;
+    const key = canonicalLiveStatusKey(meetingId, canonical.id, canonical.session_status, meeting.approval_status);
+    if (key === lastCanonicalStatusKey.current) return;
+    lastCanonicalStatusKey.current = key;
+    setCtrlStatusRaw(next);
   }, [meetingId, meeting, liveSessions]);
 
   // ── Persist to localStorage on every state change ─────────────────────────
@@ -683,16 +756,42 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     return "meeting";
   };
   const [phase, setPhase]             = useState<"readiness" | "prejoin" | "meeting">(determineInitialPhase);
+  // The token gateway requires exactly one active or paused SQL live session.
+  // Do not enter the media workspace while the host has not started the meeting.
+  const activeJoinSessions = isOnlineMeeting
+    ? liveSessions.filter(s => s.meeting_id === meetingId && (s.session_status === "active" || s.session_status === "paused"))
+    : [];
+  const joinBlockedReason = !isOnlineMeeting || activeJoinSessions.length === 1
+    ? undefined
+    : activeJoinSessions.length === 0
+      ? "Waiting for the authorized host to start this LiveKit meeting. This page checks automatically."
+      : "Multiple live sessions were found. Contact the meeting organizer.";
+  useEffect(() => {
+    if (!isOnlineMeeting || phase !== "prejoin") return;
+    const refresh = () => { void Promise.resolve(refreshLiveSessions?.()).catch(() => undefined); };
+    refresh();
+    const timer = window.setInterval(refresh, 12000);
+    return () => window.clearInterval(timer);
+  }, [isOnlineMeeting, phase, refreshLiveSessions]);
+  // Every entry path must wait for confirmed SQL session state, not just
+  // join_meeting. A browser-restored control state is not room authority.
+  useEffect(() => {
+    if (isOnlineMeeting && phase === "meeting" && activeJoinSessions.length !== 1) {
+      setPhase("prejoin");
+    }
+  }, [isOnlineMeeting, phase, activeJoinSessions.length]);
   const [myMicOn, setMyMicOn]         = useState(true);
   const [myCamOn, setMyCamOn]         = useState(true);
+  // Separate user request from provider-confirmed sharing.
+  const [shareRequested, setShareRequested] = useState(false);
   const [isSharing, setIsSharing]     = useState(false);
-  const [isRecording, setIsRecording]               = useState(false);
-  const [isRecordingPaused, setIsRecordingPaused]   = useState(false);
-  const [isTranscribing, setIsTranscribing]         = useState(false);
-  const [isTranscribingPaused, setIsTranscribingPaused] = useState(false);
-  const [isMinutesCapture, setIsMinutesCapture]     = useState(false);
-  const [isMinutesPaused, setIsMinutesPaused]       = useState(false);
-  const [recordingStartedAt, setRecordingStartedAt] = useState<string | null>(null);
+  // LM-06: only server-confirmed capture may appear active or complete.
+  const confirmedMinutesSession = liveSessions.find(item => item.meeting_id === meetingId);
+  const isMinutesCapture = confirmedMinutesSession?.minutes_capture_status === "active";
+  const minutesCompleted = confirmedMinutesSession?.minutes_capture_status === "completed";
+  const [isMinutesPaused, setIsMinutesPaused] = useState(false); // local note-taking preference only
+  const [minutesCaptureBusy, setMinutesCaptureBusy] = useState(false);
+  const minutesRequestPending = useRef(false);
   const [isLocked, setIsLocked]       = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewMode, setViewMode]       = useState<ViewMode>("speaker");
@@ -744,6 +843,68 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         ? new Date(event.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
         : "",
     })), [interactionItems, meetingId]);
+  // Server-confirmed signals are shared between all meeting participants.
+  // Poll when the workspace is open; unlike toasts these persist and reconcile.
+  useEffect(() => {
+    if (!isOnlineMeeting || phase !== "meeting" || activeJoinSessions.length !== 1) return;
+    const refresh = () => { void Promise.resolve(refreshInteractions?.()).catch(() => undefined); };
+    refresh();
+    const interval = window.setInterval(refresh, 6000);
+    return () => window.clearInterval(interval);
+  }, [isOnlineMeeting, phase, activeJoinSessions.length, refreshInteractions]);
+
+  const confirmedHandStates = useMemo(() => {
+    const byUser: Record<string, boolean> = {};
+    for (const e of [...interactionItems].filter(e => e.meeting_id === meetingId && e.interaction_type === "hand_raise")
+      .sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))) {
+      if (typeof e.metadata?.raised === "boolean") byUser[e.user_id] = e.metadata.raised;
+    }
+    return byUser;
+  }, [interactionItems, meetingId]);
+  const [signalBusy, setSignalBusy] = useState(false);
+  const recentReactions = useMemo(() => interactionItems
+    .filter(e => e.meeting_id === meetingId && e.interaction_type === "reaction"
+      && REACTIONS.includes(String(e.content ?? ""))
+      && Date.now() - new Date(String(e.created_at ?? "")).getTime() < 15000)
+    .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
+    .slice(0, 3), [interactionItems, meetingId]);
+  const writeLiveSignal = async (kind: "hand_raise" | "reaction", value: boolean | string) => {
+    if (signalBusy || !isOnlineMeeting || activeJoinSessions.length !== 1) {
+      toast.error("Join the active LiveKit meeting before sending participant signals.");
+      return;
+    }
+    setSignalBusy(true);
+    try {
+      const saved = await addInteraction({
+        id: `SIG-${crypto.randomUUID()}`,
+        meeting_id: meetingId,
+        user_id: currentUser.id,
+        interaction_type: kind,
+        content: kind === "reaction" ? String(value) : (value ? "Raised hand" : "Lowered hand"),
+        metadata: kind === "hand_raise" ? { raised: value } : {},
+        created_at: nowISO(),
+      });
+      if (saved === true) {
+        await Promise.resolve(refreshInteractions?.()).catch(() => undefined);
+        if (kind === "reaction") setReactionsOpen(false);
+      }
+    } finally {
+      setSignalBusy(false);
+    }
+  };
+  useEffect(() => {
+    setParticipants(previous => {
+      let changed = false;
+      const next = previous.map(p => {
+        const raised = confirmedHandStates[p.id] ?? false;
+        if (p.handRaised === raised) return p;
+        changed = true;
+        return { ...p, handRaised: raised };
+      });
+      return changed ? next : previous;
+    });
+  }, [confirmedHandStates]);
+
   const sendingChat = useRef(false);
   const postingComment = useRef(false);
   const [chatBusy, setChatBusy] = useState(false);
@@ -788,19 +949,31 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const ACTIVE_STATES: AttendanceStatus[] = ["Present", "Temporarily Away"];
   const presentIds  = Object.entries(attendanceMap).filter(([, s]) => ACTIVE_STATES.includes(s as AttendanceStatus)).map(([id]) => id);
   const recusedIds  = Object.entries(attendanceMap).filter(([, s]) => s === "Recused").map(([id]) => id);
-  const presentCount = presentIds.length;
+  const presentCount = isOnlineMeeting ? (serverQuorum?.present ?? 0) : presentIds.length;
 
   // Filter canonical quorum links to those who are present and not recused
   const presentQuorumLinks = meetingLinks
     .filter(l => l.quorum_eligible && presentIds.includes(l.user_id) && !recusedIds.includes(l.user_id));
-  const quorumCalcResult = calculateMeetingQuorum({
+  const calculatedQuorum = calculateMeetingQuorum({
     boardCommitteeId: meeting?.committee ?? "",
     boardCommitteeName: meeting?.committee ?? "",
     participantLinks: presentQuorumLinks,
     governanceBodies: govBodies,
     quorumRules,
   });
-  const quorumMet      = quorumCalcResult.status === "expected" || quorumCalcResult.status === "at_risk";
+  // Never unlock online voting from locally computed or cached attendance.
+  const quorumCalcResult = isOnlineMeeting ? {
+    ...calculatedQuorum,
+    status: serverQuorum
+      ? (serverQuorum.met ? "expected" as const : "not_expected" as const)
+      : "not_configured" as const,
+    eligibleCount: serverQuorum?.present ?? 0,
+    requiredCount: serverQuorum?.required ?? 0,
+    reasons: serverQuorum ? [] : ["Awaiting authoritative SQL attendance and quorum readback"],
+  } : calculatedQuorum;
+  const quorumMet = isOnlineMeeting
+    ? serverQuorum?.met === true
+    : quorumCalcResult.status === "expected" || quorumCalcResult.status === "at_risk";
   const quorumRequired = quorumCalcResult.requiredCount;
   const eligibleCount  = meetingLinks.filter(l => l.quorum_eligible && !recusedIds.includes(l.user_id)).length;
 
@@ -812,6 +985,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // ── Meeting controls ───────────────────────────────────────────────────────
   // Persist meeting and live session in one SQL transaction before changing the UI.
   const startRequest = useRef<Promise<boolean> | null>(null);
+  const [startBusy, setStartBusy] = useState(false);
   const handleStart = useCallback((): Promise<boolean> => {
     if (startRequest.current) return startRequest.current;
     const request = (async () => {
@@ -819,17 +993,25 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         toast.error("Meeting unavailable. Refresh and try again.");
         return false;
       }
+      setStartBusy(true);
       try {
-        const startedAt = nowISO();
-        const session = liveSessions.find(s => s.meeting_id === meetingId);
-        const operations = buildMeetingStartBatch({
-          meetingRecordId: meeting.id,
-          meetingId,
-          actorId: currentUser.id,
-          startedAt,
-          existingSession: session,
-        });
-        await convayAuth.applyBatch(operations);
+        let startedAt = nowISO();
+        if (access.loaded && access.is_super_admin) {
+          // Super Admin override is verified, stamped and committed by SQL.
+          const receipt = await convayAuth.forceStartMeeting(meetingId);
+          if (receipt.startedAt) startedAt = receipt.startedAt;
+        } else {
+          // Ordinary hosts retain existing published/time-window restrictions.
+          const session = liveSessions.find(s => s.meeting_id === meetingId);
+          const operations = buildMeetingStartBatch({
+            meetingRecordId: meeting.id,
+            meetingId,
+            actorId: currentUser.id,
+            startedAt,
+            existingSession: session,
+          });
+          await convayAuth.applyBatch(operations);
+        }
         setCtrlStatusRaw("in-progress");
         setTimeline(prev => ({ ...prev, in_progress_at: startedAt }));
         setAgendaStatuses(prev => ({ ...prev, 0: "In Discussion" }));
@@ -839,16 +1021,19 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         } catch {
           toast.info("Meeting started. Refresh to load the latest session details.");
         }
+        if (isOnlineMeeting) setPhase("prejoin");
         return true;
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Unable to start meeting; no changes were saved.");
         return false;
+      } finally {
+        setStartBusy(false);
       }
     })();
     startRequest.current = request;
     void request.finally(() => { startRequest.current = null; });
     return request;
-  }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions]);
+  }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions, access.loaded, access.is_super_admin, isOnlineMeeting]);
 
   // End the meeting and its canonical live session together before changing UI.
   // Draft minutes are entered and saved by the secretary in the following modal;
@@ -902,6 +1087,40 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   // ── Attendance (uses canonical participant links) ──────────────────────────
   const setAttendance = useCallback((id: string, status: AttendanceStatus) => {
+    if (isOnlineMeeting) {
+      // The online path must never optimistically change quorum or attendee
+      // state; it uses the verified Edge + SQL + durable readback contract.
+      if (!meetingId) return;
+      void attendanceQueue.enqueue(id, async () => {
+        try {
+          const mode = id === currentUser.id ? "Online"
+            : meeting?.mode === "Hybrid" ? "In-Person" : "Online";
+          if (status === "Not Joined") {
+            const saved = await readLiveAttendance(meetingId, id);
+            if (saved.attendanceRevision === 0) {
+              applyVerifiedAttendance(saved);
+              return;
+            }
+          }
+          const saved = await commitLiveAttendance(meetingId, id, status, mode);
+          applyVerifiedAttendance(saved);
+          void refreshAttendanceRec?.().catch(() => undefined);
+          void refreshQuorumEvents?.().catch(() => undefined);
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Attendance was not confirmed by the server.");
+          // On failure we still reconcile from SQL; no stale browser state may
+          // unlock a quorum or an ineligible vote.
+          try {
+            const saved = await readLiveAttendance(meetingId, id);
+            applyVerifiedAttendance(saved);
+          } catch {
+            setServerQuorum(null);
+          }
+        }
+      });
+      return;
+    }
+    // Preserve existing in-person/offline attendance behaviour unchanged.
     setAttendanceMap(prev => ({ ...prev, [id]: status }));
     const participant = participants.find(p => p.id === id);
     const link        = meetingLinks.find(l => l.user_id === id);
@@ -955,7 +1174,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent]);
+  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent, currentUser.id, attendanceQueue, applyVerifiedAttendance, refreshAttendanceRec, refreshQuorumEvents]);
 
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
@@ -1315,112 +1534,80 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     }
   };
 
-  // ── Session / recording / transcription persistence ───────────────────────
-  const getOrCreateSession = (): string => {
-    if (!meetingId) return "";
-    const existing = liveSessions.find(s => s.meeting_id === meetingId);
-    if (existing) return existing.id;
-    const sid = mkId("SES");
-    addSession({
-      id: sid, meeting_id: meetingId,
-      started_at: nowISO(), started_by: currentUser.id,
-      session_status: "active",
-      recording_status: "not_started",
-      transcription_status: "not_started",
-      minutes_capture_status: "not_started",
-      created_at: nowISO(),
-    } as never);
-    return sid;
-  };
+  // LM-04/05: no recording or transcription provider has been activated.
+  // A client-only toggle cannot create a media recording, transcript or audit proof.
+  // Record/Captions controls below report the integration as unavailable instead.
+  // Do not add session writes here without an authenticated provider operation,
+  // durable server ACK and exact meeting/actor/tenant authorization.
 
-  const toggleRecording = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isRecording) {
-      setRecordingStartedAt(now);
-      setIsRecordingPaused(false);
-      if (sid) updateSession(sid, { recording_status: "active" } as never);
-      addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Recording started", metadata: { event: "recording_start", time: now }, created_at: now } as never);
-      toast.success("Recording started");
-    } else {
-      if (sid) updateSession(sid, { recording_status: "ended" } as never);
-      const dur = recordingStartedAt ? Math.round((Date.now() - new Date(recordingStartedAt).getTime()) / 1000) : 0;
-      addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Recording stopped", metadata: { event: "recording_stop", started_at: recordingStartedAt, ended_at: now, duration_seconds: dur }, created_at: now } as never);
-      setRecordingStartedAt(null);
-      setIsRecordingPaused(false);
-      toast("Recording stopped");
+  const toggleMinutesCapture = async () => {
+    if (!meetingId || minutesRequestPending.current) return;
+    if (!canRecordMeeting || !canDraftMinutes || !hasGrant("mtg_join")) {
+      toast.error("You do not have permission to change minutes capture.");
+      return;
     }
-    setIsRecording(v => !v);
-  };
-
-  const pauseResumeRecording = () => {
-    if (!meetingId || !isRecording) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isRecordingPaused;
-    if (sid) updateSession(sid, { recording_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("REC"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Recording paused" : "Recording resumed", metadata: { event: nextPaused ? "recording_pause" : "recording_resume", time: now }, created_at: now } as never);
-    setIsRecordingPaused(nextPaused);
-    toast(nextPaused ? "Recording paused" : "Recording resumed");
-  };
-
-  const toggleTranscription = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isTranscribing) {
-      setIsTranscribingPaused(false);
-      if (sid) updateSession(sid, { transcription_status: "active" } as never);
-      addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Transcription started", metadata: { event: "transcription_start", time: now }, created_at: now } as never);
-      toast.success("Transcription started");
-    } else {
-      if (sid) updateSession(sid, { transcription_status: "ended" } as never);
-      addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Transcription stopped", metadata: { event: "transcription_stop", time: now }, created_at: now } as never);
-      setIsTranscribingPaused(false);
-      toast("Transcription stopped");
+    const session = liveSessions.find(item => item.meeting_id === meetingId);
+    if (!session) {
+      toast.error("Start the meeting and reload its live session before capturing minutes.");
+      return;
     }
-    setIsTranscribing(v => !v);
-  };
-
-  const pauseResumeTranscription = () => {
-    if (!meetingId || !isTranscribing) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isTranscribingPaused;
-    if (sid) updateSession(sid, { transcription_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("TRX"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Transcription paused" : "Transcription resumed", metadata: { event: nextPaused ? "transcription_pause" : "transcription_resume", time: now }, created_at: now } as never);
-    setIsTranscribingPaused(nextPaused);
-    toast(nextPaused ? "Transcription paused" : "Transcription resumed");
-  };
-
-  const toggleMinutesCapture = () => {
-    if (!meetingId) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    if (!isMinutesCapture) {
+    if (session.minutes_capture_status === "completed") {
+      toast.info("Minutes capture was already completed.");
+      return;
+    }
+    const action = session.minutes_capture_status === "active" ? "complete" : "start";
+    minutesRequestPending.current = true;
+    setMinutesCaptureBusy(true);
+    try {
+      let confirmedSavedMinutes = false;
+      if (action === "complete") {
+        // A client-side note or unanswered save is not evidence of persisted minutes.
+        const persisted = await convayAuth.registry<Minutes>("bms.minutes", "list");
+        confirmedSavedMinutes = persisted.records.some(item =>
+          item.payload.meeting_id === meetingId && !!item.payload.discussion_summary?.trim()
+        );
+      }
+      await commitVerifiedMinutesCapture({
+        meetingId,
+        actorId: currentUser.id,
+        session: {
+          id: session.id,
+          meeting_id: session.meeting_id,
+          session_status: session.session_status,
+          minutes_capture_status: session.minutes_capture_status,
+        },
+        action,
+        confirmedSavedMinutes,
+        at: nowISO(),
+        applyBatch: operations => convayAuth.applyBatch(operations),
+        readSessions: async () => (await convayAuth.registry<LiveMeetingSession>(
+          "bms.liveSessions", "list"
+        )).records.map(item => item.payload),
+      });
+      try { await refreshLiveSessions?.(); }
+      catch { toast.info("Minutes state saved; refresh to display the latest status."); }
       setIsMinutesPaused(false);
-      if (sid) updateSession(sid, { minutes_capture_status: "active" } as never);
-      addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Minutes capture started", metadata: { event: "minutes_start", time: now }, created_at: now } as never);
-      toast.success("Minutes capture started");
-    } else {
-      if (sid) updateSession(sid, { minutes_capture_status: "ended" } as never);
-      addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: "Minutes capture stopped", metadata: { event: "minutes_stop", time: now }, created_at: now } as never);
-      setIsMinutesPaused(false);
-      toast("Minutes capture stopped");
+      toast.success(action === "start" ? "Minutes capture started" : "Minutes capture completed");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Minutes capture was not saved.");
+      void refreshLiveSessions?.()?.catch(() => undefined);
+    } finally {
+      minutesRequestPending.current = false;
+      setMinutesCaptureBusy(false);
     }
-    setIsMinutesCapture(v => !v);
   };
 
+  // Pausing the note-taking interface is local only. The canonical LM-06
+  // states are not_started / active / completed; do not write fake "paused".
   const pauseResumeMinutes = () => {
-    if (!meetingId || !isMinutesCapture) return;
-    const now = nowISO();
-    const sid = getOrCreateSession();
-    const nextPaused = !isMinutesPaused;
-    if (sid) updateSession(sid, { minutes_capture_status: nextPaused ? "paused" : "active" } as never);
-    addInteraction({ id: mkId("MIN"), meeting_id: meetingId, user_id: currentUser.id, interaction_type: "host_action", content: nextPaused ? "Minutes capture paused" : "Minutes capture resumed", metadata: { event: nextPaused ? "minutes_pause" : "minutes_resume", time: now }, created_at: now } as never);
-    setIsMinutesPaused(nextPaused);
-    toast(nextPaused ? "Minutes capture paused" : "Minutes capture resumed");
+    if (!isMinutesCapture || minutesRequestPending.current) return;
+    setIsMinutesPaused(previous => {
+      const paused = !previous;
+      toast.info(paused
+        ? "Local note-taking paused. Server minutes capture remains active."
+        : "Local note-taking resumed.");
+      return paused;
+    });
   };
 
   // ── Temporary agenda creation ─────────────────────────────────────────────
@@ -1489,7 +1676,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         onStartMeeting={async (readinessAttendance) => {
           const started = await handleStart();
           if (!started) return;
-          setAttendanceMap(prev => {
+          // Readiness check-in is local only for physical meetings. Online
+          // presence is committed after the verified provider/SQL roundtrip.
+          if (!isOnlineMeeting) setAttendanceMap(prev => {
             const merged = { ...prev };
             for (const [uid, st] of Object.entries(readinessAttendance)) {
               merged[uid] = st as AttendanceStatus;
@@ -1523,9 +1712,15 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       <MeetingPreJoinPanel
         meeting={meeting}
         initialRole={myRole as PreJoinRole}
+        publisherAllowed={canPublishMedia}
+        joinBlockedReason={joinBlockedReason}
+        forceStartBusy={startBusy}
+        onForceStart={access.loaded && access.is_super_admin && activeJoinSessions.length === 0
+          ? () => { void handleStart(); } : undefined}
         onJoin={opts => {
-          setMyMicOn(opts.micOn);
-          setMyCamOn(opts.camOn);
+          if (joinBlockedReason) { toast.info(joinBlockedReason); return; }
+          setMyMicOn(canPublishMedia && opts.micOn);
+          setMyCamOn(canPublishMedia && opts.camOn);
           setPhase("meeting");
           // Online attendance only begins after a confirmed media connection.
           if (!isOnlineMeeting && myLink) setAttendance(currentUser.id, "Present");
@@ -1624,8 +1819,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         {/* Quorum badge */}
         <span
           title={`Rule: ${quorumRuleDisplay} · ${presentCount} present of ${eligibleCount} eligible`}
-          style={{ padding: "0.2rem 0.6rem", borderRadius: "9999px", fontSize: "0.7rem", fontWeight: 600, background: quorumMet ? "#14532d22" : "#7f1d1d22", color: quorumMet ? "#22c55e" : "#ef4444", border: `1px solid ${quorumMet ? "#22c55e44" : "#ef444444"}`, whiteSpace: "nowrap", cursor: "help" }}>
-          {quorumMet ? "✓ Quorum" : "✗ No Quorum"} ({presentCount}/{quorumRequired})
+          style={{ padding: "0.2rem 0.6rem", borderRadius: "9999px", fontSize: "0.7rem", fontWeight: 600, background: quorumMet ? "#14532d22" : (quorumRequired === 0 || isOnlineMeeting && !serverQuorum) ? "#334155" : "#7f1d1d22", color: quorumMet ? "#22c55e" : (quorumRequired === 0 || isOnlineMeeting && !serverQuorum) ? "#cbd5e1" : "#ef4444", border: `1px solid ${quorumMet ? "#22c55e44" : (quorumRequired === 0 || isOnlineMeeting && !serverQuorum) ? "#475569" : "#ef444444"}`, whiteSpace: "nowrap", cursor: "help" }}>
+          {isOnlineMeeting && !serverQuorum ? "Quorum Pending"
+            : quorumRequired === 0 ? "Quorum Not Configured"
+            : quorumMet ? "✓ Quorum" : "✗ No Quorum"}
+          {quorumRequired > 0 ? ` (${quorumCalcResult.eligibleCount}/${quorumRequired})` : ""}
         </span>
 
         {/* Active vote indicator */}
@@ -1647,8 +1845,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         {/* Meeting controls — gated by role */}
         <div style={{ display: "flex", gap: "0.4rem" }}>
           {ctrlStatus === "not-started" && canControlMeeting && (
-            <button onClick={handleStart} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
-              <Play size={12} /> Start
+            <button onClick={() => { void handleStart(); }} disabled={startBusy} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
+              <Play size={12} /> {startBusy ? "Starting…" : access.is_super_admin ? "Force Start Now" : "Start"}
             </button>
           )}
           {ctrlStatus === "in-progress" && canControlMeeting && (
@@ -1683,8 +1881,10 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         <div role="alert" style={{ padding: "0.4rem 1rem", background: "#7f1d1d", borderBottom: "1px solid #ef4444", display: "flex", alignItems: "center", gap: "0.5rem", flexShrink: 0 }}>
           <AlertCircle size={14} style={{ color: "#fca5a5", flexShrink: 0 }} />
           <span style={{ fontSize: "0.75rem", color: "#fecaca", fontWeight: 600 }}>
-            Quorum lost — {quorumStatusLabel(quorumCalcResult)}. Present eligible: {quorumCalcResult.eligibleCount} of {quorumCalcResult.requiredCount} required.
-            New votes and formal resolutions are blocked until quorum is restored.
+            {isOnlineMeeting && !serverQuorum ? "Quorum confirmation pending."
+              : quorumRequired === 0 ? "Quorum rule has not been configured."
+              : `Quorum not met — ${quorumStatusLabel(quorumCalcResult)}. Present eligible: ${quorumCalcResult.eligibleCount} of ${quorumCalcResult.requiredCount} required.`}
+            {" "}New votes and formal resolutions remain blocked until SQL confirms quorum.
           </span>
         </div>
       )}
@@ -1712,11 +1912,20 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* Video stage */}
           <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
-            {isOnlineMeeting && (
+            {isOnlineMeeting && activeJoinSessions.length === 1 && (
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
-                <LiveMeetingMedia meetingId={meetingId} micOn={myMicOn} camOn={myCamOn} sharing={isSharing}
-                  onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={setIsSharing}
-                  onPresence={connected => { if (myLink) setAttendance(currentUser.id, connected ? "Present" : "Left"); }} />
+                <LiveMeetingMedia meetingId={meetingId}
+                  micOn={canPublishMedia && myMicOn} camOn={canPublishMedia && myCamOn}
+                  sharing={canPublishMedia && shareRequested}
+                  onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={confirmed => {
+                    setIsSharing(confirmed);
+                    if (!confirmed) setShareRequested(false);
+                  }}
+                  onPresence={connected => {
+                    if (!myLink) return;
+                    const transition = onlinePresence.onPresence(connected);
+                    if (transition) setAttendance(currentUser.id, transition);
+                  }} />
               </div>
             )}
             {!isOnlineMeeting && viewMode === "speaker" && (
@@ -2507,17 +2716,23 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* ── BOTTOM DOCK ──────────────────────────────────────────────────── */}
           <div style={{ height: 64, background: "#1e293b", borderTop: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0 1rem", flexShrink: 0 }}>
-            {(!LIVE_MEETINGS_RELEASED || isOnlineMeeting) && <>
-            <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
+            <>
+            {canPublishMedia && <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
               {myMicOn ? <Mic size={18} /> : <MicOff size={18} />}
-            </DockButton>
-            <DockButton active={myCamOn} danger={!myCamOn} label={myCamOn  ? "Stop Video"  : "Start Video"}  onClick={() => setMyCamOn(v => !v)}>
+            </DockButton>}
+            {canPublishMedia && <DockButton active={myCamOn} danger={!myCamOn} label={myCamOn  ? "Stop Video"  : "Start Video"}  onClick={() => setMyCamOn(v => !v)}>
               {myCamOn ? <Video size={18} /> : <VideoOff size={18} />}
-            </DockButton>
-            <DockButton active={isSharing} label={isSharing ? "Stop Share" : "Share Screen"} onClick={() => { setIsSharing(v => !v); if (!LIVE_MEETINGS_RELEASED && !isSharing) setViewMode("document"); }}>
-              {isSharing ? <MonitorOff size={18} /> : <Monitor size={18} />}
-            </DockButton>
-            </>}
+            </DockButton>}
+            {!canPublishMedia && <span role="status" style={{ color: "#cbd5e1", fontSize: "0.78rem" }}>View only</span>}
+            {canOfferScreenShare && (
+              <DockButton active={isSharing} label={isSharing ? "Stop Share" : shareRequested ? "Cancel Share" : "Share Screen"} onClick={() => {
+                if (isOnlineMeeting) setShareRequested(requested => !requested);
+                else { setIsSharing(v => !v); if (!isSharing) setViewMode("document"); }
+              }}>
+                {isSharing ? <MonitorOff size={18} /> : <Monitor size={18} />}
+              </DockButton>
+            )}
+            </>
 
             <div style={{ width: 1, height: 32, background: "#334155", margin: "0 0.25rem" }} />
 
@@ -2528,9 +2743,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
               <MessageSquare size={18} />
               {chatMessages.length > 0 && <span style={{ position: "absolute", top: -4, right: -4, background: "#ef4444", color: "#fff", fontSize: "0.6rem", borderRadius: "9999px", padding: "1px 4px", fontWeight: 700 }}>{chatMessages.length}</span>}
             </DockButton>
-            <DockButton active={participants.find(p => p.id === currentUser.id)?.handRaised ?? false} label="Raise Hand" onClick={() => { setParticipants(prev => prev.map(p => p.id === currentUser.id ? { ...p, handRaised: !p.handRaised } : p)); toast("Hand raised"); }}>
-              <Hand size={18} />
-            </DockButton>
+            {isOnlineMeeting
+              ? <DockButton active={confirmedHandStates[currentUser.id] === true} label={signalBusy ? "Saving hand…" : confirmedHandStates[currentUser.id] ? "Lower Hand" : "Raise Hand"} onClick={() => { void writeLiveSignal("hand_raise", !(confirmedHandStates[currentUser.id] ?? false)); }}>
+                  <Hand size={18} />
+                </DockButton>
+              : <DockButton active={participants.find(p => p.id === currentUser.id)?.handRaised ?? false} label="Raise Hand" onClick={() => setParticipants(prev => prev.map(p => p.id === currentUser.id ? { ...p, handRaised: !p.handRaised } : p))}>
+                  <Hand size={18} />
+                </DockButton>}
             <DockButton active={reactionsOpen} label="Reactions" onClick={() => setReactionsOpen(v => !v)}>
               <Smile size={18} />
             </DockButton>
@@ -2548,11 +2767,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                 <MessageSquare size={18} />
               </DockButton>
             </span>
-            <DockButton active={isMinutesCapture} label={isMinutesCapture ? "Stop Min" : "Minutes"} onClick={toggleMinutesCapture}>
+            <DockButton active={isMinutesCapture} label={minutesCaptureBusy ? "Saving..." : minutesCompleted ? "Min Done" : isMinutesCapture ? "Finish Min" : "Minutes"} onClick={() => { void toggleMinutesCapture(); }}>
               <FileText size={18} />
             </DockButton>
             {isMinutesCapture && (
-              <DockButton active={!isMinutesPaused} label={isMinutesPaused ? "Resume" : "Pause Min"} onClick={pauseResumeMinutes}>
+              <DockButton active={!isMinutesPaused} label={isMinutesPaused ? "Resume Notes" : "Pause Notes"} onClick={pauseResumeMinutes}>
                 {isMinutesPaused ? <Play size={18} /> : <Pause size={18} />}
               </DockButton>
             )}
@@ -3732,11 +3951,22 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         </div>
       )}
 
+      {/* Persisted participant reactions, refreshed from SQL across clients. */}
+      {isOnlineMeeting && recentReactions.length > 0 && phase === "meeting" && (
+        <div role="status" aria-live="polite" style={{ position: "fixed", bottom: 140, left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "#1e293b", border: "1px solid #334155", padding: "0.4rem 0.7rem", borderRadius: 12, color: "#f1f5f9", fontSize: "0.8rem" }}>
+          {recentReactions.map(e => <span key={e.id} style={{ marginRight: 12 }}>
+            {String(e.metadata?.sender ?? "Participant")} {e.content}
+          </span>)}
+        </div>
+      )}
       {/* ── REACTIONS ────────────────────────────────────────────────────────── */}
       {reactionsOpen && (
         <div style={{ position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)", display: "flex", gap: "0.5rem", padding: "0.5rem 0.75rem", background: "#1e293b", borderRadius: "9999px", border: "1px solid #334155", zIndex: 100 }}>
           {REACTIONS.map(r => (
-            <button key={r} onClick={() => { toast(r); setReactionsOpen(false); }} style={{ fontSize: "1.3rem", background: "none", border: "none", cursor: "pointer" }}>{r}</button>
+            <button key={r} disabled={signalBusy} onClick={() => {
+              if (isOnlineMeeting) void writeLiveSignal("reaction", r);
+              else { toast(r); setReactionsOpen(false); }
+            }} style={{ fontSize: "1.3rem", background: "none", border: "none", cursor: signalBusy ? "wait" : "pointer" }}>{r}</button>
           ))}
           <button onClick={() => setReactionsOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}><X size={14} /></button>
         </div>
@@ -3951,7 +4181,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             confirmLabel="Leave"
             onConfirm={() => {
               setLeaveConfirmOpen(false);
-              if (wasPresent) setAttendance(myParticipantId, "Left");
+              if (isOnlineMeeting) {
+                // One confirmed online Leave wins over later disconnect/unmount callbacks.
+                const transition = onlinePresence.onLeaveConfirmed(wasPresent);
+                if (transition) setAttendance(myParticipantId, transition);
+              } else if (wasPresent) {
+                // Preserve approved physical-meeting Leave behavior.
+                setAttendance(myParticipantId, "Left");
+              }
               onClose();
             }}
             onClose={() => setLeaveConfirmOpen(false)}

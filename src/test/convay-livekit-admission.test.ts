@@ -39,6 +39,35 @@ describe("Convay LiveKit admission", () => {
     expect(checkOnlineAdmission({ ...valid(), session: { session_status: "ended" } }))
       .toMatchObject({ allowed: false, status: 409 });
   });
+  it("rejects terminal state in either persisted lifecycle alias", () => {
+    expect(checkOnlineAdmission({ ...valid(), meeting: {
+      ...valid().meeting, approval_status: "In Progress", status: "Cancelled",
+    } })).toMatchObject({ allowed: false, status: 409 });
+    expect(checkOnlineAdmission({ ...valid(), meeting: {
+      ...valid().meeting, approval_status: "Archived", status: "In Progress",
+    } })).toMatchObject({ allowed: false, status: 409 });
+    expect(checkOnlineAdmission({ ...valid(), meeting: {
+      ...valid().meeting, approval_status: "  Rejected  ", status: "Scheduled",
+    } })).toMatchObject({ allowed: false, status: 409 });
+  });
+  it("rejects missing lifecycle proof instead of inferring online eligibility", () => {
+    expect(checkOnlineAdmission({ ...valid(), meeting: {
+      ...valid().meeting, approval_status: "", status: undefined,
+    } })).toMatchObject({ allowed: false, status: 409 });
+  });
+  it("rejects physical/virtual mode alias conflicts", () => {
+    expect(checkOnlineAdmission({ ...valid(), meeting: {
+      ...valid().meeting, mode: "Virtual", meeting_mode: "Physical",
+    } })).toMatchObject({ allowed: false, status: 409 });
+    expect(checkOnlineAdmission({ ...valid(), meeting: {
+      ...valid().meeting, mode: "Physical", meeting_mode: "Hybrid",
+    } })).toMatchObject({ allowed: false, status: 409 });
+  });
+  it("still allows consistent, active aliases after session start", () => {
+    expect(checkOnlineAdmission({ ...valid(), meeting: {
+      ...valid().meeting, mode: "Hybrid", meeting_mode: "Hybrid", approval_status: "Approved", status: "In Progress",
+    } })).toEqual({ allowed: true });
+  });
   it("denies scheduled but not-started meetings", () => {
     expect(checkOnlineAdmission({ ...valid(), session: null }))
       .toMatchObject({ allowed: false, status: 409 });

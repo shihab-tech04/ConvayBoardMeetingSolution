@@ -1,0 +1,268 @@
+\set ON_ERROR_STOP on
+-- TEN-04 — executable PostgreSQL private object bytes RLS matrix.
+-- Entire candidate and synthetic data ROLLBACK; not Storage API/URL tests.
+BEGIN;
+\ir ../wsf_ten_foundation/foundation.sql
+\ir ../wsf_ten_isolation/fixture_scope.sql
+\ir storage_fixture.sql
+\ir ../wsf_ten_isolation/activation_candidate.sql
+
+-- Before coordinated policy migration, new tenant-prefixed object paths
+-- are denied by original document-ID-first policies.
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','33333333-3333-4333-8333-333333333333',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"77777777-7777-4777-8777-777777777777"}',true);
+DO $old$
+BEGIN
+  IF EXISTS(SELECT 1 FROM storage.objects WHERE bucket_id='convay-documents') THEN
+    RAISE EXCEPTION 'TEN-04 legacy policy unexpectedly accepts tenant-prefix path';
+  END IF;
+  RAISE NOTICE 'TEN-04 CASE 01 legacy first-segment policy blocks new tenant paths PASS';
+END $old$;
+RESET ROLE;
+
+\ir storage_candidate.sql
+
+SET LOCAL ROLE authenticated;
+DO $gate$
+BEGIN
+ IF (SELECT count(*) FROM pg_policies WHERE schemaname='storage'
+ AND tablename='objects' AND policyname like 'convay_wsf_storage_tenant_%'
+ AND permissive='RESTRICTIVE')<>4 THEN
+  RAISE EXCEPTION 'TEN-04 missing restrictive policy layer';
+ END IF;
+ RAISE NOTICE 'TEN-04 CASE 02 four additional RESTRICTIVE object policies present PASS';
+END $gate$;
+
+SELECT set_config('request.jwt.claim.sub','33333333-3333-4333-8333-333333333333',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"77777777-7777-4777-8777-777777777777"}',true);
+DO $a$
+DECLARE
+ n integer; data text;
+BEGIN
+ SELECT count(*),max(convert_from(bytes,'UTF8')) INTO n,data
+ FROM storage.objects WHERE bucket_id='convay-documents';
+ IF n<>1 OR data<>'TENANT_A_PRIVATE_BYTES' THEN
+  RAISE EXCEPTION 'TEN-04 A read wrong bytes or accessed foreign tenant: n %, data %',n,data;
+ END IF;
+ RAISE NOTICE 'TEN-04 CASE 03 A reads only exact authorized private bytea PASS';
+END $a$;
+
+-- Actor A direct upload/update/delete of OWN tenant+document path.
+DO $write$
+DECLARE n integer;
+BEGIN
+ INSERT INTO storage.objects(bucket_id,name,bytes,owner_id)
+ VALUES('convay-documents',
+ '55555555-5555-4555-8555-555555555555/doc-a/v2/original',
+ convert_to('NEW_A','UTF8'),auth.uid()::text);
+ UPDATE storage.objects SET bytes=convert_to('UPDATED_A','UTF8')
+ WHERE name='55555555-5555-4555-8555-555555555555/doc-a/v2/original';
+ GET DIAGNOSTICS n=ROW_COUNT;
+ IF n<>1 THEN RAISE EXCEPTION 'TEN-04 A update denied'; END IF;
+ IF (SELECT convert_from(bytes,'UTF8') FROM storage.objects
+  WHERE name='55555555-5555-4555-8555-555555555555/doc-a/v2/original')
+  IS DISTINCT FROM 'UPDATED_A' THEN
+  RAISE EXCEPTION 'TEN-04 A updated byte readback mismatch';
+ END IF;
+ DELETE FROM storage.objects
+ WHERE name='55555555-5555-4555-8555-555555555555/doc-a/v2/original';
+ GET DIAGNOSTICS n=ROW_COUNT;
+ IF n<>1 THEN RAISE EXCEPTION 'TEN-04 A delete denied'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 04 authorized A direct INSERT/UPDATE/DELETE bytes PASS';
+END $write$;
+
+-- No actor can change tenant simply by submitting a different object path.
+DO $foreign$
+DECLARE n integer; denied boolean:=false;
+BEGIN
+ BEGIN
+ INSERT INTO storage.objects(bucket_id,name,bytes)
+ VALUES('convay-documents',
+   '66666666-6666-4666-8666-666666666666/doc-b/v2/original',
+   convert_to('CROSS_TENANT_WRITE','UTF8'));
+ EXCEPTION WHEN insufficient_privilege THEN denied:=true; END;
+ IF NOT denied THEN RAISE EXCEPTION 'TEN-04 foreign upload accepted'; END IF;
+ UPDATE storage.objects SET bytes=convert_to('MUTATED_B','UTF8')
+ WHERE name='66666666-6666-4666-8666-666666666666/doc-b/v1/original';
+ GET DIAGNOSTICS n=ROW_COUNT;
+ IF n<>0 THEN RAISE EXCEPTION 'TEN-04 foreign byte update accepted'; END IF;
+ DELETE FROM storage.objects
+ WHERE name='66666666-6666-4666-8666-666666666666/doc-b/v1/original';
+ GET DIAGNOSTICS n=ROW_COUNT;
+ IF n<>0 THEN RAISE EXCEPTION 'TEN-04 foreign delete accepted'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 05 wrong tenant uploads/updates/deletes denied PASS';
+END $foreign$;
+
+-- Another active member C in tenant A, with identical doc module grants,
+-- cannot view tenant A's confidential document without document-specific ACL.
+SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}',true);
+DO $no_share$
+BEGIN
+ IF EXISTS(SELECT 1 FROM storage.objects WHERE bucket_id='convay-documents')
+ THEN RAISE EXCEPTION 'TEN-04 same tenant non-owner read confidential bytes'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 06 same-tenant private document without share denied PASS';
+END $no_share$;
+
+-- A confirmed per-user ACL grants only VIEW, not EDIT or DELETE.
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub','33333333-3333-4333-8333-333333333333',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"77777777-7777-4777-8777-777777777777"}',true);
+INSERT INTO public.convay_entity_records(entity_key,record_id,payload,created_by)
+VALUES('bms.doc.access_grants','access-c',
+'{"id":"access-c","document_id":"doc-a","subject_type":"user","subject_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","permission":"view"}'::jsonb,
+'33333333-3333-4333-8333-333333333333');
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}',true);
+DO $share$
+DECLARE n integer;changed integer;
+BEGIN
+ SELECT count(*) INTO n FROM storage.objects WHERE bucket_id='convay-documents';
+ IF n<>1 THEN RAISE EXCEPTION 'TEN-04 user ACL view missing'; END IF;
+ UPDATE storage.objects SET bytes=convert_to('UNAUTHORIZED','UTF8')
+ WHERE name='55555555-5555-4555-8555-555555555555/doc-a/v1/original';
+ GET DIAGNOSTICS changed=ROW_COUNT;
+ IF changed<>0 THEN RAISE EXCEPTION 'TEN-04 view-only share permitted edit'; END IF;
+ DELETE FROM storage.objects
+ WHERE name='55555555-5555-4555-8555-555555555555/doc-a/v1/original';
+ GET DIAGNOSTICS changed=ROW_COUNT;
+ IF changed<>0 THEN RAISE EXCEPTION 'TEN-04 view-only share permitted delete'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 07 exact user share allows VIEW but no EDIT/DELETE PASS';
+END $share$;
+
+-- Revoking the shared record immediately denies same live session.
+RESET ROLE;
+DELETE FROM public.convay_entity_records
+WHERE entity_key='bms.doc.access_grants' AND record_id='access-c';
+SET LOCAL ROLE authenticated;
+DO $revoke_share$
+BEGIN
+ IF EXISTS(SELECT 1 FROM storage.objects WHERE bucket_id='convay-documents') THEN
+ RAISE EXCEPTION 'TEN-04 revoked share still exposes private bytes'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 08 shared grant revocation denies future SQL read PASS';
+END $revoke_share$;
+
+-- Role share works only while the scoped ACL and actor's active role persist.
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub','33333333-3333-4333-8333-333333333333',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"77777777-7777-4777-8777-777777777777"}',true);
+INSERT INTO public.convay_entity_records(entity_key,record_id,payload,created_by)
+VALUES('bms.doc.access_grants','access-role-c',
+'{"id":"access-role-c","document_id":"doc-a","subject_type":"role","subject_id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","permission":"view"}'::jsonb,
+'33333333-3333-4333-8333-333333333333');
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}',true);
+DO $role$
+BEGIN
+ IF (SELECT count(*) FROM storage.objects WHERE bucket_id='convay-documents')<>1
+ THEN RAISE EXCEPTION 'TEN-04 active assigned share role rejected'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 09 tenant-scoped role share permits view PASS';
+END $role$;
+RESET ROLE;
+UPDATE public.convay_roles SET status='Inactive'
+WHERE id='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+SET LOCAL ROLE authenticated;
+DO $inactive$
+BEGIN
+ IF EXISTS(SELECT 1 FROM storage.objects WHERE bucket_id='convay-documents') THEN
+ RAISE EXCEPTION 'TEN-04 inactive role retained document access'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 10 inactive shared role denies future SQL read PASS';
+END $inactive$;
+
+-- A different tenant's signed identity sees only its document's bytea.
+SELECT set_config('request.jwt.claim.sub','44444444-4444-4444-8444-444444444444',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"66666666-6666-4666-8666-666666666666"},"session_id":"88888888-8888-4888-8888-888888888888"}',true);
+DO $b$
+DECLARE data text;
+BEGIN
+ SELECT convert_from(bytes,'UTF8') INTO data FROM storage.objects
+ WHERE bucket_id='convay-documents';
+ IF data IS DISTINCT FROM 'TENANT_B_PRIVATE_BYTES' THEN
+ RAISE EXCEPTION 'TEN-04 B read wrong private bytes'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 11 B reads B bytes only PASS';
+END $b$;
+
+-- Foreign doc name with own valid tenant prefix must still be rejected.
+DO $foreign_doc$
+BEGIN
+ IF convay_private.tenant_document_storage_authorized(
+ 'convay-documents',
+ '66666666-6666-4666-8666-666666666666/doc-a/v1/original','view')
+ THEN RAISE EXCEPTION 'TEN-04 foreign document with local prefix authorized'; END IF;
+ IF convay_private.tenant_document_storage_authorized(
+ 'convay-documents',
+ '66666666-6666-4666-8666-666666666666/doc-b//original','view')
+ THEN RAISE EXCEPTION 'TEN-04 unsafe empty path authorized'; END IF;
+ IF convay_private.tenant_document_storage_authorized(
+ 'convay-documents',
+ '66666666-6666-4666-8666-666666666666/doc-b/%2F/original','view')
+ THEN RAISE EXCEPTION 'TEN-04 encoded slash-like path authorized'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 12 doc/tenant mismatch and unsafe path denied PASS';
+END $foreign_doc$;
+
+-- Revoked membership and absent Auth session invalidate the same JWT.
+RESET ROLE;
+UPDATE convay_private.tenant_memberships
+SET membership_state='revoked',revoked_at=now(),revision=revision+1
+WHERE user_id='44444444-4444-4444-8444-444444444444';
+SET LOCAL ROLE authenticated;
+DO $suspend$
+BEGIN
+ IF EXISTS(SELECT 1 FROM storage.objects WHERE bucket_id='convay-documents') THEN
+ RAISE EXCEPTION 'TEN-04 revoked membership still exposes private bytes'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 13 revoked membership denies new SQL access PASS';
+END $suspend$;
+RESET ROLE;
+UPDATE convay_private.tenant_memberships
+SET membership_state='active',revoked_at=null,revision=revision+1
+WHERE user_id='44444444-4444-4444-8444-444444444444';
+DELETE FROM auth.sessions WHERE id='88888888-8888-4888-8888-888888888888';
+SET LOCAL ROLE authenticated;
+DO $session$
+BEGIN
+ IF EXISTS(SELECT 1 FROM storage.objects WHERE bucket_id='convay-documents') THEN
+ RAISE EXCEPTION 'TEN-04 revoked Auth session exposes private bytes'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 14 revoked Auth session denies SQL access PASS';
+END $session$;
+
+-- Super Admin absent from either tenant must not bypass the ACL.
+SELECT set_config('request.jwt.claim.sub','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',true);
+SELECT set_config('request.jwt.claims',
+'{"app_metadata":{"active_tenant_id":"55555555-5555-4555-8555-555555555555"},"session_id":"dddddddd-dddd-4ddd-8ddd-dddddddddddd"}',true);
+DO $root$
+BEGIN
+ IF EXISTS(SELECT 1 FROM storage.objects WHERE bucket_id='convay-documents') THEN
+ RAISE EXCEPTION 'TEN-04 unscoped root sees private tenant bytea'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 15 platform root without tenant context denied PASS';
+END $root$;
+
+RESET ROLE;
+ROLLBACK;
+
+DO $post$
+BEGIN
+ IF to_regclass('storage.objects') IS NOT NULL
+ OR to_regprocedure('convay_private.tenant_document_storage_authorized(text,text,text)') IS NOT NULL
+ OR to_regclass('convay_private.tenants') IS NOT NULL
+ OR EXISTS(SELECT 1 FROM information_schema.columns WHERE
+   table_schema='public' AND table_name='convay_entity_records'
+   AND column_name='tenant_id')
+ THEN RAISE EXCEPTION 'TEN-04 rollback left Storage or tenant schema'; END IF;
+ IF (SELECT count(*) FROM public.convay_entity_records
+     WHERE record_id='fixture-meeting-1'
+     AND payload->>'status'='Draft')<>1
+ THEN RAISE EXCEPTION 'TEN-04 rollback damaged legacy source row'; END IF;
+ RAISE NOTICE 'TEN-04 CASE 16 rollback restored baseline and legacy record PASS';
+ RAISE NOTICE 'TEN-04 NOTE: signed URL, private Storage HTTP bytes and Auth/JWT E2E UNVERIFIED';
+END $post$;

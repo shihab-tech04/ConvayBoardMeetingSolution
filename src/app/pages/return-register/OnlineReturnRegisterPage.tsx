@@ -6,9 +6,12 @@ import type { PageCfg, TableRow, StatusTabDef } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
-import { normalizeMeetingSchedule } from "./meetingSchedule";
+import { normalizeMeetingSchedule, validateMeetingSchedule } from "./meetingSchedule";
 import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
+import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "./meetingAgendaSelection";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
+import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDeletion";
+import { DRAFT_DELETION_UNAVAILABLE_REASON, guardMeetingDrawerAction } from "./meetingDeletionReleaseGate";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
 import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
@@ -34,7 +37,8 @@ import { ParticipantSelectorStep } from "../../components/forms/ParticipantSelec
 import type { DraftParticipantLink } from "../../components/forms/ParticipantSelectorStep";
 import { AgendaDocumentStep } from "../../components/forms/AgendaDocumentStep";
 import type { SelectedAgendaEntry, AdditionalDocEntry } from "../../components/forms/AgendaDocumentStep";
-import { QuorumAndAccessPanel, generateConvayMeeting } from "../../components/forms/QuorumAndAccessPanel";
+import { QuorumAndAccessPanel } from "../../components/forms/QuorumAndAccessPanel";
+import { liveMeetingInvitation, liveMeetingUrl } from "../../utils/liveMeetingLink";
 import { DocumentComposerModal } from "../../components/documents/DocumentComposerModal";
 import { AgendaFormModal } from "../../components/agenda/AgendaFormModal";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
@@ -42,7 +46,8 @@ import { patchFormOptions } from "../../utils/patchFormOptions";
 import { MeetingContextualModals } from "../meetings/MeetingContextualModals";
 import { calculateMeetingQuorum, quorumStatusLabel } from "../../utils/quorumCalculation";
 import { toast } from "sonner";
-import { Video, Copy } from "lucide-react";
+import { Video, Copy, ExternalLink, RefreshCw, AlertTriangle } from "lucide-react";
+import { activeMeetingGovernanceOptions, meetingGovernanceSetupState } from "./meetingCreatePrerequisites";
 
 // ─── Parse repeatable-group flat values (e.g. participants__0__user) ──────────
 function parseRepeatableGroup(
@@ -125,58 +130,143 @@ export function OnlineReturnRegisterPage() {
 
   // ── Location & Access: inject Convay card inside the s3-mode section ─────────
   const meetingSections = useMemo(() => MEETING_FORM_SECTIONS.map(sec => {
+    if (sec.id === "s0-identity") return {
+      ...sec,
+      extraContent: (values: Record<string, unknown>) => {
+        const activeOptions = activeMeetingGovernanceOptions(govRegistry.items);
+        const state = meetingGovernanceSetupState(Boolean(govRegistry.loading), govRegistry.error, activeOptions);
+        const selectedBody = String(values.committee ?? "");
+        const staleChoice = state === "ready" && !!selectedBody && !activeOptions.some(option => option.value === selectedBody);
+        if (state === "ready" && !staleChoice) return null;
+        return (
+          <div role={state === "missing" || state === "error" || staleChoice ? "alert" : "status"}
+               className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--foreground)]">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-[var(--primary)]" />
+              <div className="min-w-0 space-y-2">
+                <p className="font-semibold">
+                  {state === "loading" ? "Loading governance bodies…"
+                    : state === "error" ? "Could not load governance bodies"
+                    : staleChoice ? "Previously selected governance body is no longer active"
+                    : "No active Board / Committee is configured"}
+                </p>
+                {state !== "loading" && <>
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    {state === "error" ? "Refresh the authenticated governance registry before continuing."
+                      : staleChoice ? "Choose an active Board / Committee before scheduling. You can save the meeting as a draft meanwhile."
+                      : "A real, active governance body is required. An authorized administrator can add one in Governance Bodies. Keep this meeting form open, then refresh the list."}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <a href={`${import.meta.env.BASE_URL}governance-org/governance-bodies`}
+                       target="_blank" rel="noopener noreferrer"
+                       className="inline-flex items-center gap-1 font-semibold text-[var(--primary)] underline underline-offset-2">
+                      Open Governance Bodies <ExternalLink size={13} aria-hidden="true" />
+                    </a>
+                    <button type="button"
+                      onClick={() => { void Promise.resolve(govRegistry.refresh?.()).catch(() => toast.error("Could not refresh governance bodies. Try again.")); }}
+                      className="inline-flex items-center gap-1 font-semibold text-[var(--primary)] underline underline-offset-2">
+                      <RefreshCw size={13} aria-hidden="true" /> Refresh Board / Committee list
+                    </button>
+                  </div>
+                </>}
+              </div>
+            </div>
+          </div>
+        );
+      },
+    };
     if (sec.id !== "s3-mode") return sec;
     return {
       ...sec,
       extraContent: (values: Record<string, unknown>) => {
         const mode = String(values.mode ?? "Physical");
         if (mode !== "Virtual" && mode !== "Hybrid") return null;
-        const seed = String(values.meeting_title ?? "") + String(values.meeting_date ?? "") + String(values.committee ?? "");
-        const cm = generateConvayMeeting(seed);
-        const copy = (text: string) => navigator.clipboard?.writeText(text).catch(() => {});
+        const savedId = String(values._draft_meeting_id ?? values.meeting_id ?? "").trim();
+        const liveUrl = savedId ? liveMeetingUrl(savedId) : null;
+        const invite = savedId ? liveMeetingInvitation(savedId) : null;
+        const copy = async () => {
+          if (!invite) return;
+          try {
+            await navigator.clipboard.writeText(invite);
+            toast.success("LiveKit meeting invitation copied.");
+          } catch {
+            toast.error("Could not copy the invitation. Try again.");
+          }
+        };
         return (
           <div className="border border-[var(--border)] rounded-lg overflow-hidden mt-3">
             <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--surface)] border-b border-[var(--border)]">
               <Video size={13} strokeWidth={2} className="text-[var(--primary)]" />
-              <span className="text-xs font-semibold text-[var(--foreground)]">Convay Meeting</span>
-              <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-[var(--primary)]/10 text-[var(--primary)] font-semibold">Auto-generated</span>
+              <span className="text-xs font-semibold text-[var(--foreground)]">LiveKit Meeting</span>
+              <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-[var(--primary)]/10 text-[var(--primary)] font-semibold">Authenticated access</span>
             </div>
             <div className="p-4 space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-lg bg-[var(--background)] border border-[var(--border)] px-3 py-2">
                   <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-0.5">Meeting ID</p>
-                  <p className="text-sm font-bold text-[var(--foreground)] font-mono tracking-wider">{cm.meetingId}</p>
+                  <p className="text-sm font-bold text-[var(--foreground)] break-all">{savedId || "Assigned after Save"}</p>
                 </div>
                 <div className="rounded-lg bg-[var(--background)] border border-[var(--border)] px-3 py-2">
-                  <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-0.5">Password</p>
-                  <p className="text-sm font-bold text-[var(--foreground)] font-mono tracking-wider">{cm.password}</p>
+                  <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-0.5">Video Provider</p>
+                  <p className="text-sm font-bold text-[var(--foreground)]">LiveKit</p>
                 </div>
               </div>
               <div className="rounded-lg bg-[var(--background)] border border-[var(--border)] px-3 py-2">
-                <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-1">Meeting Link</p>
-                <a href={cm.link} target="_blank" rel="noopener noreferrer"
-                  className="text-xs text-[var(--primary)] hover:underline break-all font-medium">
-                  {cm.link}
-                </a>
+                <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-1">Secure Meeting Link</p>
+                {liveUrl
+                  ? <a href={liveUrl} target="_blank" rel="noopener noreferrer"
+                       className="text-xs text-[var(--primary)] hover:underline break-all font-medium">{liveUrl}</a>
+                  : <p className="text-xs text-[var(--muted-foreground)]">
+                      The real meeting link will be assigned when the meeting is saved. No password or external room is generated.
+                    </p>}
               </div>
-              <button type="button" onClick={() => copy(cm.invite)}
-                className="w-full flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] hover:bg-[var(--surface-raised)] transition-colors">
-                <Copy size={11} strokeWidth={2} />
-                Copy Invitation
+              <button type="button" disabled={!invite} onClick={() => { void copy(); }}
+                title={invite ? "Copy the saved meeting link" : "Save the meeting to get its secure LiveKit link"}
+                className="w-full flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] hover:bg-[var(--surface-raised)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                <Copy size={11} strokeWidth={2} /> Copy Invitation
               </button>
               <p className="text-[10px] text-[var(--muted-foreground)] italic">
-                Powered by <a href="https://convay.com/" target="_blank" rel="noopener noreferrer"
-                  className="text-[var(--primary)] hover:underline">Convay</a> · Link is deterministic and tied to this meeting
+                Powered by LiveKit · Authentication, invitations, publishing and host permissions are enforced when entering.
               </p>
             </div>
           </div>
         );
       },
     };
-  }), []);
+  }), [govRegistry.items, govRegistry.loading, govRegistry.error]);
 
   // ── Resolved meeting actions (status-aware, permission-aware) ───────────────
   const { resolve: resolveMeetingActions } = useResolvedActions("meeting");
+
+  const [draftDeletion, setDraftDeletion] = useState<{
+    recordId: string; title: string; requestId: string; expectedRevision: number;
+  } | null>(null);
+  const [draftDeletionError, setDraftDeletionError] = useState("");
+  const draftDeletionInFlight = useRef(false);
+
+  const confirmDraftDeletion = useCallback(async () => {
+    if (!draftDeletion || draftDeletionInFlight.current) return;
+    draftDeletionInFlight.current = true;
+    setDraftDeletionError("");
+    try {
+      await deleteDraftMeeting(
+        draftDeletion.recordId,
+        draftDeletion.requestId,
+        draftDeletion.expectedRevision,
+      );
+      setDraftDeletion(null);
+      toast.success("Draft meeting deleted.");
+      try {
+        await registry.refresh?.();
+      } catch {
+        toast.warning("Deletion was confirmed, but the list did not refresh. Reload to see the saved state.");
+      }
+    } catch (error) {
+      setDraftDeletionError(error instanceof Error ? error.message : "Draft deletion failed. Retry or cancel.");
+    } finally {
+      draftDeletionInFlight.current = false;
+    }
+  }, [draftDeletion, registry]);
 
   const toneToColor: Record<ActionTone, string> = {
     primary: "var(--color-primary)",
@@ -321,8 +411,33 @@ export function OnlineReturnRegisterPage() {
       return;
     }
     if (actionId === "delete") {
-      const deleted = await registry.remove(mid);
-      if (deleted === true || import.meta.env.MODE === "test") toast.success("Meeting deleted.");
+      // Generic registry DELETE must never be used; the dedicated RPC is authoritative.
+      toast.error(DRAFT_DELETION_UNAVAILABLE_REASON);
+      return;
+    }
+
+    if (actionId === "delete_draft") {
+      // Validate server revision and actor before displaying confirmation.
+      const recordId = String(row.id ?? row.meeting_id ?? "").trim();
+      const statuses = [row.approval_status, row.status]
+        .map(status => String(status ?? "").trim().toLowerCase())
+        .filter(Boolean);
+      if (!recordId || !statuses.length || statuses.some(status => status !== "draft")) {
+        toast.error("Only a saved Draft meeting can be deleted.");
+        return;
+      }
+      try {
+        const saved = await loadDraftDeletionSnapshot(recordId);
+        setDraftDeletionError("");
+        setDraftDeletion({
+          recordId: saved.recordId,
+          title: saved.title || String(row.meeting_title ?? "this draft"),
+          requestId: crypto.randomUUID(),
+          expectedRevision: saved.revision,
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Unable to verify the Draft. Refresh and retry.");
+      }
       return;
     }
 
@@ -337,10 +452,16 @@ export function OnlineReturnRegisterPage() {
   }, []);
 
   const handleMeetingUpdate = useCallback(async (id: string, values: Record<string, unknown>) => {
+    const requestedSchedule = normalizeMeetingSchedule(values);
+    const scheduleErrors = validateMeetingSchedule(requestedSchedule);
+    if (scheduleErrors.length > 0) {
+      // Contextual modal catches this error, retains user input and offers retry.
+      throw new Error(scheduleErrors[0]);
+    }
     const saved = await convayAuth.rescheduleMeeting(id, {
-      meeting_date: String(values.meeting_date ?? ""),
-      start_time: String(values.start_time ?? ""),
-      end_time: String(values.end_time ?? ""),
+      meeting_date: requestedSchedule.meeting_date,
+      start_time: requestedSchedule.start_time,
+      end_time: requestedSchedule.end_time,
       reason: String(values.reschedule_reason ?? ""),
     });
     try {
@@ -352,10 +473,7 @@ export function OnlineReturnRegisterPage() {
   }, [registry]);
 
   // ── Dynamic form options ───────────────────────────────────────────────────
-  const govOptions = govRegistry.items.map(g => ({
-    value: g.id ?? g.body_name,
-    label: g.body_name,
-  }));
+  const govOptions = activeMeetingGovernanceOptions(govRegistry.items);
 
   // Approved agendas available to link to a new meeting
   const approvedAgendaOptions = agendaRegistry.items
@@ -503,7 +621,7 @@ export function OnlineReturnRegisterPage() {
       !!m.committee, !!m.chairperson, !!m.secretary,
       !!(m.venue || m.virtual_link),
       totalParticipants > 0,
-      canonicalAgendaLinks.length > 0,
+      // Agendas are optional for both scheduling and starting a meeting.
       canonicalDocLinks.length > 0 || documentRegistry.items.some(d => d.related_meeting === mid),
       !!quorumRule,
     ];
@@ -646,7 +764,22 @@ export function OnlineReturnRegisterPage() {
       resolveMeetingActions(row)
         .filter(a => a.visible)
         .sort((a, b) => a.priority - b.priority)
-        .map(a => ({ id: a.id, label: a.label, icon: a.icon, color: toneToColor[a.tone], enabled: a.enabled, disabledReason: a.disabledReason })),
+        .map(a => {
+          const guarded = guardMeetingDrawerAction({
+            id: a.id, label: a.label, icon: a.icon, color: toneToColor[a.tone],
+            enabled: a.enabled, disabledReason: a.disabledReason,
+          });
+          if (a.id !== "delete") return guarded;
+          const statuses = [row.approval_status, row.status]
+            .map(value => String(value ?? "").trim().toLowerCase()).filter(Boolean);
+          const savedDraft = statuses.length > 0 && statuses.every(value => value === "draft");
+          return {
+            ...guarded, id: "delete_draft",
+            enabled: savedDraft && a.enabled,
+            disabledReason: savedDraft && a.enabled ? undefined
+              : (a.disabledReason ?? DRAFT_DELETION_UNAVAILABLE_REASON),
+          };
+        }),
     drawerTitle:   "Meeting Details",
     drawerCols:    MEETING_DRAWER_COLS,
     rows: tableRows,
@@ -673,6 +806,44 @@ export function OnlineReturnRegisterPage() {
         bmsUsers={bmsUserRegistry.items}
       />
     ),
+    validateCreateStep: (step, values) => {
+      if (step === 0) {
+        const error = [
+          ...validateMeetingIdentity(normalizeMeetingIdentity(values)),
+          ...validateMeetingSchedule(normalizeMeetingSchedule(values)),
+        ][0];
+        if (error) return error;
+        if (!govOptions.some(body => body.value === String(values.committee ?? "")))
+          return "Select an active Board / Committee. Use the setup and refresh actions if none are available.";
+        const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
+        if (leadership.missing.length) return `${meetingLeadershipLabel(leadership.missing[0])} must be an active registered user.`;
+      }
+      if (step === 1) {
+        let participants: DraftParticipantLink[] = [];
+        try { participants = JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
+        catch { return "Participant selection is invalid. Reopen the Participants step."; }
+        if (!Array.isArray(participants) || participants.length === 0)
+          return "Add at least one participant before continuing. You can save a draft instead.";
+        if (!participants.some(p => p.is_required)) return "Mark at least one participant as required.";
+        if (!participants.some(p => p.quorum_eligible)) return "Mark at least one participant as quorum-eligible.";
+      }
+      if (step === 2) {
+        // Step 3 is optional: zero agendas is a valid meeting.
+        // A deliberately selected agenda must still be approved and meeting-ready.
+        const selected = parseOptionalMeetingAgendas(values.selected_agenda_ids_json);
+        const agendaError = validateOptionalMeetingAgendas(selected, agendaRegistry.items)[0];
+        if (agendaError) return agendaError;
+      }
+      if (step === 3) {
+        // A verified quorum rule is needed to assess quorum, not to prepare or
+        // schedule a meeting. Do not fabricate a default policy on Step 4.
+        const accessError = meetingAccessBlockers(values)[0];
+        if (accessError) return accessError;
+        if (["Physical", "Hybrid"].includes(String(values.mode ?? "Physical")) && !String(values.venue ?? "").trim())
+          return "Enter the meeting venue before continuing.";
+      }
+      return null;
+    },
     stepRenderers: {
       1: (values, onValuesChange) => (
         <ParticipantSelectorStep
@@ -704,6 +875,7 @@ export function OnlineReturnRegisterPage() {
           governanceBodies={govRegistry.items}
           quorumRules={quorumRuleRegistry.items}
           allDocuments={documentRegistry.items}
+          onRefreshQuorumRules={() => quorumRuleRegistry.refresh?.()}
         />
       ),
     },
@@ -933,10 +1105,8 @@ export function OnlineReturnRegisterPage() {
         try { return JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
         catch { return []; }
       })();
-      const agendaEntriesRaw: SelectedAgendaEntry[] = (() => {
-        try { return JSON.parse(String(values.selected_agenda_ids_json ?? "[]")) as SelectedAgendaEntry[]; }
-        catch { return []; }
-      })();
+      const agendaEntriesParsed = parseOptionalMeetingAgendas(values.selected_agenda_ids_json);
+      const agendaEntriesRaw: SelectedAgendaEntry[] = agendaEntriesParsed ?? [];
       const additionalDocsRaw: AdditionalDocEntry[] = (() => {
         try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")) as AdditionalDocEntry[]; }
         catch { return []; }
@@ -945,9 +1115,7 @@ export function OnlineReturnRegisterPage() {
       {
         const blockers: string[] = [];
         blockers.push(...validateMeetingIdentity(identity));
-        if (!String(values.meeting_date ?? "").trim())        blockers.push("Meeting date is required");
-        if (!String(values.start_time ?? "").trim() || !String(values.end_time ?? "").trim())
-                                                              blockers.push("Start and end time are required");
+        blockers.push(...validateMeetingSchedule(schedule));
         blockers.push(...leadership.missing.map(role => `${meetingLeadershipLabel(role)} must be selected from active registered users`));
 
         const body = govRegistry.items.find(b => b.id === committee || b.body_id === committee || b.body_name === committee);
@@ -960,28 +1128,14 @@ export function OnlineReturnRegisterPage() {
         if (requiredParticipants === 0)  blockers.push("At least one required participant must be assigned");
         if (quorumEligible === 0)        blockers.push("At least one quorum-eligible participant is required");
 
-        if (agendaEntriesRaw.length === 0)
-          blockers.push("At least one approved agenda must be selected");
-
-        // Block scheduling for any non-ready agendas
-        agendaEntriesRaw.forEach(e => {
-          const ag = agendaRegistry.items.find(a => (a.agenda_id ?? a.id) === e.agenda_id);
-          if (!ag) return;
-          const st = (ag as {approval_status?: string}).approval_status ?? "";
-          const mr = (ag as {meeting_readiness?: string}).meeting_readiness ?? "";
-          if (st !== "Approved")    blockers.push(`Agenda "${ag.agenda_title ?? e.agenda_id}" must be Approved before scheduling`);
-          else if (mr !== "Meeting Ready") blockers.push(`Agenda "${ag.agenda_title ?? e.agenda_id}" is not Meeting Ready`);
-        });
+        // No agenda is required; malformed or explicitly selected invalid agendas
+        // remain blocked in the final server-backed scheduling path.
+        blockers.push(...validateOptionalMeetingAgendas(agendaEntriesParsed, agendaRegistry.items));
 
         blockers.push(...meetingAccessBlockers(values));
 
-        const body2 = govRegistry.items.find(b => b.id === committee || b.body_id === committee || b.body_name === committee);
-        const govRule = quorumRuleRegistry.items.find(r =>
-          (r.governance_body_id === body2?.id || r.governance_body_id === body2?.body_id) && r.status === "Active",
-        );
-        if (!govRule)
-          blockers.push("No active quorum rule found for the selected Board / Committee");
-
+        // An absent policy remains "Not configured" in projections, but does
+        // not block SQL-backed scheduling. Governance rules are never invented.
         if (blockers.length > 0) {
           toast.error(`Cannot schedule: ${blockers[0]}${blockers.length > 1 ? ` (+${blockers.length - 1} more)` : ""}`);
           return false;
@@ -998,8 +1152,8 @@ export function OnlineReturnRegisterPage() {
         ...schedule,
         mode:          String(values.mode ?? "Physical"),
         venue:         String(values.venue ?? ""),
-        virtual_platform: "Convay",
-        virtual_link:  String(values.virtual_link ?? ""),
+        virtual_platform: ["Virtual", "Hybrid"].includes(String(values.mode ?? "")) ? "LiveKit" : "",
+        virtual_link:  ["Virtual", "Hybrid"].includes(String(values.mode ?? "")) ? liveMeetingUrl(newId) ?? "" : "",
         financial_year: String(new Date().getFullYear() + "-" + (new Date().getFullYear() + 1)),
         ...meetingLeadershipPayload(leadership),
         language:      "English",
@@ -1175,6 +1329,18 @@ export function OnlineReturnRegisterPage() {
       const submittedValues = mergeMeetingUpdateValues(existingMeeting, values);
       const identity = normalizeMeetingIdentity(submittedValues);
       const schedule = normalizeMeetingSchedule(submittedValues);
+      // Preserve unrelated edits to legacy meetings; validate the complete
+      // schedule whenever the submitted edit actually changes a schedule field.
+      const scheduleChanged = (["meeting_date", "start_time", "end_time", "time_zone"] as const)
+        .some(key => Object.prototype.hasOwnProperty.call(values, key)
+          && String(values[key] ?? "").trim() !== String(existingMeeting?.[key] ?? "").trim());
+      if (scheduleChanged) {
+        const scheduleErrors = validateMeetingSchedule(schedule);
+        if (scheduleErrors.length > 0) {
+          toast.error(`Cannot save changes. ${scheduleErrors[0]}`);
+          return false;
+        }
+      }
       const leadership = resolveMeetingLeadership(submittedValues, bmsUserRegistry.items);
       if (leadership.missing.length > 0) {
         toast.error(`Cannot save changes. Select active registered users for ${leadership.missing.map(meetingLeadershipLabel).join(", ")}.`);
@@ -1190,8 +1356,9 @@ export function OnlineReturnRegisterPage() {
         ...schedule,
         mode:                String(submittedValues.mode             ?? ""),
         venue:               String(submittedValues.venue            ?? ""),
-        virtual_platform:    String(submittedValues.virtual_platform ?? ""),
-        virtual_link:        String(submittedValues.virtual_link     ?? ""),
+        virtual_platform:    ["Virtual", "Hybrid"].includes(String(submittedValues.mode ?? "")) ? "LiveKit" : "",
+        virtual_link:        ["Virtual", "Hybrid"].includes(String(submittedValues.mode ?? ""))
+          ? liveMeetingUrl(String(existingMeeting?.meeting_id ?? existingMeeting?.id ?? id)) ?? "" : "",
         ...meetingLeadershipPayload(leadership),
         ...meetingContextPayload(submittedValues, existingMeeting?.confidentiality ?? ""),
         rsvp_deadline:       String(submittedValues.rsvp_deadline     ?? ""),
@@ -1205,6 +1372,22 @@ export function OnlineReturnRegisterPage() {
   return (
     <>
       <GenPage cfg={cfg} />
+      {draftDeletion && (
+        <SConfirmModal
+          danger
+          title="Delete Draft Meeting"
+          message={"Permanently delete " + draftDeletion.title + "? This cannot be undone." +
+            (draftDeletionError ? " Error: " + draftDeletionError : "")}
+          confirmLabel="Delete Draft"
+          onConfirm={() => { void confirmDraftDeletion(); }}
+          onClose={() => {
+            if (!draftDeletionInFlight.current) {
+              setDraftDeletion(null);
+              setDraftDeletionError("");
+            }
+          }}
+        />
+      )}
       {lifecycleConfirmation && (
         <SConfirmModal
           title={lifecycleConfirmation.action === "schedule_meeting" ? "Schedule Meeting" : "Publish Meeting"}

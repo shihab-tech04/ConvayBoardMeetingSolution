@@ -260,7 +260,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
     .replace(/^(All|My|Active|Archived|Draft|Pending)\s+/i, "")
     .replace(/ies$/, "y")
     .replace(/s$/, "");
-  const searchPlaceholder = cfg.searchPlaceholder ?? `Search ${entityName.toLowerCase()}s`;
+  const entityPlural = cfg.entityPlural ?? `${entityName.toLowerCase()}s`;
+  const searchPlaceholder = cfg.searchPlaceholder ?? `Search ${entityPlural}`;
 
   const [kpiOpen, setKpiOpen] = useState<boolean>(() => {
     try { return localStorage.getItem(storageKey) !== "false"; } catch { return true; }
@@ -283,6 +284,19 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const [fVals, setFVals]   = useState<Record<string, string>>({});
   const [applied, setApplied] = useState<Record<string, string>>({});
   const [drawer, setDrawer] = useState<TableRow | null>(null);
+  const lastInitialDrawerRowId = useRef<string | null>(null);
+  useEffect(() => {
+    const rowId = cfg.initialDrawerRowId?.trim();
+    if (!rowId) {
+      lastInitialDrawerRowId.current = null;
+      return;
+    }
+    if (lastInitialDrawerRowId.current === rowId) return;
+    const row = cfg.rows.find(candidate => String(candidate.id ?? "") === rowId);
+    if (!row) return; // Wait for the authenticated registry read; never synthesize a row from the URL.
+    lastInitialDrawerRowId.current = rowId;
+    setDrawer(row);
+  }, [cfg.initialDrawerRowId, cfg.rows]);
   const [modal, setModal]   = useState<string | null>(cfg.initialModal ?? null);
   const [entryStep, setEntryStep] = useState(0);
   const [stepValues, setStepValues] = useState<Record<string, EntryFormValue>>({});
@@ -918,7 +932,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
             {cfg.extraBtns?.map((b) => {
               const Icon = b.icon;
               return (
-                <Button key={b.id} type="button" variant="primary" size="lg" leadingIcon={Icon} onClick={() => setModal(`extra:${b.id}`)}>{b.label}</Button>
+                <Button key={b.id} type="button" variant="primary" size="lg" leadingIcon={Icon} disabled={Boolean(cfg.dataLoading || cfg.dataError)} onClick={() => setModal(`extra:${b.id}`)}>{b.label}</Button>
               );
             })}
             {cfg.kpis && (
@@ -949,11 +963,13 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
           style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12 }}
         >
           <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--color-text-primary)" }}>
-            {cfg.dataError ? "Meeting records could not be loaded" : "Loading meeting records"}
+            {cfg.dataError
+              ? (cfg.dataErrorTitle ?? "Meeting records could not be loaded")
+              : "Loading meeting records"}
           </h2>
           <p style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
             {cfg.dataError
-              ? "The register cannot show reliable results until Supabase records are available."
+              ? (cfg.dataErrorDescription ?? "The register cannot show reliable results until Supabase records are available.")
               : "Retrieving meetings and related governance records."}
           </p>
           {cfg.dataError && cfg.onDataRetry && (
@@ -965,7 +981,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
       ) : (
       <UnifiedDataTable
         title={resolvedTitle}
-        countLabel={`${entityName.toLowerCase()}s`}
+        countLabel={entityPlural}
         singularLabel={entityName.toLowerCase()}
         totalCount={filtered.length}
         cols={cfg.cols}
@@ -988,8 +1004,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         perPage={PER}
         onPageChange={setPage}
         mobileCardMapping={cfg.mobileCardMapping}
-        emptyLabel={`No ${entityName.toLowerCase()}s found.`}
-        filteredEmptyLabel={`No matching ${entityName.toLowerCase()}s. Try adjusting your search or filters.`}
+        emptyLabel={`No ${entityPlural} found.`}
+        filteredEmptyLabel={`No matching ${entityPlural}. Try adjusting your search or filters.`}
         tabs={tabDefs.length > 1 ? tabDefs : undefined}
         activeTab={tabDefs.length > 1 ? activeStatusTab : undefined}
         onTabChange={tabDefs.length > 1 ? (id) => { setActiveStatusTab(id); setPage(1); } : undefined}
@@ -1547,6 +1563,9 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 }
               }}
               onNext={(values) => {
+                const merged = { ...stepValues, ...values };
+                const error = cfg.validateCreateStep?.(entryStep, merged);
+                if (error) { toast.error(error); return; }
                 setStepValues(prev => ({ ...prev, ...values }));
                 setEntryStep(s => s + 1);
               }}

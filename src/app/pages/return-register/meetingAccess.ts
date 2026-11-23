@@ -14,7 +14,9 @@ export function meetingAccessBlockers(values: Record<string, unknown>): string[]
   if ((mode === "Physical" || mode === "Hybrid") && !venue) {
     blockers.push(`${mode} meeting requires a venue address`);
   }
-  if ((mode === "Virtual" || mode === "Hybrid") && !virtualLink) {
+  // LiveKit creates the real, signed-in meeting URL from the SQL meeting ID
+  // during Save. An unsaved meeting must never receive a fake room/password.
+  if ((mode === "Virtual" || mode === "Hybrid") && !virtualLink && String(values.virtual_platform ?? "") !== "LiveKit") {
     blockers.push(`${mode} meeting requires a virtual meeting link`);
   }
   return blockers;
@@ -27,8 +29,17 @@ export function meetingUpdateAccessBlockers(
   submitted: Record<string, unknown>,
 ): string[] {
   const merged = { ...current, ...submitted };
-  const status = String(merged.approval_status ?? merged.status ?? "");
-  if (status === "Draft") return [];
+  // An incomplete Draft may be edited; an existing scheduled/approved
+  // meeting cannot become an unvalidated Draft merely because one status
+  // alias (or a submitted patch) says Draft. Both persisted and proposed
+  // lifecycle states must explicitly and consistently be Draft.
+  const isExplicitDraft = (row: Record<string, unknown>): boolean => {
+    const statuses = [row.approval_status, row.status]
+      .map(value => String(value ?? "").trim().toLowerCase())
+      .filter(Boolean);
+    return statuses.length > 0 && statuses.every(value => value === "draft");
+  };
+  if (current && isExplicitDraft(current) && isExplicitDraft(merged)) return [];
 
   const changedAccess = (["mode", "venue", "virtual_link"] as const).some(key =>
     Object.prototype.hasOwnProperty.call(submitted, key)

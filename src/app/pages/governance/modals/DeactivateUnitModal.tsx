@@ -28,7 +28,7 @@ import { createPortal } from "react-dom";
 import { X, AlertTriangle, CheckCircle, Users, GitBranch, Crown, XCircle } from "lucide-react";
 
 import type { OrgUnit } from "../../../data/boardMeetingData";
-import { useOrgUnitRegistry, useUnitHeadRegistry, useAuditEventRegistry, generateId } from "../../../data/boardMeetingData";
+import { useOrgUnitRegistry, useUnitHeadRegistry } from "../../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../../data/bmsUsers";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import {
@@ -64,7 +64,6 @@ export function DeactivateUnitModal({
   const orgReg      = useOrgUnitRegistry();
   const headReg     = useUnitHeadRegistry();
   const bmsUsers    = useBmsUserRegistry();
-  const auditReg    = useAuditEventRegistry();
   const currentUser = useCurrentUser();
 
   const [step, setStep]                = useState<"inspect" | "confirm">("inspect");
@@ -135,27 +134,19 @@ export function DeactivateUnitModal({
       });
       if (!saved) throw new Error("The unit was not deactivated. Check access and reload.");
 
-      let auditSaved = false;
+      // The authoritative database trigger records the mutation and actor
+      // in immutable entity_changes in the same transaction. Direct bms.audit
+      // inserts are denied and must not be attempted from the client.
+      // A second registry read verifies the acknowledged status; never replay
+      // a committed write when a readback is unavailable.
       try {
-        auditSaved = await auditReg.add({
-          id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-          created_at:      now,
-          event_id:        `AUDIT-DEACT-${Date.now()}`,
-          entity_type:     "OrgUnit",
-          entity_id:       unit.id,
-          action:          "org_unit_deactivated",
-          actor:           currentUser?.name ?? "System",
-          actor_role:      currentUser?.designation ?? "",
-          timestamp:       now,
-          ip_address:      "",
-          details:         `Unit deactivated: ${unit.unit_name}. Reason: ${deactivationReason || "Not specified"}.`,
-          approval_status: "Approved",
-        });
+        if (!orgReg.refresh) throw new Error("SQL refresh unavailable");
+        await orgReg.refresh();
+        if (orgReg.getById(unit.id)?.status !== "Deactivated") {
+          toast.warning("Deactivation was acknowledged, but SQL readback could not be confirmed. Refresh before another change.");
+        }
       } catch {
-        // Primary unit change has been committed; never claim rollback.
-      }
-      if (!auditSaved) {
-        toast.warning("Unit deactivation was saved, but the activity journal could not be verified.");
+        toast.warning("Deactivation was acknowledged, but SQL readback is unavailable. Refresh before another change.");
       }
       onSuccess?.();
       onClose();

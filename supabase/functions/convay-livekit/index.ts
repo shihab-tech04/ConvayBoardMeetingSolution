@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { AccessToken, RoomServiceClient } from "npm:livekit-server-sdk@2.19.2";
 import { checkOnlineAdmission, checkOnlineRoomCapacity, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
+import { canPublishOnlineMeeting } from "./publisherGrant.ts";
 
 /**
  * Server-side LiveKit admission. The browser never holds an API secret.
@@ -100,14 +101,19 @@ Deno.serve(async req => {
       entityRows<OnlineLink>("bms.meetingParticipantLinks", meetingId, jwt),
       entityRows<OnlineSession>("bms.liveSessions", meetingId, jwt),
     ]);
-    const session = sessions.find(item => item.session_status === "active" || item.session_status === "paused")
-      ?? sessions[0] ?? null;
-    const decision = checkOnlineAdmission({
+    // SQL attendance requires exactly one active or paused session.
+    // Do not issue provider credentials for contradictory live-session records.
+    const activeSessions = sessions.filter(item => item.session_status === "active" || item.session_status === "paused");
+    if (activeSessions.length !== 1) return response(req, 409, { error: "Meeting session state is inconsistent." });
+    const session = activeSessions[0];
+    const admission = {
       meeting, session, links, userId: user.id,
       isSuperAdmin: snapshot.is_super_admin === true,
       permissions: snapshot.effective_permissions ?? [],
-    });
+    };
+    const decision = checkOnlineAdmission(admission);
     if (!decision.allowed) return response(req, decision.status, { error: decision.error });
+    const canPublishMedia = canPublishOnlineMeeting(admission);
 
     const url = Deno.env.get("LIVEKIT_URL");
     const key = Deno.env.get("LIVEKIT_API_KEY");
@@ -138,7 +144,7 @@ Deno.serve(async req => {
       identity, name: profiles[0].display_name || "Convay participant", ttl: 300,
     });
     token.addGrant({
-      roomJoin: true, room, canPublish: true, canSubscribe: true,
+      roomJoin: true, room, canPublish: canPublishMedia, canSubscribe: true,
       canPublishData: false, roomAdmin: false, roomCreate: false, roomList: false,
     });
     const participantToken = await token.toJwt();

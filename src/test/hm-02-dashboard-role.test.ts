@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deriveDashboardRole } from "../app/pages/dashboard/dashboardRole";
+import { isWorkflowRole } from "../app/pages/dashboard/homeWorkspaceUtils";
 
 describe("HM-02 authenticated dashboard role", () => {
   it("uses the canonical authenticated role before a stale legacy user record", () => {
@@ -18,5 +19,18 @@ describe("HM-02 authenticated dashboard role", () => {
   });
   it("uses legacy role only when the authenticated role is absent", () => {
     expect(deriveDashboardRole(" ", "Board Chairman")).toBe("chairperson");
+  });
+  it("fails closed when privileged words appear inside an unknown authenticated role", () => {
+    expect(deriveDashboardRole("Not Admin")).toBe("board_member");
+    expect(deriveDashboardRole("Former Chairman")).toBe("board_member");
+    expect(deriveDashboardRole("Assistant Secretary")).toBe("board_member");
+    expect(deriveDashboardRole("user", "Company Secretary")).toBe("board_member");
+  });
+  it("grants workflow task visibility only to explicit secretary/admin role families", () => {
+    expect(isWorkflowRole("super_admin")).toBe(true);
+    expect(isWorkflowRole("Company Secretary")).toBe(true);
+    expect(isWorkflowRole("secretariat")).toBe(true);
+    expect(isWorkflowRole("Not Admin")).toBe(false);
+    expect(isWorkflowRole("Assistant Secretary")).toBe(false);
   });
 });

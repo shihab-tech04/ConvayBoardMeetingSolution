@@ -33,6 +33,7 @@ import { StatusBadge } from "../badges/StatusBadge";
 import { UnifiedDocumentViewer } from "../documents/UnifiedDocumentViewer";
 import { DocumentComposerModal } from "../documents/DocumentComposerModal";
 import { agendaReference, validateCompleteAgenda } from "./agendaCreationFields";
+import { saveAgendaChildWithAck } from "./agendaChildPersistence";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -303,6 +304,8 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   const [cErr,       setCErr]       = useState<Partial<Record<string, string>>>({});
   const [childMode,  setChildMode]  = useState(false); // true = child form visible
   const [saving,     setSaving]     = useState(false);
+  // Locks the entire child save/auto-draft journey until the SQL registry ACK.
+  const childWriteInFlight = useRef(false);
 
   // Document picker / uploader
   const [pickerOpen,   setPickerOpen]   = useState(false);
@@ -514,32 +517,45 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Persist child ─────────────────────────────────────────────────────────
 
-  function persistChild(pid: string): string {
-    const now = new Date().toISOString();
-    const dur = `${parseInt(cf.duration_mins, 10)} min`;
-    if (cf.id && agendaReg.items.find(a => a.id === cf.id)) {
-      agendaReg.update(cf.id, {
-        agenda_title: cf.title.trim(), description: cf.details, purpose: cf.purpose,
-        presenter_user_id: cf.presenter_user_id, estimated_duration: dur, updated_at: now,
-      } as never);
-      return cf.id;
+  async function persistChild(pid: string): Promise<string | null> {
+    if (saving || childWriteInFlight.current) return null;
+    childWriteInFlight.current = true;
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const dur = `${parseInt(cf.duration_mins, 10)} min`;
+      if (cf.id) {
+        // Never silently create a new child if an edit points at a stale/missing row.
+        if (!agendaReg.items.some(a => a.id === cf.id)) {
+          throw new Error("Agenda item no longer exists. Refresh and try again.");
+        }
+        return await saveAgendaChildWithAck(cf.id, () => agendaReg.update(cf.id!, {
+          agenda_title: cf.title.trim(), description: cf.details, purpose: cf.purpose,
+          presenter_user_id: cf.presenter_user_id, estimated_duration: dur, updated_at: now,
+        } as never));
+      }
+      const sibs = agendaReg.items.filter(a => a.parent_agenda_id === pid);
+      const id = generateId("AGD", agendaReg.items.map(a => a.agenda_id));
+      return await saveAgendaChildWithAck(id, () => agendaReg.add({
+        id, agenda_id: id, agenda_title: cf.title.trim(), agenda_reference: id,
+        description: cf.details,
+        meeting_id: "", meeting_title: "", committee: "", meeting_type: "",
+        agenda_category: "Governance", submitted_by: currentUser.name,
+        owner_user_id: savedParent?.owner_user_id ?? "",
+        presenter_user_id: cf.presenter_user_id,
+        submitting_division: "", purpose: cf.purpose, proposed_decision: "", priority: "Normal",
+        confidentiality: savedParent?.confidentiality ?? "Internal",
+        estimated_duration: dur, voting_required: "No", financial_impact: "",
+        submission_date: now.slice(0, 10), approval_status: "Draft", created_at: now,
+        parent_agenda_id: pid, agenda_level: 2, display_order: sibs.length + 1,
+      } as never));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to save agenda item. Retry.");
+      return null;
+    } finally {
+      childWriteInFlight.current = false;
+      setSaving(false);
     }
-    const sibs = agendaReg.items.filter(a => a.parent_agenda_id === pid);
-    const id = generateId("AGD", agendaReg.items.map(a => a.agenda_id));
-    agendaReg.add({
-      id, agenda_id: id, agenda_title: cf.title.trim(), agenda_reference: id,
-      description: cf.details,
-      meeting_id: "", meeting_title: "", committee: "", meeting_type: "",
-      agenda_category: "Governance", submitted_by: currentUser.name,
-      owner_user_id: savedParent?.owner_user_id ?? "",
-      presenter_user_id: cf.presenter_user_id,
-      submitting_division: "", purpose: cf.purpose, proposed_decision: "", priority: "Normal",
-      confidentiality: savedParent?.confidentiality ?? "Internal",
-      estimated_duration: dur, voting_required: "No", financial_impact: "",
-      submission_date: now.slice(0, 10), approval_status: "Draft", created_at: now,
-      parent_agenda_id: pid, agenda_level: 2, display_order: sibs.length + 1,
-    } as never);
-    return id;
   }
 
   // ── Document link helpers ─────────────────────────────────────────────────
@@ -589,6 +605,7 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   // ── Guard child dirty ─────────────────────────────────────────────────────
 
   function withGuard(action: () => void) {
+    if (saving || childWriteInFlight.current) return;
     if (cDirty) setPendingFn(() => action);
     else        action();
   }
@@ -597,30 +614,37 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   // Returns the child ID (existing or newly created draft). Returns null when
   // validation fails so the caller can abort.
 
-  function ensureChildDraft(): string | null {
-    if (cf.id) return cf.id;
+  async function ensureChildDraft(): Promise<string | null> {
+    if (cf.id) {
+      if (!agendaReg.items.some(a => a.id === cf.id)) {
+        toast.error("Agenda item could not be found. Refresh before attaching documents.");
+        return null;
+      }
+      return cf.id;
+    }
     if (!parentId) return null;
     if (!cf.title.trim()) {
       setCErr(e => ({ ...e, title: "Enter a title before attaching documents." }));
       return null;
     }
-    // Auto-save as Draft — synchronous registry add, no async required
-    const cid = persistChild(parentId);
+    // Auto-draft is not real until the SQL-backed registry confirms persistence.
+    const cid = await persistChild(parentId);
+    if (!cid) return null;
     setCf(p => ({ ...p, id: cid }));
     setCDirty(false);
     pendingChildIdRef.current = cid;
     return cid;
   }
 
-  function handleOpenUploader() {
-    const cid = ensureChildDraft();
+  async function handleOpenUploader() {
+    const cid = await ensureChildDraft();
     if (!cid) return;
     pendingChildIdRef.current = cid;
     setUploaderOpen(true);
   }
 
-  function handleOpenPicker() {
-    const cid = ensureChildDraft();
+  async function handleOpenPicker() {
+    const cid = await ensureChildDraft();
     if (!cid) return;
     pendingChildIdRef.current = cid;
     setPickerOpen(p => !p);
@@ -670,25 +694,24 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Child actions ─────────────────────────────────────────────────────────
 
-  function doSaveChild(pid: string): string | null {
-    if (!validateChild()) return null;
-    setSaving(true);
-    const cid = persistChild(pid);
-    setSaving(false); setCDirty(false); setCErr({});
+  async function doSaveChild(pid: string): Promise<string | null> {
+    if (saving || childWriteInFlight.current || !validateChild()) return null;
+    const cid = await persistChild(pid);
+    if (cid) { setCDirty(false); setCErr({}); }
     return cid;
   }
 
-  function handleSaveChild() {
+  async function handleSaveChild() {
     if (!parentId) return;
-    const cid = doSaveChild(parentId);
+    const cid = await doSaveChild(parentId);
     if (cid) { setCf(p => ({ ...p, id: cid })); }
   }
 
-  function handleSaveAndAddAnother() {
+  async function handleSaveAndAddAnother() {
     if (!parentId) return;
-    const cid = doSaveChild(parentId);
+    const cid = await doSaveChild(parentId);
     if (!cid) return;
-    // Stay in child mode but reset to blank
+    // Preserve the current editor until the server acknowledges the child save.
     setCf({ ...EMPTY_CHILD }); setCDirty(false); setCErr({}); setPickerOpen(false);
   }
 
@@ -778,7 +801,7 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   const footerChild = (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 8 }}>
-      <Button variant="ghost" size="sm" onClick={() => withGuard(handleBackToBuilder)}>← Back</Button>
+      <Button variant="ghost" size="sm" onClick={() => withGuard(handleBackToBuilder)} disabled={saving}>← Back</Button>
       <div style={{ display: "flex", gap: 8, paddingRight: 52 }}>
         <Button variant="secondary" size="sm" onClick={handleSaveChild} disabled={saving}>Save</Button>
         <Button variant="primary" size="sm" onClick={handleSaveAndAddAnother} disabled={saving}>Save & Add Another</Button>
@@ -1097,7 +1120,7 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
                 </div>
                 {children.length === 0 && (
                   <Button type="button" variant="primary" size="md" leadingIcon={Plus}
-                    onClick={() => openChildForm(null)}>
+                    onClick={() => withGuard(() => openChildForm(null))}>
                     Add Child Agenda
                   </Button>
                 )}
@@ -1231,11 +1254,11 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
                             Documents {linkedDocIds.length > 0 && <span style={{ fontWeight: 400, color: "var(--color-text-secondary)" }}>({linkedDocIds.length})</span>}
                           </span>
                           <div style={{ display: "flex", gap: 6 }}>
-                            <button type="button" onClick={handleOpenUploader}
+                            <button type="button" onClick={handleOpenUploader} disabled={saving}
                               style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-card)", cursor: "pointer", fontSize: "0.78rem", fontWeight: 500, color: "var(--color-foreground)" }}>
                               <Upload size={12} /> Upload
                             </button>
-                            <button type="button" onClick={handleOpenPicker}
+                            <button type="button" onClick={handleOpenPicker} disabled={saving}
                               style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 6, border: `1px solid ${pickerOpen ? "var(--color-primary)" : "var(--color-border)"}`, background: pickerOpen ? "color-mix(in srgb, var(--color-primary) 6%, var(--color-card))" : "var(--color-card)", cursor: "pointer", fontSize: "0.78rem", fontWeight: 500, color: pickerOpen ? "var(--color-primary)" : "var(--color-foreground)" }}>
                               <BookOpen size={12} /> Library
                             </button>
@@ -1386,7 +1409,15 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
               Discard Changes
             </Button>
             <Button variant="primary" size="sm"
-              onClick={() => { if (parentId) { doSaveChild(parentId); } const fn = pendingFn; setPendingFn(null); fn(); }}>
+              disabled={saving}
+              onClick={async () => {
+                if (!parentId) return;
+                const cid = await doSaveChild(parentId);
+                if (!cid) return; // Stay on this item and preserve unsaved edits.
+                const fn = pendingFn;
+                setPendingFn(null);
+                fn?.();
+              }}>
               Save and Continue
             </Button>
           </div>

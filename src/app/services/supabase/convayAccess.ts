@@ -160,6 +160,7 @@ const direct: Record<string, string> = {
   "administration/integrations": "admin_integrations",
   "administration/security-retention/security-policies": "admin_config",
   "administration/security-retention/retention-legal-holds": "admin_retention",
+  "administration/time-extension": "admin_retention",
 };
 // Parent/redirect URLs resolve to their child authorization boundary.
 export function permissionForPath(path: string): string | null {
