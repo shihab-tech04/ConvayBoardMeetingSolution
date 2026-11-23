@@ -427,6 +427,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const onlinePresence = useMemo(() => new OnlinePresenceTransition(), [meetingId, currentUser.id]);
   const meeting = meetings.find(m => m.meeting_id === meetingId);
   const isOnlineMeeting = LIVE_MEETINGS_RELEASED && (meeting?.mode === "Virtual" || meeting?.mode === "Hybrid");
+  // Never request a live-attendance readback until SQL confirms an active room.
+  // The attendance gateway correctly rejects meetings that have not started.
+  const hasCanonicalOnlineSession = isOnlineMeeting &&
+    liveSessions.filter(session => session.meeting_id === meetingId &&
+      (session.session_status === "active" || session.session_status === "paused")).length === 1;
 
   // Build participant list from registry — no synthetic defaults
   const baseParticipants: VirtualParticipant[] = (() => {
@@ -623,6 +628,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const onlineRosterKey = meetingLinks.map(link => link.user_id).join("|");
   useEffect(() => {
     if (!isOnlineMeeting || !access.loaded || !meetingId) return;
+    if (!hasCanonicalOnlineSession) {
+      setServerQuorum(null);
+      setAttendanceMap({});
+      return;
+    }
     const target = meetingLinks.find(link => link.user_id === currentUser.id)?.user_id
       ?? (canEditAttendance ? meetingLinks[0]?.user_id : "");
     setServerQuorum(null);
@@ -651,7 +661,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       document.removeEventListener("visibilitychange", onVisible);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOnlineMeeting, access.loaded, meetingId, currentUser.id, canEditAttendance, onlineRosterKey, applyVerifiedAttendance]);
+  }, [isOnlineMeeting, access.loaded, meetingId, currentUser.id, canEditAttendance, onlineRosterKey, applyVerifiedAttendance, hasCanonicalOnlineSession]);
 
   const isVotingEligible = useCallback((participantId: string) => {
     if (!participantId || !meetingLinks.some(link => link.user_id === participantId && link.voting_eligible)) return false;
@@ -749,13 +759,20 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // "prejoin"   → for join actions or after readiness completes
   // "meeting"   → the live workspace
   const determineInitialPhase = (): "readiness" | "prejoin" | "meeting" => {
-    if (isOnlineMeeting && entryAction === "join_meeting") return "prejoin";
+    // Online hosts start from the same verified LiveKit lobby as invitees.
+    // Manual, in-person attendance is not a prerequisite for a virtual room.
+    if (isOnlineMeeting && (entryAction === "join_meeting" || entryAction === "start_meeting")) return "prejoin";
     if (ctrlStatus !== "not-started") return "meeting";
     if (entryAction === "start_meeting") return "readiness";
     if (entryAction === "join_meeting")  return "prejoin";
     return "meeting";
   };
   const [phase, setPhase]             = useState<"readiness" | "prejoin" | "meeting">(determineInitialPhase);
+  // Registries may hydrate after the first paint. Correct the entry phase
+  // when the saved meeting is confirmed as Virtual/Hybrid.
+  useEffect(() => {
+    if (isOnlineMeeting && phase === "readiness") setPhase("prejoin");
+  }, [isOnlineMeeting, phase]);
   // The token gateway requires exactly one active or paused SQL live session.
   // Do not enter the media workspace while the host has not started the meeting.
   const activeJoinSessions = isOnlineMeeting
@@ -1675,9 +1692,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         onClose={() => onClose()}
         onStartMeeting={async (readinessAttendance) => {
           const started = await handleStart();
-          if (!started) return;
-          // Readiness check-in is local only for physical meetings. Online
-          // presence is committed after the verified provider/SQL roundtrip.
+          if (!started) return false;
+          // This form only governs physical attendance. Virtual presence is
+          // confirmed by LiveKit and the SQL attendance gateway after joining.
           if (!isOnlineMeeting) setAttendanceMap(prev => {
             const merged = { ...prev };
             for (const [uid, st] of Object.entries(readinessAttendance)) {
@@ -1686,6 +1703,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             return merged;
           });
           setPhase(isOnlineMeeting ? "prejoin" : "meeting");
+          return true;
         }}
       />
     );
@@ -1715,8 +1733,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         publisherAllowed={canPublishMedia}
         joinBlockedReason={joinBlockedReason}
         forceStartBusy={startBusy}
-        onForceStart={access.loaded && access.is_super_admin && activeJoinSessions.length === 0
+        onForceStart={access.loaded && canControlMeeting && ctrlStatus === "not-started" && activeJoinSessions.length === 0
           ? () => { void handleStart(); } : undefined}
+        startLabel={access.is_super_admin ? "Force Start Now" : "Start Meeting Now"}
         onJoin={opts => {
           if (joinBlockedReason) { toast.info(joinBlockedReason); return; }
           setMyMicOn(canPublishMedia && opts.micOn);
