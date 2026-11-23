@@ -185,7 +185,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
   const blockers: string[] = [];
   if (!meeting?.chairperson)    blockers.push("Chairperson not assigned");
   if (!meeting?.secretary)      blockers.push("Secretary not assigned");
-  if (linkedAgendaCount === 0)  blockers.push("No agendas linked to this meeting");
+  // Agenda-free meetings can start. Attendance and leadership safety checks remain.
   if (requiredMissing.length > 0) blockers.push(`Required leadership not present: ${requiredMissing.map(l => resolveUser(l.user_id)?.name ?? l.user_id).join(", ")}`);
 
   const warnings: string[] = [];
@@ -466,11 +466,11 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
         {/* Agendas */}
         <Section title="Agendas" icon={<Layers size={15} />}>
           <div style={{ display: "flex", flexDirection: "column" }}>
-            <InfoRow label="Linked Agendas"  value={String(linkedAgendaCount)} warn={linkedAgendaCount === 0} />
+            <InfoRow label="Linked Agendas"  value={String(linkedAgendaCount)} />
             <InfoRow label="Agenda Documents" value={String(linkedDocIds.size)} />
           </div>
           {linkedAgendaCount === 0 && (
-            <p style={{ margin: "0.4rem 0 0", fontSize: "0.75rem", color: "#f59e0b" }}>No agendas linked. Add agendas before starting.</p>
+            <p style={{ margin: "0.4rem 0 0", fontSize: "0.75rem", color: "#f59e0b" }}>No agenda attached (optional). You can start without one.</p>
           )}
         </Section>
 

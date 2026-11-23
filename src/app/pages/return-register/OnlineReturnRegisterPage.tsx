@@ -8,6 +8,7 @@ import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meeti
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { normalizeMeetingSchedule, validateMeetingSchedule } from "./meetingSchedule";
 import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
+import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "./meetingAgendaSelection";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
 import { DRAFT_DELETION_UNAVAILABLE_REASON, guardMeetingDrawerAction } from "./meetingDeletionReleaseGate";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
@@ -555,7 +556,7 @@ export function OnlineReturnRegisterPage() {
       !!m.committee, !!m.chairperson, !!m.secretary,
       !!(m.venue || m.virtual_link),
       totalParticipants > 0,
-      canonicalAgendaLinks.length > 0,
+      // Agendas are optional for both scheduling and starting a meeting.
       canonicalDocLinks.length > 0 || documentRegistry.items.some(d => d.related_meeting === mid),
       !!quorumRule,
     ];
@@ -747,16 +748,11 @@ export function OnlineReturnRegisterPage() {
         if (!participants.some(p => p.quorum_eligible)) return "Mark at least one participant as quorum-eligible.";
       }
       if (step === 2) {
-        let selected: SelectedAgendaEntry[] = [];
-        try { selected = JSON.parse(String(values.selected_agenda_ids_json ?? "[]")) as SelectedAgendaEntry[]; }
-        catch { return "Agenda selection is invalid. Reopen the Agendas step."; }
-        if (!Array.isArray(selected) || !selected.length)
-          return "Select an approved, meeting-ready agenda before continuing. You can save a draft instead.";
-        for (const entry of selected) {
-          const agenda = agendaRegistry.items.find(a => (a.agenda_id ?? a.id) === entry.agenda_id);
-          if (!agenda || agenda.approval_status !== "Approved" || (agenda as { meeting_readiness?: string }).meeting_readiness !== "Meeting Ready")
-            return "A selected agenda is missing, not approved or not Meeting Ready. Refresh or edit the agenda first.";
-        }
+        // Step 3 is optional: zero agendas is a valid meeting.
+        // A deliberately selected agenda must still be approved and meeting-ready.
+        const selected = parseOptionalMeetingAgendas(values.selected_agenda_ids_json);
+        const agendaError = validateOptionalMeetingAgendas(selected, agendaRegistry.items)[0];
+        if (agendaError) return agendaError;
       }
       if (step === 3) {
         const body = govRegistry.items.find(b =>
@@ -1033,10 +1029,8 @@ export function OnlineReturnRegisterPage() {
         try { return JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
         catch { return []; }
       })();
-      const agendaEntriesRaw: SelectedAgendaEntry[] = (() => {
-        try { return JSON.parse(String(values.selected_agenda_ids_json ?? "[]")) as SelectedAgendaEntry[]; }
-        catch { return []; }
-      })();
+      const agendaEntriesParsed = parseOptionalMeetingAgendas(values.selected_agenda_ids_json);
+      const agendaEntriesRaw: SelectedAgendaEntry[] = agendaEntriesParsed ?? [];
       const additionalDocsRaw: AdditionalDocEntry[] = (() => {
         try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")) as AdditionalDocEntry[]; }
         catch { return []; }
@@ -1058,18 +1052,9 @@ export function OnlineReturnRegisterPage() {
         if (requiredParticipants === 0)  blockers.push("At least one required participant must be assigned");
         if (quorumEligible === 0)        blockers.push("At least one quorum-eligible participant is required");
 
-        if (agendaEntriesRaw.length === 0)
-          blockers.push("At least one approved agenda must be selected");
-
-        // Block scheduling for any non-ready agendas
-        agendaEntriesRaw.forEach(e => {
-          const ag = agendaRegistry.items.find(a => (a.agenda_id ?? a.id) === e.agenda_id);
-          if (!ag) return;
-          const st = (ag as {approval_status?: string}).approval_status ?? "";
-          const mr = (ag as {meeting_readiness?: string}).meeting_readiness ?? "";
-          if (st !== "Approved")    blockers.push(`Agenda "${ag.agenda_title ?? e.agenda_id}" must be Approved before scheduling`);
-          else if (mr !== "Meeting Ready") blockers.push(`Agenda "${ag.agenda_title ?? e.agenda_id}" is not Meeting Ready`);
-        });
+        // No agenda is required; malformed or explicitly selected invalid agendas
+        // remain blocked in the final server-backed scheduling path.
+        blockers.push(...validateOptionalMeetingAgendas(agendaEntriesParsed, agendaRegistry.items));
 
         blockers.push(...meetingAccessBlockers(values));
 
