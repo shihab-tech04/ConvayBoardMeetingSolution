@@ -36,7 +36,8 @@ import { ParticipantSelectorStep } from "../../components/forms/ParticipantSelec
 import type { DraftParticipantLink } from "../../components/forms/ParticipantSelectorStep";
 import { AgendaDocumentStep } from "../../components/forms/AgendaDocumentStep";
 import type { SelectedAgendaEntry, AdditionalDocEntry } from "../../components/forms/AgendaDocumentStep";
-import { QuorumAndAccessPanel, generateConvayMeeting } from "../../components/forms/QuorumAndAccessPanel";
+import { QuorumAndAccessPanel } from "../../components/forms/QuorumAndAccessPanel";
+import { liveMeetingInvitation, liveMeetingUrl } from "../../utils/liveMeetingLink";
 import { DocumentComposerModal } from "../../components/documents/DocumentComposerModal";
 import { AgendaFormModal } from "../../components/agenda/AgendaFormModal";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
@@ -179,42 +180,52 @@ export function OnlineReturnRegisterPage() {
       extraContent: (values: Record<string, unknown>) => {
         const mode = String(values.mode ?? "Physical");
         if (mode !== "Virtual" && mode !== "Hybrid") return null;
-        const seed = String(values.meeting_title ?? "") + String(values.meeting_date ?? "") + String(values.committee ?? "");
-        const cm = generateConvayMeeting(seed);
-        const copy = (text: string) => navigator.clipboard?.writeText(text).catch(() => {});
+        const savedId = String(values._draft_meeting_id ?? values.meeting_id ?? "").trim();
+        const liveUrl = savedId ? liveMeetingUrl(savedId) : null;
+        const invite = savedId ? liveMeetingInvitation(savedId) : null;
+        const copy = async () => {
+          if (!invite) return;
+          try {
+            await navigator.clipboard.writeText(invite);
+            toast.success("LiveKit meeting invitation copied.");
+          } catch {
+            toast.error("Could not copy the invitation. Try again.");
+          }
+        };
         return (
           <div className="border border-[var(--border)] rounded-lg overflow-hidden mt-3">
             <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--surface)] border-b border-[var(--border)]">
               <Video size={13} strokeWidth={2} className="text-[var(--primary)]" />
-              <span className="text-xs font-semibold text-[var(--foreground)]">Convay Meeting</span>
-              <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-[var(--primary)]/10 text-[var(--primary)] font-semibold">Auto-generated</span>
+              <span className="text-xs font-semibold text-[var(--foreground)]">LiveKit Meeting</span>
+              <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-[var(--primary)]/10 text-[var(--primary)] font-semibold">Authenticated access</span>
             </div>
             <div className="p-4 space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-lg bg-[var(--background)] border border-[var(--border)] px-3 py-2">
                   <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-0.5">Meeting ID</p>
-                  <p className="text-sm font-bold text-[var(--foreground)] font-mono tracking-wider">{cm.meetingId}</p>
+                  <p className="text-sm font-bold text-[var(--foreground)] break-all">{savedId || "Assigned after Save"}</p>
                 </div>
                 <div className="rounded-lg bg-[var(--background)] border border-[var(--border)] px-3 py-2">
-                  <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-0.5">Password</p>
-                  <p className="text-sm font-bold text-[var(--foreground)] font-mono tracking-wider">{cm.password}</p>
+                  <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-0.5">Video Provider</p>
+                  <p className="text-sm font-bold text-[var(--foreground)]">LiveKit</p>
                 </div>
               </div>
               <div className="rounded-lg bg-[var(--background)] border border-[var(--border)] px-3 py-2">
-                <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-1">Meeting Link</p>
-                <a href={cm.link} target="_blank" rel="noopener noreferrer"
-                  className="text-xs text-[var(--primary)] hover:underline break-all font-medium">
-                  {cm.link}
-                </a>
+                <p className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase tracking-wide mb-1">Secure Meeting Link</p>
+                {liveUrl
+                  ? <a href={liveUrl} target="_blank" rel="noopener noreferrer"
+                       className="text-xs text-[var(--primary)] hover:underline break-all font-medium">{liveUrl}</a>
+                  : <p className="text-xs text-[var(--muted-foreground)]">
+                      The real meeting link will be assigned when the meeting is saved. No password or external room is generated.
+                    </p>}
               </div>
-              <button type="button" onClick={() => copy(cm.invite)}
-                className="w-full flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] hover:bg-[var(--surface-raised)] transition-colors">
-                <Copy size={11} strokeWidth={2} />
-                Copy Invitation
+              <button type="button" disabled={!invite} onClick={() => { void copy(); }}
+                title={invite ? "Copy the saved meeting link" : "Save the meeting to get its secure LiveKit link"}
+                className="w-full flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] hover:bg-[var(--surface-raised)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                <Copy size={11} strokeWidth={2} /> Copy Invitation
               </button>
               <p className="text-[10px] text-[var(--muted-foreground)] italic">
-                Powered by <a href="https://convay.com/" target="_blank" rel="noopener noreferrer"
-                  className="text-[var(--primary)] hover:underline">Convay</a> · Link is deterministic and tied to this meeting
+                Powered by LiveKit · Authentication, invitations, publishing and host permissions are enforced when entering.
               </p>
             </div>
           </div>
@@ -1072,8 +1083,8 @@ export function OnlineReturnRegisterPage() {
         ...schedule,
         mode:          String(values.mode ?? "Physical"),
         venue:         String(values.venue ?? ""),
-        virtual_platform: "Convay",
-        virtual_link:  String(values.virtual_link ?? ""),
+        virtual_platform: ["Virtual", "Hybrid"].includes(String(values.mode ?? "")) ? "LiveKit" : "",
+        virtual_link:  ["Virtual", "Hybrid"].includes(String(values.mode ?? "")) ? liveMeetingUrl(newId) ?? "" : "",
         financial_year: String(new Date().getFullYear() + "-" + (new Date().getFullYear() + 1)),
         ...meetingLeadershipPayload(leadership),
         language:      "English",
@@ -1276,8 +1287,9 @@ export function OnlineReturnRegisterPage() {
         ...schedule,
         mode:                String(submittedValues.mode             ?? ""),
         venue:               String(submittedValues.venue            ?? ""),
-        virtual_platform:    String(submittedValues.virtual_platform ?? ""),
-        virtual_link:        String(submittedValues.virtual_link     ?? ""),
+        virtual_platform:    ["Virtual", "Hybrid"].includes(String(submittedValues.mode ?? "")) ? "LiveKit" : "",
+        virtual_link:        ["Virtual", "Hybrid"].includes(String(submittedValues.mode ?? ""))
+          ? liveMeetingUrl(String(existingMeeting?.meeting_id ?? existingMeeting?.id ?? id)) ?? "" : "",
         ...meetingLeadershipPayload(leadership),
         ...meetingContextPayload(submittedValues, existingMeeting?.confidentiality ?? ""),
         rsvp_deadline:       String(submittedValues.rsvp_deadline     ?? ""),
