@@ -13,12 +13,16 @@ import {
 } from "../../services/saas/subscriptionQuotes";
 import {
   createProvisioningCompany,listCompanies,readCompany,
-  type CompanyDirectory,type CompanyProfile,
+  enrollVerifiedCompanyMember,revokeCompanyMember,
+  type CompanyDirectory,type CompanyProfile,type CompanyMembershipRole,
 } from "../../services/saas/companyDirectory";
 import { MeetingTemplateMarketplace } from "./MeetingTemplateMarketplace";
 
 type Tab = "overview" | "pricing" | "billing" | "companies" | "templates" | "usage";
 type PendingAction = { action: "issue_quote" | "void_quote" | "create_invoice" | "issue_invoice"; quote: SavedQuote; invoice?: SavedInvoice };
+type PendingCompanyMembership =
+  | {action:"enroll";tenantId:string;email:string;role:CompanyMembershipRole;requestId:string}
+  | {action:"revoke";tenantId:string;userId:string;label:string;requestId:string};
 const panel: React.CSSProperties = {
   padding: 20, border: "1px solid var(--border-color,#dce1e8)", borderRadius: 14,
   background: "var(--card-bg, var(--surface, white))",
@@ -57,6 +61,10 @@ export function SubscribersPage() {
   const [companyLoading,setCompanyLoading] = useState(false);
   const [companyWorking,setCompanyWorking] = useState(false);
   const [confirmProvision,setConfirmProvision] = useState(false);
+  const [memberEmail,setMemberEmail] = useState("");
+  const [memberRole,setMemberRole] = useState<CompanyMembershipRole>("member");
+  const [memberRequestId,setMemberRequestId] = useState(()=>crypto.randomUUID());
+  const [pendingMembership,setPendingMembership] = useState<PendingCompanyMembership|null>(null);
 
   const refresh = async () => {
     const result = await subscriptionAction<SubscriptionDirectory>("list");
@@ -103,6 +111,29 @@ export function SubscribersPage() {
       .finally(() => { if (active) setCompanyLoading(false); });
     return () => { active=false; };
   },[tab,selectedCompanyId]);
+  const saveCompanyMembership=async()=>{
+    const pending=pendingMembership;
+    if(!pending||companyWorking||companyLoading)return;
+    setCompanyWorking(true);setCompanyError("");
+    try{
+      const result=pending.action==="enroll"
+        ? await enrollVerifiedCompanyMember(pending.tenantId,pending.email,pending.role,pending.requestId)
+        : await revokeCompanyMember(pending.tenantId,pending.userId,pending.requestId);
+      setCompanyProfile(result.profile);
+      setCompanies(await listCompanies());
+      if(pending.action==="enroll"){
+        setMemberEmail("");
+        setMemberRole("member");
+        setMemberRequestId(crypto.randomUUID());
+      }
+      toast.success(pending.action==="enroll"
+        ?"Verified company membership saved in SQL"
+        :"Membership revoked and verified in SQL");
+      setPendingMembership(null);
+    }catch(reason){
+      setCompanyError(reason instanceof Error?reason.message:"Unable to verify company membership");
+    }finally{setCompanyWorking(false);}
+  };
   const provisionCompany = async () => {
     if (companyWorking || companyLoading) return;
     setCompanyWorking(true);setCompanyError("");
@@ -412,11 +443,42 @@ export function SubscribersPage() {
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:12,marginTop:12}}>
               <div style={{...panel,padding:14}}>
                 <h4 style={{fontWeight:650}}>Users and access ({companyProfile.members.length})</h4>
+                <p style={{...note,marginTop:8}}>Assign an existing email-verified Convay account with an active application role. Invite and verify new users in User Management first.</p>
+                <div style={{display:"grid",gap:10,marginTop:12}}>
+                  <AppTextField id="company-member-email" label="Verified user email" required
+                    value={memberEmail} disabled={companyWorking||companyLoading}
+                    onChange={value=>{setMemberEmail(value);setMemberRequestId(crypto.randomUUID());setCompanyError("");}}
+                    placeholder="user@example.com"/>
+                  <AppSelectField id="company-member-role" label="Company membership role" required
+                    value={memberRole} disabled={companyWorking||companyLoading}
+                    onChange={value=>{setMemberRole(value as CompanyMembershipRole);setMemberRequestId(crypto.randomUUID());}}
+                    options={[{value:"member",label:"Company member"},
+                      {value:"tenant_admin",label:"Company Super Admin"}]}/>
+                  <Button variant="secondary" size="sm"
+                    disabled={companyWorking||companyLoading||!/^\\S+@\\S+\\.\\S+$/.test(memberEmail.trim())}
+                    onClick={()=>setPendingMembership({action:"enroll",tenantId:companyProfile.company.id,
+                      email:memberEmail.trim(),role:memberRole,requestId:memberRequestId})}>
+                    Assign verified account
+                  </Button>
+                </div>
+                <p style={{...note,marginTop:12}}>Company membership does not activate paid workspace access or tenant meetings.</p>
                 {companyProfile.members.length===0 && <p style={note}>No company memberships recorded.</p>}
-                {companyProfile.members.map(member=><p key={member.user_id} style={{...note,marginTop:8}}>
-                  <strong>{member.display_name}</strong> · {member.membership_role} · {member.membership_state}
-                  <span style={{display:"block"}}>{member.email}</span>
-                </p>)}
+                {companyProfile.members.map(member=><div key={member.user_id}
+                  style={{borderTop:"1px solid var(--border-color,#dce1e8)",padding:"10px 0"}}>
+                  <p style={note}><strong>{member.display_name}</strong> ·
+                    {member.membership_role==="tenant_admin"?" Company Super Admin":" Company member"} · {member.membership_state}
+                    <span style={{display:"block"}}>{member.email}</span>
+                  </p>
+                  {member.membership_state==="active" &&
+                   !(member.membership_role==="tenant_admin" &&
+                     companyProfile.members.filter(m=>m.membership_role==="tenant_admin"&&m.membership_state==="active").length<=1)
+                   && <Button variant="tertiary" size="sm" disabled={companyWorking||companyLoading}
+                    onClick={()=>setPendingMembership({action:"revoke",
+                      tenantId:companyProfile.company.id,userId:member.user_id,
+                      label:member.display_name,requestId:crypto.randomUUID()})}>
+                    Revoke membership
+                  </Button>}
+                </div>)}
               </div>
               <div style={{...panel,padding:14}}>
                 <h4 style={{fontWeight:650}}>Meeting templates ({companyProfile.templates.length})</h4>
@@ -447,6 +509,16 @@ export function SubscribersPage() {
         <p style={{...note,marginTop:12}}><ShieldCheck size={15} style={{display:"inline",marginRight:6}}/>Audit rows are immutable in SQL. Existing meeting and template behavior is preserved.</p>
       </section>}
 
+      {pendingMembership && <SConfirmModal
+        title={pendingMembership.action==="enroll"?"Assign company role?":"Revoke company membership?"}
+        message={pendingMembership.action==="enroll"
+          ? `Assign ${pendingMembership.email} as ${pendingMembership.role==="tenant_admin"?"Company Super Admin":"Company member"}? The account must already be verified and globally role-assigned; no subscription or meeting access is activated.`
+          : `Revoke ${pendingMembership.label}'s company membership? Their tenant administrative access will be removed; this action is audited in SQL.`}
+        confirmLabel={pendingMembership.action==="enroll"?"Assign account":"Revoke membership"}
+        danger={pendingMembership.action==="revoke"}
+        onClose={()=>{if(!companyWorking)setPendingMembership(null);}}
+        onConfirm={()=>void saveCompanyMembership()}
+      />}
       {confirmProvision && <SConfirmModal
         title="Create a provisioning company?"
         message={`Register "${companyName.trim()}" in the SQL company directory? This will not activate a subscription, meetings or workspace access.`}
