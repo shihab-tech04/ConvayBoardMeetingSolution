@@ -70,6 +70,22 @@ describe.each(["light-mode", "dark-mode"] as const)("Pre-join optional-media / %
   });
 });
 
+describe.each(["light-mode", "dark-mode"] as const)("Terminal SQL meeting status in %s", theme => {
+  it("shows an ended meeting as ended, never as a waiting LiveKit room", () => {
+    present(theme, {
+      meeting: {
+        id: "MTG-ENDED", meeting_title: "Completed Board Meeting",
+        approval_status: "Awaiting Minutes", mode: "Virtual",
+      },
+      joinBlockedReason: "This meeting is closed and cannot be joined or restarted.",
+    });
+    expect(screen.getByText("Meeting ended")).toBeTruthy();
+    expect(screen.queryByText("Waiting for LiveKit meeting")).toBeNull();
+    expect(screen.getByRole("button", { name: "Join Meeting" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Force Start Now" })).toBeNull();
+  });
+});
+
 describe("Pre-join approved design tokens", () => {
   it("keeps the camera stage dark and text readable independently of theme primary text color", () => {
     const css = readFileSync("src/styles/live-meeting.css", "utf8");
