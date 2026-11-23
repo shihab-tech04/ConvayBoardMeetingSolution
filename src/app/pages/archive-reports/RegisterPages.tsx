@@ -3,7 +3,7 @@ import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { buildDecisionRegisterFilters } from "./decisionRegisterView";
-import { buildResolutionRegisterFilters } from "./resolutionRegisterView";
+import { buildResolutionRegisterFilters, resolutionSourceMeetingId } from "./resolutionRegisterView";
 import { buildActionRegisterFilters, isActionClosed, isActionOpen, countOverdueActions, todayInLocalTime } from "./actionRegisterView";
 import { buildAttendanceRegisterFilters } from "./attendanceRegisterView";
 import { buildConflictRegisterFilters } from "./conflictRegisterView";
@@ -28,7 +28,7 @@ import {
 export function ResolutionRegisterPage() {
   const registry = useResolutionRegistry();
 
-  const rows: TableRow[] = registry.items.map(r => ({ ...r, id: r.id }));
+  const rows: TableRow[] = registry.items.map(r => ({ ...r, source_meeting: resolutionSourceMeetingId(r), id: r.id }));
 
   const kpis: KpiDef[] = [
     { label: "Total Resolutions", value: String(rows.length),                                                   tone: "primary" },

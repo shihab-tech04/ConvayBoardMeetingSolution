@@ -37,3 +37,28 @@ export function buildResolutionRegisterFilters(rows: readonly Record<string, unk
   filters.push({ key: "to", label: "To Date", type: "date" });
   return filters;
 }
+
+/**
+ * AR-12/RP-03: resolve a resolution's real source meeting from SQL-backed fields.
+ * Earlier live records persist meeting_id without source_meeting.
+ * Conflicting nonempty identifiers are not safe to attribute to any meeting.
+ * This is read-only compatibility, not proof of vote or formal adoption.
+ */
+export function resolutionSourceMeetingId(record: {
+  source_meeting?: unknown;
+  meeting_id?: unknown;
+}): string {
+  const source = typeof record.source_meeting === "string" ? record.source_meeting.trim() : "";
+  const meeting = typeof record.meeting_id === "string" ? record.meeting_id.trim() : "";
+  if (source && meeting && source !== meeting) return "";
+  return source || meeting;
+}
+
+/** Never attribute an orphan or conflicting resolution to a meeting or body. */
+export function resolutionBelongsToMeeting(
+  record: { source_meeting?: unknown; meeting_id?: unknown },
+  meetingId: unknown,
+): boolean {
+  const source = resolutionSourceMeetingId(record);
+  return source !== "" && typeof meetingId === "string" && source === meetingId.trim();
+}
