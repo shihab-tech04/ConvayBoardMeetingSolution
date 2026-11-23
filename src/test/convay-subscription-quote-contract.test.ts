@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import {
   emptyQuoteForm, buildQuotePayload, estimateQuote, parseMoneyMinor,
   parsePercentBps, assertSavedQuote,
@@ -15,7 +15,7 @@ const valid = () => ({
   rates:{...emptyQuoteForm.rates,users:"300.00",meeting_minutes:"2.00"},
   base:"1000.00",discount:"10",tax:"15",
 });
-const sql = readFileSync(fileURLToPath(new URL("../../supabase/sql/convay_subscription_quote_control_plane.sql", import.meta.url)),"utf8");
+const sql = readFileSync(resolve(process.cwd(), "supabase/sql/convay_subscription_quote_control_plane.sql"),"utf8");
 
 describe("root-managed SaaS subscription quote contract", () => {
   it("requires company email and valid negotiated amounts", () => {
