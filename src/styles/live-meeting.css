@@ -361,6 +361,13 @@
   color: var(--color-success);
 }
 
+.meeting-prejoin__context--closed {
+  color: var(--color-text-secondary);
+}
+.meeting-prejoin__context--closed .meeting-prejoin__ready-dot {
+  background: var(--color-text-secondary);
+  animation: none;
+}
 .meeting-prejoin__ready-dot {
   width: 7px;
   height: 7px;
