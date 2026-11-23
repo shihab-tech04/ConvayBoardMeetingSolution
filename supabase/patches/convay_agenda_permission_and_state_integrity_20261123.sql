@@ -55,8 +55,8 @@ BEGIN
     INTO v_ddl;
   -- Dollar-quoted source blocks contain a framing newline; ignore that
   -- framing whitespace while still requiring an exact guard-body match.
-  v_prior := btrim(v_prior, E'\\n');
-  v_revised := btrim(v_revised, E'\\n');
+  v_prior := btrim(v_prior, chr(10));
+  v_revised := btrim(v_revised, chr(10));
   IF strpos(v_ddl,v_prior)=0 THEN
     RAISE EXCEPTION 'Agenda approval permission guard unexpectedly changed; migration not applied';
   END IF;
