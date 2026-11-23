@@ -53,3 +53,12 @@ export function resolutionSourceMeetingId(record: {
   if (source && meeting && source !== meeting) return "";
   return source || meeting;
 }
+
+/** Never attribute an orphan or conflicting resolution to a meeting or body. */
+export function resolutionBelongsToMeeting(
+  record: { source_meeting?: unknown; meeting_id?: unknown },
+  meetingId: unknown,
+): boolean {
+  const source = resolutionSourceMeetingId(record);
+  return source !== "" && typeof meetingId === "string" && source === meetingId.trim();
+}
