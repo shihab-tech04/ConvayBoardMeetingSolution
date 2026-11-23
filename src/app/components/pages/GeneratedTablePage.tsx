@@ -260,7 +260,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
     .replace(/^(All|My|Active|Archived|Draft|Pending)\s+/i, "")
     .replace(/ies$/, "y")
     .replace(/s$/, "");
-  const searchPlaceholder = cfg.searchPlaceholder ?? `Search ${entityName.toLowerCase()}s`;
+  const entityPlural = cfg.entityPlural ?? `${entityName.toLowerCase()}s`;
+  const searchPlaceholder = cfg.searchPlaceholder ?? `Search ${entityPlural}`;
 
   const [kpiOpen, setKpiOpen] = useState<boolean>(() => {
     try { return localStorage.getItem(storageKey) !== "false"; } catch { return true; }
@@ -980,7 +981,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
       ) : (
       <UnifiedDataTable
         title={resolvedTitle}
-        countLabel={`${entityName.toLowerCase()}s`}
+        countLabel={entityPlural}
         singularLabel={entityName.toLowerCase()}
         totalCount={filtered.length}
         cols={cfg.cols}
@@ -1003,8 +1004,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         perPage={PER}
         onPageChange={setPage}
         mobileCardMapping={cfg.mobileCardMapping}
-        emptyLabel={`No ${entityName.toLowerCase()}s found.`}
-        filteredEmptyLabel={`No matching ${entityName.toLowerCase()}s. Try adjusting your search or filters.`}
+        emptyLabel={`No ${entityPlural} found.`}
+        filteredEmptyLabel={`No matching ${entityPlural}. Try adjusting your search or filters.`}
         tabs={tabDefs.length > 1 ? tabDefs : undefined}
         activeTab={tabDefs.length > 1 ? activeStatusTab : undefined}
         onTabChange={tabDefs.length > 1 ? (id) => { setActiveStatusTab(id); setPage(1); } : undefined}
