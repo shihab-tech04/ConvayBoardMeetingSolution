@@ -1,0 +1,202 @@
+/* Live-meeting layout only. Ported and refined from the owner-supplied mobile reference.
+   The up-to-date LiveKit, meeting lifecycle, quorum and SQL handlers remain untouched. */
+.convay-live-root {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+}
+.convay-live-root *, .convay-live-root *::before, .convay-live-root *::after { box-sizing: border-box; }
+.convay-live-heading { overflow: hidden; }
+.convay-live-heading > p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.convay-live-main { position: relative; min-width: 0; min-height: 0; }
+.convay-live-stage-column { min-width: 0; min-height: 0; }
+.convay-live-stage { min-width: 0; min-height: 0; }
+.convay-live-stage > * { min-width: 0; }
+.convay-live-dock { min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; }
+.convay-live-dock > button { flex-shrink: 0; }
+.convay-live-sidebar { min-height: 0; }
+.convay-live-sidebar-body { min-width: 0; min-height: 0; overscroll-behavior: contain; }
+.convay-live-mobile-sidebar-header { display: none; }
+.convay-live-sidebar-tabs button { flex-shrink: 0; }
+.convay-live-root :is(button, input, textarea, select):focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+/* On laptops, let the board controls use a stable share without compressing video. */
+@media (min-width: 768px) and (max-width: 1199px) {
+  .convay-live-sidebar { width: clamp(280px, 32vw, 360px) !important; }
+  .convay-live-topbar { gap: .45rem !important; padding-inline: .6rem !important; }
+  .convay-live-topbar > button { flex-shrink: 0; }
+  .convay-live-dock { justify-content: flex-start !important; padding-inline: .6rem !important; }
+  .convay-live-dock > button { min-width: 44px; }
+}
+@media (min-width: 1600px) {
+  .convay-live-sidebar { width: clamp(360px, 24vw, 480px) !important; }
+  .convay-live-stage { padding: clamp(.75rem, 1.2vw, 1.5rem) !important; }
+  .convay-live-dock { gap: .65rem !important; }
+}
+@media (max-width: 767px) {
+  .convay-live-root {
+    height: 100dvh !important;
+    min-height: 0;
+    max-height: 100dvh;
+    overflow: hidden;
+    background: #08111f !important;
+  }
+  .convay-live-topbar {
+    height: auto !important;
+    min-height: 66px;
+    max-height: 38dvh;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: center;
+    gap: .4rem .55rem !important;
+    padding: max(.55rem, env(safe-area-inset-top)) .7rem .55rem !important;
+    overflow-x: hidden;
+    overflow-y: auto;
+    background: #111c2e !important;
+  }
+  .convay-live-topbar > button { flex-shrink: 0; min-width: 36px; min-height: 36px; }
+  .convay-live-heading { flex: 1 1 calc(100% - 60px) !important; }
+  .convay-live-heading > p:first-child { font-size: .88rem !important; }
+  .convay-live-heading > p:last-child { font-size: .63rem !important; }
+  .convay-live-status { flex-shrink: 0; }
+  .convay-live-topbar > div:last-child { margin-left: auto; }
+  .convay-live-main { flex: 1; background: #08111f; overflow: hidden; }
+  .convay-live-stage-column { width: 100%; }
+  .convay-live-viewbar {
+    height: 44px !important;
+    min-height: 44px;
+    padding-inline: .5rem !important;
+    gap: .2rem !important;
+    background: #0c1728 !important;
+  }
+  .convay-live-viewbar > button {
+    flex-shrink: 0;
+    min-width: 0;
+    min-height: 34px;
+    padding: .3rem .45rem !important;
+    border-radius: 8px !important;
+    font-size: .7rem !important;
+  }
+  .convay-live-board-trigger { margin-left: auto; white-space: nowrap; color: #cbd5e1 !important; }
+  .convay-live-stage { padding: .5rem !important; gap: .45rem !important; overflow-y: auto !important; }
+  .convay-live-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: .4rem !important; }
+  .convay-live-document-split { flex-direction: column !important; overflow-y: auto; }
+  .convay-live-document-body { padding: .75rem !important; flex-basis: auto; min-height: 12rem; }
+  .convay-live-dock {
+    height: calc(76px + env(safe-area-inset-bottom)) !important;
+    min-height: calc(76px + env(safe-area-inset-bottom));
+    gap: .3rem !important;
+    justify-content: flex-start !important;
+    padding: .35rem .55rem max(.35rem, env(safe-area-inset-bottom)) !important;
+    border-top: 1px solid #26364d !important;
+    background: #0d1829 !important;
+    scrollbar-width: none;
+    flex-shrink: 0;
+    touch-action: pan-x;
+    overflow-x: auto;
+  }
+  .convay-live-dock::-webkit-scrollbar, .convay-live-sidebar-tabs::-webkit-scrollbar { display: none; }
+  .convay-live-dock > button {
+    min-width: 56px !important;
+    min-height: 52px;
+    flex: 0 0 auto;
+    padding: .4rem .45rem !important;
+    align-self: center;
+  }
+  .convay-live-dock > button > span { font-size: .62rem !important; line-height: 1.2 !important; }
+  .convay-live-dock > span[title="Integration not configured"] { display: none !important; }
+  .convay-live-dock-spacer { display: none !important; }
+  .convay-live-leave {
+    position: sticky !important;
+    right: 0;
+    z-index: 3;
+    width: 57px;
+    min-width: 57px !important;
+    min-height: 52px !important;
+    padding: .4rem !important;
+    background: #ef4444 !important;
+    box-shadow: -8px 0 12px #0d1829;
+    justify-content: center;
+  }
+  .convay-live-sidebar {
+    position: absolute;
+    z-index: 20;
+    inset: 0;
+    width: 100% !important;
+    max-width: 100% !important;
+    border: 0 !important;
+    background: #111c2e !important;
+    box-shadow: 0 0 0 1px #26364d;
+  }
+  .convay-live-mobile-sidebar-header {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 48px;
+    padding: .4rem .75rem;
+    background: #0d1829;
+    border-bottom: 1px solid #334155;
+    font-size: .84rem;
+    font-weight: 700;
+  }
+  .convay-live-mobile-sidebar-header button {
+    color: #f1f5f9;
+    background: #1e293b;
+    border: 1px solid #475569;
+    border-radius: 9px;
+    min-width: 38px;
+    min-height: 38px;
+    display: grid;
+    place-items: center;
+  }
+  .convay-live-sidebar-tabs {
+    overflow-x: auto !important;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    padding-inline: .2rem;
+  }
+  .convay-live-sidebar-tabs button {
+    flex: 0 0 78px !important;
+    min-width: 78px !important;
+    min-height: 54px;
+    padding: .45rem .2rem !important;
+    font-size: .67rem !important;
+    white-space: nowrap;
+  }
+  .convay-live-sidebar-body {
+    padding: .65rem !important;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  .convay-live-chat {
+    left: 0 !important;
+    right: 0 !important;
+    bottom: calc(76px + env(safe-area-inset-bottom)) !important;
+    width: 100% !important;
+    height: min(55dvh, 420px) !important;
+    max-height: 55dvh;
+    border-radius: 16px 16px 0 0 !important;
+    z-index: 80 !important;
+  }
+  .convay-live-chat input { min-width: 0; font-size: 16px !important; }
+  .convay-live-reactions { bottom: calc(84px + env(safe-area-inset-bottom)) !important; max-width: 95vw; overflow-x: auto; border-radius: 14px !important; }
+}
+@media (max-width: 380px) {
+  .convay-live-topbar { padding-inline: .45rem !important; }
+  .convay-live-viewbar > button { padding-inline: .35rem !important; font-size: .65rem !important; }
+  .convay-live-gallery { grid-template-columns: minmax(0, 1fr) !important; }
+}
+@media (max-height: 540px) and (max-width: 767px) {
+  .convay-live-topbar { min-height: 50px; max-height: 33dvh; padding-block: .25rem !important; }
+  .convay-live-dock { height: calc(64px + env(safe-area-inset-bottom)) !important; min-height: calc(64px + env(safe-area-inset-bottom)); }
+  .convay-live-chat { bottom: calc(64px + env(safe-area-inset-bottom)) !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .convay-live-root *, .convay-live-root *::before, .convay-live-root *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
