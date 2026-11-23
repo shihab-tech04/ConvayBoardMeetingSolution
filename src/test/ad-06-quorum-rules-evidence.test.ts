@@ -11,38 +11,42 @@ const quorumPage = pageSource
   .split("export function QuorumRulesPage() {")[1]
   ?.split("export function VotingMethodsPage() {")[0] ?? "";
 
-describe("AD-06 quorum rule evidence state", () => {
-  it("does not present mock rules as configured policies", () => {
-    const evidence = unverifiedQuorumRulesView();
-
-    expect(evidence.rows).toEqual([]);
-    expect(quorumPage).not.toMatch(/fallbackRows|displayRows/);
-    expect(quorumPage).not.toContain("gen(16");
-    expect(quorumPage).not.toMatch(/Total Rules|Governance Bodies/);
+describe("AD-06 versioned quorum rule evidence state", () => {
+  it("does not present mock rules or false configuration KPIs as real policies", () => {
+    const legacyEvidence = unverifiedQuorumRulesView();
+    expect(legacyEvidence.rows).toEqual([]);
+    expect(quorumPage).not.toMatch(/fallbackRows|displayRows|gen\(16|Total Rules/);
+    expect(quorumPage).toContain("rows,");
+    expect(quorumPage).toContain("registry.items.map(rule");
+    expect(quorumPage).toContain('convayAuth.registry<VersionedQuorumRule>("bms.quorumrules", "list")');
   });
 
-  it("explains the missing evidence and why configuration is blocked", () => {
-    const evidence = unverifiedQuorumRulesView();
-
-    expect(evidence.description).toContain("versioned quorum policy source");
-    expect(evidence.description).toContain("No sample rules");
-    expect(evidence.unavailableReason).toContain("active votes");
-    expect(evidence.unavailableReason).toContain("disabled");
+  it("requires real governance-body setup and administrative authorization before creating policies", () => {
+    expect(quorumPage).toContain('hasAccess("admin_config", access)');
+    expect(quorumPage).toContain("activeMeetingGovernanceOptions(governance.items)");
+    expect(quorumPage).toContain("bodies.length > 0 && canManageQuorum");
+    expect(quorumPage).toContain("An active Board / Committee must exist");
+    expect(quorumPage).not.toContain("sampleRules");
   });
 
-  it("keeps the existing table, mobile, filter, drawer, and entry structure", () => {
-    expect(quorumPage).toContain('filters:      BASE_FILTERS');
-    expect(quorumPage).toContain('actions:      ROW_VIEW');
-    expect(quorumPage).toContain('drawerTitle:  "Quorum Rule Details"');
-    expect(quorumPage).toContain("drawerCols:   QUORUM_RULE_DRAWER_COLS");
-    expect(quorumPage).toContain('entryBtn:  "Create Quorum Rule"');
+  it("keeps the existing table, mobile mapping, filter, drawer, and guarded create structure", () => {
+    expect(quorumPage).toContain("filters: BASE_FILTERS");
+    expect(quorumPage).toContain("actions: ROW_VIEW");
+    expect(quorumPage).toContain('drawerTitle: "Quorum Rule Details"');
+    expect(quorumPage).toContain('dg("Policy"');
+    expect(quorumPage).toContain('dg("Thresholds"');
+    expect(quorumPage).toContain('entryBtn: bodies.length > 0 && canManageQuorum ? "Create Quorum Rule" : undefined');
     expect(quorumPage).toContain("mobileCardMapping:");
+    expect(quorumPage).toContain("awaitCreateSave: true");
   });
 
-  it("uses the authoritative loading, error, and retry state and fails closed", () => {
-    expect(quorumPage).toContain("dataLoading: registry.loading");
-    expect(quorumPage).toContain("dataError: registry.error ?? (registry.loading ? null : evidence.unavailableReason)");
-    expect(quorumPage).toContain("onDataRetry: registry.refresh");
-    expect(quorumPage).toContain("rows:      evidence.rows");
+  it("uses authoritative combined loading/error/retry and only reports confirmed SQL writes", () => {
+    expect(quorumPage).toContain("dataLoading: registry.loading || governance.loading");
+    expect(quorumPage).toContain("dataError: registry.error ?? governance.error");
+    expect(quorumPage).toContain("onDataRetry: async");
+    expect(quorumPage).toContain("registry.refresh?.()");
+    expect(quorumPage).toContain("governance.refresh?.()");
+    expect(quorumPage).toContain("createVersionedQuorumRule(values");
+    expect(quorumPage).toContain("deactivateQuorumRule(id, gateway)");
   });
 });
