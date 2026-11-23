@@ -22,10 +22,12 @@ describe("LM-02 camera pre-join cleanup and truthful readiness", () => {
     mockDevices();
     const onJoin = vi.fn();
     renderPanel(onJoin);
-    await screen.findByText("Camera unavailable");
+    expect(screen.queryByText("Camera unavailable")).toBeNull();
     expect(screen.getByText("Camera is off")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Turn on camera" }));
+    await screen.findByText("Camera unavailable");
     expect(screen.getByText("Checked on join")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Join with devices off" }));
+    fireEvent.click(screen.getByRole("button", { name: "Join Meeting" }));
     expect(onJoin).toHaveBeenCalledWith({ micOn: false, camOn: false, role: "Board Member" });
   });
 
@@ -34,6 +36,7 @@ describe("LM-02 camera pre-join cleanup and truthful readiness", () => {
     const media = new Promise<MediaStream>(resolve => { grant = resolve; });
     mockDevices(vi.fn(() => media));
     renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Turn on camera" }));
     fireEvent.click(screen.getByRole("button", { name: "Turn off camera" }));
     const stop = vi.fn();
     await act(async () => grant({ getTracks: () => [{ stop }] } as unknown as MediaStream));
@@ -45,6 +48,7 @@ describe("LM-02 camera pre-join cleanup and truthful readiness", () => {
     let grant!: (stream: MediaStream) => void;
     mockDevices(vi.fn(() => new Promise<MediaStream>(resolve => { grant = resolve; })));
     const rendered = renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Turn on camera" }));
     rendered.unmount();
     const stop = vi.fn();
     await act(async () => grant({ getTracks: () => [{ stop }] } as unknown as MediaStream));
@@ -56,6 +60,7 @@ describe("LM-02 camera pre-join cleanup and truthful readiness", () => {
     const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;
     mockDevices(vi.fn(async () => stream));
     const rendered = renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Turn on camera" }));
     const video = await screen.findByLabelText("Camera preview");
     await waitFor(() => expect(video.querySelector("video")?.srcObject).toBe(stream));
     rendered.unmount();
@@ -65,6 +70,7 @@ describe("LM-02 camera pre-join cleanup and truthful readiness", () => {
   it("does not show a false camera-ready status after a permission denial", async () => {
     mockDevices(vi.fn(async () => { throw new Error("not allowed"); }));
     renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Turn on camera" }));
     await screen.findByText("Camera unavailable");
     expect(screen.getByText("Camera is off")).toBeTruthy();
     expect(screen.getByText("Checked on join")).toBeTruthy();
