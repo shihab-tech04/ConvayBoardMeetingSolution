@@ -90,6 +90,29 @@ BEGIN
  IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id THEN
    RAISE EXCEPTION 'Agenda tenant cannot change through ordinary editing' USING ERRCODE='42501';
  END IF;
+ -- A review-only account must never archive, reopen, approve or otherwise
+ -- change a lifecycle field by bypassing the UI or by calling the generic RPC.
+ IF v_next IS DISTINCT FROM v_previous THEN
+   IF v_next='Revision Requested'
+      AND v_previous IN ('Pending Approval','Pending Review','Ready for Review','Partially Approved') THEN
+     IF NOT convay_private.has_permission('agd_review') THEN
+       RAISE EXCEPTION 'Agenda review permission required' USING ERRCODE='42501';
+     END IF;
+   ELSIF v_next='Pending Approval'
+      AND v_previous IN ('Draft','Incomplete','Reopened','Revision Requested') THEN
+     IF NOT convay_private.has_permission('agd_submit') THEN
+       RAISE EXCEPTION 'Agenda submission permission required' USING ERRCODE='42501';
+     END IF;
+   ELSIF NOT convay_private.has_permission('agd_approve') THEN
+     RAISE EXCEPTION 'Agenda approver permission required for this transition'
+       USING ERRCODE='42501';
+   END IF;
+ END IF;
+ IF (NEW.payload->'archived_at' IS DISTINCT FROM OLD.payload->'archived_at'
+     OR NEW.payload->'archived_by' IS DISTINCT FROM OLD.payload->'archived_by')
+    AND NOT convay_private.has_permission('agd_approve') THEN
+   RAISE EXCEPTION 'Agenda archiving requires approver permission' USING ERRCODE='42501';
+ END IF;
  IF NOT convay_private.has_permission('agd_submit') AND
     (NEW.payload - ARRAY['approval_status','approval_history','meeting_readiness',
        'updated_at','updated_by','archived_at','archived_by']) IS DISTINCT FROM
