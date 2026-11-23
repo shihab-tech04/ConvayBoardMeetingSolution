@@ -1566,7 +1566,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         onStartMeeting={async (readinessAttendance) => {
           const started = await handleStart();
           if (!started) return;
-          setAttendanceMap(prev => {
+          // Readiness check-in is local only for physical meetings. Online
+          // presence is committed after the verified provider/SQL roundtrip.
+          if (!isOnlineMeeting) setAttendanceMap(prev => {
             const merged = { ...prev };
             for (const [uid, st] of Object.entries(readinessAttendance)) {
               merged[uid] = st as AttendanceStatus;
@@ -2591,7 +2593,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* ── BOTTOM DOCK ──────────────────────────────────────────────────── */}
           <div style={{ height: 64, background: "#1e293b", borderTop: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0 1rem", flexShrink: 0 }}>
-            {(!LIVE_MEETINGS_RELEASED || isOnlineMeeting) && <>
+            <>
             <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
               {myMicOn ? <Mic size={18} /> : <MicOff size={18} />}
             </DockButton>
@@ -2601,12 +2603,12 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             {canOfferScreenShare && (
               <DockButton active={isSharing} label={isSharing ? "Stop Share" : shareRequested ? "Cancel Share" : "Share Screen"} onClick={() => {
                 if (isOnlineMeeting) setShareRequested(requested => !requested);
-                else { setIsSharing(v => !v); if (!LIVE_MEETINGS_RELEASED && !isSharing) setViewMode("document"); }
+                else { setIsSharing(v => !v); if (!isSharing) setViewMode("document"); }
               }}>
                 {isSharing ? <MonitorOff size={18} /> : <Monitor size={18} />}
               </DockButton>
             )}
-            </>}
+            </>
 
             <div style={{ width: 1, height: 32, background: "#334155", margin: "0 0.25rem" }} />
 
