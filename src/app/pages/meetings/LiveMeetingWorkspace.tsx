@@ -46,7 +46,7 @@ import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
 import { OnlinePresenceTransition } from "./onlinePresenceTransition";
-import { RegularAttendanceTransitionQueue } from "./regularMeetingAttendanceQueue";
+import { RegularAttendanceTransitionQueue, acceptsVerifiedAttendanceRevision } from "./regularMeetingAttendanceQueue";
 import { commitLiveAttendance, readLiveAttendance, type LiveAttendanceSnapshot } from "./regularMeetingAttendanceTransport";
 import { mayOfferRegularScreenShare } from "./regularMeetingScreenShareState";
 import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
@@ -599,7 +599,16 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
+  const activeAttendanceMeetingRef = useRef(meetingId);
+  activeAttendanceMeetingRef.current = meetingId;
+  const appliedQuorumRevision = useRef<{ meetingId: string; revision: number } | null>(null);
   const applyVerifiedAttendance = useCallback((snapshot: LiveAttendanceSnapshot) => {
+    const last = appliedQuorumRevision.current;
+    if (!acceptsVerifiedAttendanceRevision(
+      snapshot.meetingId, snapshot.quorum.revision, activeAttendanceMeetingRef.current,
+      last?.meetingId === snapshot.meetingId ? last.revision : -1,
+    )) return;
+    appliedQuorumRevision.current = { meetingId: snapshot.meetingId, revision: snapshot.quorum.revision };
     const statuses = new Set<AttendanceStatus>(["Not Joined", "Present", "Temporarily Away", "Left", "Excused", "Recused"]);
     const next: Record<string, AttendanceStatus> = {};
     for (const [participantId, value] of Object.entries(snapshot.attendanceMap)) {
