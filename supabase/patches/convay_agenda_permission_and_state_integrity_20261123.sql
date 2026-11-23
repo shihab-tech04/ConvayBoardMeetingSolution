@@ -53,6 +53,10 @@ $revised$;
 BEGIN
   SELECT pg_get_functiondef('convay_private.enforce_entity_state_transition()'::regprocedure)
     INTO v_ddl;
+  -- Dollar-quoted source blocks contain a framing newline; ignore that
+  -- framing whitespace while still requiring an exact guard-body match.
+  v_prior := btrim(v_prior, E'\\n');
+  v_revised := btrim(v_revised, E'\\n');
   IF strpos(v_ddl,v_prior)=0 THEN
     RAISE EXCEPTION 'Agenda approval permission guard unexpectedly changed; migration not applied';
   END IF;
