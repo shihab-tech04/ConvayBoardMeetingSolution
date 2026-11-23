@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { RegularAttendanceTransitionQueue } from "../app/pages/meetings/regularMeetingAttendanceQueue";
+import { RegularAttendanceTransitionQueue, acceptsVerifiedAttendanceRevision } from "../app/pages/meetings/regularMeetingAttendanceQueue";
 import { OnlinePresenceTransition } from "../app/pages/meetings/onlinePresenceTransition";
 
 describe("WS2 LM-26 real-media attendance transition ordering", () => {
@@ -59,6 +59,14 @@ describe("WS2 LM-26 real-media attendance transition ordering", () => {
     // Sentinel is queued after the last attendance update for this participant.
     await queue.enqueue("secretary", async () => undefined);
     expect(persisted).toEqual(["Present", "Left", "Present", "Left"]);
+  });
+
+  it("rejects stale, cross-meeting or invalid quorum readback after newer SQL confirmation", () => {
+    expect(acceptsVerifiedAttendanceRevision("meeting-A", 9, "meeting-A", 10)).toBe(false);
+    expect(acceptsVerifiedAttendanceRevision("meeting-B", 12, "meeting-A", 10)).toBe(false);
+    expect(acceptsVerifiedAttendanceRevision("meeting-A", -1, "meeting-A", 0)).toBe(false);
+    expect(acceptsVerifiedAttendanceRevision("meeting-A", 11, "meeting-A", 10)).toBe(true);
+    expect(acceptsVerifiedAttendanceRevision("meeting-A", 11, "meeting-A", 11)).toBe(true);
   });
 
   it("workspace queues durable transitions; no in-flight attendance suppression", () => {
