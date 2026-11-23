@@ -137,3 +137,84 @@ export async function createProvisioningCompany(name:string,requestId:string):Pr
   const actual=await readCompany(receipt.tenant_id);
   return assertProvisioningReadback(receipt,actual,trimmed,requestId);
 }
+
+/** The tenant membership role is separate from global Convay application roles. */
+export type CompanyMembershipRole = "member" | "tenant_admin";
+export type CompanyMembershipReceipt = {
+  tenant_id: string;
+  member_user_id: string;
+  member_role?: CompanyMembershipRole;
+  request_id: string;
+  action: "add_member" | "revoke_member";
+  audit_event_id: number;
+  tenant_active: false;
+  meeting_access_activated?: false;
+};
+export function assertCompanyMembershipReadback(
+  receipt: CompanyMembershipReceipt,
+  profile: CompanyProfile,
+  expected: { tenantId: string; requestId: string; action: CompanyMembershipReceipt["action"];
+    userId?: string; email?: string; role?: CompanyMembershipRole },
+): CompanyMember {
+  if (!receipt || !validUuid(receipt.member_user_id)
+      || receipt.tenant_id !== expected.tenantId
+      || profile.company.id !== expected.tenantId
+      || receipt.request_id !== expected.requestId
+      || receipt.action !== expected.action
+      || receipt.tenant_active !== false
+      || receipt.meeting_access_activated === true
+      || !Number.isSafeInteger(receipt.audit_event_id) || receipt.audit_event_id < 1
+      || (expected.userId !== undefined && receipt.member_user_id !== expected.userId)
+      || (expected.role !== undefined && receipt.member_role !== expected.role)
+      || !profile.events.some(e=>e.id===receipt.audit_event_id
+        && e.action===expected.action
+        && e.request_id===expected.requestId
+        && e.target_user_id===receipt.member_user_id)) {
+    throw new Error("SQL did not confirm the requested company membership transition");
+  }
+  const member=profile.members.find(m=>m.user_id===receipt.member_user_id);
+  if (!member
+      || (expected.email !== undefined && member.email.trim().toLowerCase() !== expected.email.trim().toLowerCase())
+      || (expected.action==="add_member" &&
+        (member.membership_state!=="active" || member.revoked_at!==null
+         || member.membership_role!==expected.role))
+      || (expected.action==="revoke_member" &&
+        (member.membership_state!=="revoked" || member.revoked_at===null))) {
+    throw new Error("Company membership SQL state did not match the recorded audit event");
+  }
+  return member;
+}
+export async function enrollVerifiedCompanyMember(
+  tenantId: string,email: string,role: CompanyMembershipRole,requestId: string,
+): Promise<{member:CompanyMember;profile:CompanyProfile}> {
+  if (!validUuid(tenantId) || !validUuid(requestId)
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) || email.length>254
+      || !["member","tenant_admin"].includes(role)) {
+    throw new Error("Valid company, verified-user email, role and request ID are required");
+  }
+  const receipt=await adminRpc<CompanyMembershipReceipt>("convay_company_member_enroll",{
+    p_tenant_id:tenantId,p_email:email.trim().toLowerCase(),
+    p_member_role:role,p_request_id:requestId,
+  });
+  const profile=await readCompany(tenantId);
+  const member=assertCompanyMembershipReadback(receipt,profile,{
+    tenantId,requestId,action:"add_member",email,role,
+  });
+  return {member,profile};
+}
+export async function revokeCompanyMember(
+  tenantId:string,userId:string,requestId:string,
+): Promise<{member:CompanyMember;profile:CompanyProfile}> {
+  if (!validUuid(tenantId)||!validUuid(userId)||!validUuid(requestId)) {
+    throw new Error("Valid company, member and idempotency request required");
+  }
+  const receipt=await adminRpc<CompanyMembershipReceipt>("convay_tenant_admin",{
+    p_action:"revoke_member",p_request_id:requestId,p_tenant_id:tenantId,
+    p_display_name:null,p_member_user_id:userId,p_member_role:null,
+  });
+  const profile=await readCompany(tenantId);
+  const member=assertCompanyMembershipReadback(receipt,profile,{
+    tenantId,requestId,action:"revoke_member",userId,
+  });
+  return {member,profile};
+}
