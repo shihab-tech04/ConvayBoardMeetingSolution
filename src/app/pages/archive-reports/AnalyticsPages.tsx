@@ -4,6 +4,7 @@ import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
 import { buildGovernanceReportFilters } from "./governanceReportView";
+import { resolutionSourceMeetingId } from "./resolutionRegisterView";
 import { buildDecisionRegisterFilters } from "./decisionRegisterView";
 import { hasReportableFinancialImpact } from "./financialImpactReportView";
 import { countOverdueActions, isActionClosed, todayInLocalTime } from "./actionRegisterView";
@@ -165,7 +166,10 @@ export function GovernanceReportPage() {
 
   const rows: TableRow[] = governanceReg.items.map(g => {
     const bodyMeetings    = meetingReg.items.filter(m => m.committee === g.body_name);
-    const bodyResolutions = resolutionReg.items.filter(r => bodyMeetings.some(m => m.meeting_id === r.source_meeting));
+    const bodyResolutions = resolutionReg.items.filter(r => {
+      const sourceMeeting = resolutionSourceMeetingId(r);
+      return sourceMeeting !== "" && bodyMeetings.some(m => m.meeting_id === sourceMeeting);
+    });
     return {
       id:                 g.id,
       body_id:            g.body_id,
