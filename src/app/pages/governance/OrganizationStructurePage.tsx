@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { persistOrgUnitChange, verifyOrgUnitSqlReadback, type OrgSaveResult } from "./orgUnitPersistence";
 import { validateOrgUnitFormStep, firstInvalidOrgUnitStep, type UnitFormValues } from "./orgUnitFormValidation";
@@ -26,6 +26,10 @@ import { useOrgPermissions } from "../../utils/orgPermissions";
 import { AppTextField } from "../../components/forms/AppTextField";
 import { AppSelectField } from "../../components/forms/AppSelectField";
 import { AppTextArea } from "../../components/forms/AppTextArea";
+import { AppModal } from "../../components/modals/AppModal";
+import { PrimaryButton } from "../../components/buttons/PrimaryButton";
+import { SecondaryButton } from "../../components/buttons/SecondaryButton";
+import { StatCard } from "../../components/cards/StatCard";
 import { AssignUserModal }    from "./modals/AssignUserModal";
 import { ManageHeadModal }    from "./modals/ManageHeadModal";
 import { TransferUserModal }  from "./modals/TransferUserModal";
@@ -622,7 +626,6 @@ function UnitFormModal({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const saveInFlight = useRef(false);
-  const dialogRef = useRef<HTMLDivElement>(null);
   const originalValues = useRef(vals);
 
   const set = useCallback(<K extends keyof UnitFormValues>(k: K, v: UnitFormValues[K]) => {
@@ -692,63 +695,51 @@ function UnitFormModal({
     if (isDirty && !window.confirm("Discard your unsaved unit changes?")) return;
     onClose();
   };
-  const closeHandler = useRef(requestClose);
-  closeHandler.current = requestClose;
-  useEffect(() => {
-    const previousFocus = document.activeElement as HTMLElement | null;
-    dialogRef.current?.querySelector<HTMLElement>('[data-org-unit-close]')?.focus();
-    const keyHandler = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented &&
-          !(event.target as HTMLElement | null)?.closest('[role="listbox"],[role="menu"]')) {
-        event.preventDefault();
-        closeHandler.current();
+  return (
+    <AppModal
+      open
+      title={isEdit ? "Edit Unit" : "Create Unit"}
+      subtitle="Set up the organizational hierarchy and review the unit before saving."
+      onClose={requestClose}
+      fullPage
+      icon={<Building2 size={18} />}
+      steps={FORM_STEPS}
+      currentStep={step}
+      onStepClick={target => { if (target < step && !saving) { setStep(target); setErrors({}); } }}
+      footer={
+        <>
+          <SecondaryButton type="button" disabled={saving}
+            style={{ marginRight: "auto" }}
+            onClick={step === 0 ? requestClose : prevStep}>
+            {step === 0 ? "Cancel" : "Back"}
+          </SecondaryButton>
+          {step < FORM_STEPS.length - 1 ? (
+            <PrimaryButton type="button" disabled={saving} onClick={nextStep}>Continue</PrimaryButton>
+          ) : (
+            <>
+              <SecondaryButton type="button" disabled={saving} onClick={() => { void handleSubmit("Draft"); }}>
+                Save as Draft
+              </SecondaryButton>
+              <PrimaryButton type="button" disabled={saving} onClick={() => { void handleSubmit("Active"); }}>
+                {saving ? "Saving…" : isEdit ? "Save Changes" : "Save & Activate"}
+              </PrimaryButton>
+            </>
+          )}
+        </>
       }
-    };
-    document.addEventListener("keydown", keyHandler);
-    return () => { document.removeEventListener("keydown", keyHandler); previousFocus?.focus(); };
-  }, []);
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={e => { if (e.target === e.currentTarget) requestClose(); }}
     >
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="org-unit-dialog-title" className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-xl flex flex-col max-h-[92dvh] min-h-0 overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border flex-shrink-0">
-          <div className="flex items-center gap-3">
-            <Building2 size={20} className="text-primary" />
-            <p id="org-unit-dialog-title" className="font-semibold text-foreground">{isEdit ? "Edit Unit" : "Create Unit"}</p>
-          </div>
-          <button data-org-unit-close aria-label="Close unit form" onClick={requestClose} disabled={saving}
-            className="p-1 rounded hover:bg-muted text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* Step bar */}
-        <div aria-label="Unit creation progress" className="grid grid-cols-5 gap-1 px-4 sm:px-6 py-3 border-b border-border flex-shrink-0">
-          {FORM_STEPS.map((label, i) => (
-            <div key={label} aria-current={i === step ? "step" : undefined}
-              className="min-w-0 flex flex-col items-center gap-1">
-              <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold
-                ${i <= step ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-                {i < step ? <CheckCircle size={12} /> : i + 1}
-              </span>
-              <span className={`hidden sm:block w-full text-center text-[11px] leading-tight truncate
-                ${i === step ? "font-semibold text-foreground" : "text-muted-foreground"}`}>{label}</span>
-            </div>
-          ))}
-        </div>
-        <p className="sm:hidden text-xs px-5 py-2 border-b border-border text-muted-foreground">
-          Step {step + 1} of {FORM_STEPS.length}: <strong>{FORM_STEPS[step]}</strong>
-        </p>
-
-        {/* Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+      <div className="wiz-form-body">
           {/* Step 0: Unit Type */}
           {step === 0 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Unit Type">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><Building2 size={16} /></span>
+                <div>
+                  <div className="form-section__title">Unit Type</div>
+                  <p className="text-xs text-muted-foreground">Choose where the unit belongs in the organization hierarchy.</p>
+                </div>
+              </div>
+              <div className="form-section__body--stack">
               <p className="text-sm text-muted-foreground">Select the type of organisational unit you are creating.</p>
               <div className="grid grid-cols-1 gap-2">
                 {PHASE1_TYPES.map(type => (
@@ -778,42 +769,58 @@ function UnitFormModal({
                 ))}
               </div>
               {errors.unit_type && <p className="text-xs text-destructive">{errors.unit_type}</p>}
-            </div>
+              </div>
+            </section>
           )}
 
           {/* Step 1: Basic Info */}
           {step === 1 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Basic Information">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><Building2 size={16} /></span>
+                <div>
+                  <div className="form-section__title">Basic Information</div>
+                  <p className="text-xs text-muted-foreground">Identity and contact details for this organizational unit.</p>
+                </div>
+              </div>
+              <div className="form-section__body--grid">
               <AppTextField
-                id="unit_name" label="Unit Name" required compact
+                id="unit_name" label="Unit Name" required
                 value={vals.unit_name} onChange={v => set("unit_name", v)}
                 placeholder="e.g. Finance Division"
                 error={errors.unit_name}
               />
               <AppTextField
-                id="code" label="Short Code" compact
+                id="code" label="Short Code"
                 value={vals.code} onChange={v => set("code", v.toUpperCase())}
                 placeholder="e.g. FIN"
                 error={errors.code}
               />
-              <AppTextArea
+              <div className="field-group--full"><AppTextArea
                 id="desc" label="Description"
                 value={vals.description} onChange={v => set("description", v)}
                 rows={3} placeholder="Optional description of this unit's purpose and responsibilities"
-              />
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <AppTextField id="phone" label="Phone" compact value={vals.phone} onChange={v => set("phone", v)}
+              /></div>
+              <AppTextField id="phone" label="Phone" value={vals.phone} onChange={v => set("phone", v)}
                   error={errors.phone} placeholder="+880 2..." />
-                <AppTextField id="email" label="Email" compact value={vals.email} onChange={v => set("email", v)}
+                <AppTextField id="email" label="Email" value={vals.email} onChange={v => set("email", v)}
                   error={errors.email} placeholder="unit@example.com" />
+              <div className="field-group--full"><AppTextField id="address" label="Address" value={vals.address} onChange={v => set("address", v)} placeholder="Street address" /></div>
               </div>
-              <AppTextField id="address" label="Address" compact value={vals.address} onChange={v => set("address", v)} placeholder="Street address" />
-            </div>
+            </section>
           )}
 
           {/* Step 2: Parent & Path */}
           {step === 2 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Parent & Path">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><GitBranch size={16} /></span>
+                <div>
+                  <div className="form-section__title">Parent & Path</div>
+                  <p className="text-xs text-muted-foreground">Confirm the parent and resulting hierarchy.</p>
+                </div>
+              </div>
+              <div className="form-section__body--stack">
               {(VALID_PARENT_TYPES[vals.unit_type] ?? []).length === 0 ? (
                 <div className="rounded-lg bg-muted/40 border border-border p-4 text-sm text-muted-foreground">
                   <strong>{vals.unit_type}</strong> is a root-level unit and does not require a parent.
@@ -860,12 +867,21 @@ function UnitFormModal({
                   </p>
                 )}
               </div>
-            </div>
+              </div>
+            </section>
           )}
 
           {/* Step 3: Leadership */}
           {step === 3 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Leadership">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><Users size={16} /></span>
+                <div>
+                  <div className="form-section__title">Leadership</div>
+                  <p className="text-xs text-muted-foreground">Assign an active unit head and deputy, or leave them unassigned.</p>
+                </div>
+              </div>
+              <div className="form-section__body--stack">
               <AppSelectField
                 id="head" label="Unit Head"
                 error={errors.head_user_id}
@@ -887,12 +903,21 @@ function UnitFormModal({
                 ]}
               />
               <p className="text-xs text-muted-foreground">Leadership assignments can be updated at any time from the unit detail page.</p>
-            </div>
+              </div>
+            </section>
           )}
 
           {/* Step 4: Review */}
           {step === 4 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Review Unit">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><CheckCircle size={16} /></span>
+                <div>
+                  <div className="form-section__title">Review Unit</div>
+                  <p className="text-xs text-muted-foreground">Check every field before saving or activating the unit.</p>
+                </div>
+              </div>
+              <div className="form-section__body--stack">
               <p className="text-sm text-muted-foreground">Review the details before saving.</p>
               <div className="rounded-lg border border-border divide-y divide-border">
                 {[
@@ -915,41 +940,13 @@ function UnitFormModal({
                   </div>
                 ))}
               </div>
-            </div>
+              </div>
+            </section>
           )}
-        </div>
 
-        {/* Save failures stay visible in the modal until server confirmation succeeds. */}
-        {errors.save && <p role="alert" className="px-6 pb-2 text-sm text-red-600">{errors.save}</p>}
-        {/* Footer */}
-        <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-3 sm:py-4 border-t border-border flex-shrink-0">
-          <button
-            onClick={step === 0 ? requestClose : prevStep}
-            disabled={saving}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg transition-colors"
-          >
-            {step === 0 ? <><X size={14} /> Cancel</> : <><ChevronLeft size={14} /> Back</>}
-          </button>
-          <div className="flex items-center gap-2">
-            {step < FORM_STEPS.length - 1 ? (
-              <button onClick={nextStep} disabled={saving} className="px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors">
-                Continue
-              </button>
-            ) : (
-              <>
-                <button onClick={() => { void handleSubmit("Draft"); }} disabled={saving} className="px-4 py-2 text-sm font-medium text-foreground border border-border hover:bg-muted rounded-lg transition-colors">
-                  Save as Draft
-                </button>
-                <button onClick={() => { void handleSubmit("Active"); }} disabled={saving} className="px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors">
-                  {saving ? "Saving..." : isEdit ? "Save Changes" : "Save & Activate"}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+        {errors.save && <p role="alert" className="text-sm text-red-600">{errors.save}</p>}
       </div>
-    </div>,
-    document.body,
+    </AppModal>
   );
 }
 
@@ -1240,12 +1237,9 @@ export function OrganizationStructurePage() {
         </div>
         <div className="flex items-center gap-2 self-start sm:self-auto">
           {perm.create_units && (
-            <button
-              onClick={() => openCreate()}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors"
-            >
+            <PrimaryButton type="button" onClick={() => openCreate()}>
               <Plus size={16} /> Add Unit
-            </button>
+            </PrimaryButton>
           )}
           {!perm.create_units && (
             <div className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground bg-muted rounded-lg">
@@ -1255,20 +1249,13 @@ export function OrganizationStructurePage() {
         </div>
       </div>
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {[
-          { label: "Total Units",  value: totalUnits,   color: "text-foreground" },
-          { label: "Active",       value: activeUnits,  color: "text-emerald-600 dark:text-emerald-400" },
-          { label: "Branches",     value: branchCount,  color: "text-cyan-600 dark:text-cyan-400" },
-          { label: "Divisions",    value: divisionCount,color: "text-indigo-600 dark:text-indigo-400" },
-          { label: "Departments",  value: deptCount,    color: "text-teal-600 dark:text-teal-400" },
-        ].map(kpi => (
-          <div key={kpi.label} className="bg-background border border-border rounded-xl p-4">
-            <p className="text-xs text-muted-foreground">{kpi.label}</p>
-            <p className={`text-2xl font-bold mt-1 ${kpi.color}`}>{kpi.value}</p>
-          </div>
-        ))}
+      {/* KPI cards — same approved StatCard component as other Convay pages. */}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+        <StatCard icon={Building2} value={String(totalUnits)} label="Total Units" tone="primary" loading={orgReg.loading} />
+        <StatCard icon={CheckCircle} value={String(activeUnits)} label="Active" tone="success" loading={orgReg.loading} />
+        <StatCard icon={GitBranch} value={String(branchCount)} label="Branches" tone="primary" loading={orgReg.loading} />
+        <StatCard icon={Network} value={String(divisionCount)} label="Divisions" tone="primary" loading={orgReg.loading} />
+        <StatCard icon={FolderTree} value={String(deptCount)} label="Departments" tone="primary" loading={orgReg.loading} />
       </div>
 
       {/* Toolbar */}
