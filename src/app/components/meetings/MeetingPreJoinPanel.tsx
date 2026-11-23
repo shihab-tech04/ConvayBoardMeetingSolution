@@ -30,6 +30,8 @@ export interface MeetingPreJoinPanelProps {
   joinBlockedReason?: string;
   /** Server-verified start action. Super Admin uses the explicit override RPC. */
   onForceStart?: () => void;
+  /** Available only when SQL permits audited Super Admin recovery. */
+  onReopen?: () => void;
   startLabel?: string;
   forceStartBusy?: boolean;
   allowedRoles?: PreJoinRole[];
@@ -74,7 +76,7 @@ function formatTime12h(raw?: string): string {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function MeetingPreJoinPanel({
-  meeting, initialRole, publisherAllowed, joinBlockedReason, onForceStart, startLabel = "Force Start Now", forceStartBusy = false, onJoin, onBack,
+  meeting, initialRole, publisherAllowed, joinBlockedReason, onForceStart, onReopen, startLabel = "Force Start Now", forceStartBusy = false, onJoin, onBack,
 }: MeetingPreJoinPanelProps) {
   const canPublishMedia = publisherAllowed ?? (initialRole !== "Observer" && initialRole !== "Guest");
   // Cameras and microphones are optional. Do not request device permissions
@@ -347,6 +349,9 @@ export function MeetingPreJoinPanel({
             <p className="meeting-prejoin__device-note">Camera and microphone are optional. You can join with both turned off.</p>
             {/* Actions — pushed to bottom */}
             <div className="meeting-prejoin__actions">
+              {meetingClosed && onReopen && <PrimaryButton fullWidth size="lg" disabled={forceStartBusy} onClick={onReopen}>
+                {forceStartBusy ? "Reopening meeting…" : "Reopen Meeting"}
+              </PrimaryButton>}
               {joinBlockedReason && !meetingClosed && onForceStart && <PrimaryButton fullWidth size="lg" disabled={forceStartBusy} onClick={onForceStart}>
                 {forceStartBusy ? "Starting LiveKit meeting…" : startLabel}
               </PrimaryButton>}
