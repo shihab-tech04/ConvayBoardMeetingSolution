@@ -147,8 +147,8 @@ export type CompanyMembershipReceipt = {
   request_id: string;
   action: "add_member" | "revoke_member";
   audit_event_id: number;
-  tenant_active: false;
-  meeting_access_activated?: false;
+  tenant_active: boolean;
+  meeting_access_activated?: boolean;
 };
 export function assertCompanyMembershipReadback(
   receipt: CompanyMembershipReceipt,
