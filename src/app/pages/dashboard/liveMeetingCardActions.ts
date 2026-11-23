@@ -16,12 +16,19 @@ export function resolveMeetingStartCardState(
   meeting: Record<string, unknown>,
   actions: readonly ResolvedAction[],
   now: Date = new Date(),
+  isSuperAdmin = false,
 ): MeetingStartCardState {
   const status = String(meeting.approval_status ?? meeting.status ?? "").trim().toLowerCase();
   const resumed = actions.find(a => a.id === "continue_meeting" && a.visible);
   const start = actions.find(a => (a.id === "start" || a.id === "start_meeting") && a.visible);
   const selected = resumed ?? start;
   const entryAction = resumed ? "continue_meeting" as const : start ? "start_meeting" as const : null;
+
+  // Dashboard convenience only: the SQL RPC independently authenticates a real
+  // active super_admin and performs atomic, audited meeting/session writes.
+  if (isSuperAdmin && ["draft","pending approval","approved","scheduled","rescheduled","published","ready to start"].includes(status)) {
+    return { label: "Force Start Now", enabled: true, entryAction: "start_meeting", disabledReason: "" };
+  }
 
   if (selected?.enabled && entryAction) {
     return {
