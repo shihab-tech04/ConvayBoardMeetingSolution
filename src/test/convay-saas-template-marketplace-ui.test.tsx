@@ -1,5 +1,5 @@
 import { beforeEach,describe,expect,it,vi } from "vitest";
-import { fireEvent,render,screen,waitFor } from "@testing-library/react";
+import { fireEvent,render,screen,waitFor,within } from "@testing-library/react";
 
 const ids={
  company:"11111111-1111-4111-8111-111111111111",
@@ -125,7 +125,7 @@ describe("SQL-backed dynamic meeting templates UI",()=>{
     await screen.findByRole("button",{name:"Publish revision"});
     fireEvent.click(screen.getByRole("button",{name:"Publish revision"}));
     expect(screen.getByRole("dialog",{name:"Publish this meeting template version?"})).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button",{name:"Publish revision"}));
+    fireEvent.click(within(screen.getByRole("dialog",{name:"Publish this meeting template version?"})).getByRole("button",{name:"Publish revision"}));
     await waitFor(()=>expect(state.save).toHaveBeenCalledWith("publish",
       expect.objectContaining({template_id:ids.template,expected_revision:1,tenant_id:null})));
   });
