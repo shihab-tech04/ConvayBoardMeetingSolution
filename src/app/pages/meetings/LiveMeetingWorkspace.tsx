@@ -46,8 +46,9 @@ import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
 import { OnlinePresenceTransition } from "./onlinePresenceTransition";
+import { RegularAttendanceTransitionQueue, acceptsVerifiedAttendanceRevision } from "./regularMeetingAttendanceQueue";
 import { commitLiveAttendance, readLiveAttendance, type LiveAttendanceSnapshot } from "./regularMeetingAttendanceTransport";
-import { mayOfferRegularScreenShare } from "./regularMeetingScreenShareState";
+import { canOfferRegularMeetingPublishing, savedRegularMeetingRole, type RegularMeetingRole } from "./regularMeetingRoleProjection";
 import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ type AgendaStatus      = "Not Started" | "In Discussion" | "Completed" | "Deferr
 type ViewMode          = "speaker" | "grid" | "document";
 type PanelTab          = "agenda" | "documents" | "participants" | "motions" | "decisions" | "minutes";
 type ConnectionQuality = "excellent" | "good" | "poor" | "offline";
-type MyRole            = "Chairperson" | "Company Secretary" | "Board Member" | "Independent Director" | "Presenter" | "Observer" | "Guest" | "Administrator";
+type MyRole            = RegularMeetingRole;
 
 interface VirtualParticipant {
   id: string;
@@ -535,25 +536,24 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const meetingLinks = allParticipantLinks.filter(l => l.meeting_id === meetingId);
 
   // ── Resolve the canonical current-user participant relationship ───────────
-  const myLink = meetingLinks.find(l => l.user_id === currentUser.id);
-  // Derive the user's meeting role from their canonical participant link.
-  // Falls back to leadership fields when no link exists (pre-creation state).
+  const myLinks = meetingLinks.filter(l => l.user_id === currentUser.id);
+  const myLink = myLinks[0];
+  const leaderById = [meeting?.created_by, meeting?.chairperson,
+    meeting?.secretary, meeting?.organizer].some(id => !!id && id === currentUser.id);
+  // Unknown and conflicting saved roles must never be promoted to Board Member.
+  // Online leaders are derived from authenticated IDs, not display names.
   const myRole: MyRole = (() => {
     if (myLink) {
-      const t = myLink.participant_type ?? "";
-      if (t === "Chairperson" || t === "Chair") return "Chairperson";
-      if (t === "Company Secretary" || t === "Secretary") return "Company Secretary";
-      if (t === "Independent Director") return "Independent Director";
-      if (t === "Presenter") return "Presenter";
-      if (t === "Observer") return "Observer";
-      if (t === "Guest") return "Guest";
-      if (t === "Administrator") return "Administrator";
-      return "Board Member";
+      if (myLinks.length > 1 && !myLinks.every(link =>
+        canOfferRegularMeetingPublishing([link], true, false, false))) return "Observer";
+      return savedRegularMeetingRole(myLink.participant_type);
     }
-    if (meeting?.chairperson === currentUser.id || meeting?.chairperson === currentUser.name) return "Chairperson";
-    if (meeting?.secretary   === currentUser.id || meeting?.secretary   === currentUser.name) return "Company Secretary";
-    if (meeting?.organizer   === currentUser.id || meeting?.organizer   === currentUser.name) return "Administrator";
-    // Missing membership or leadership does not confer a voting role.
+    if (meeting?.chairperson === currentUser.id ||
+      (!isOnlineMeeting && meeting?.chairperson === currentUser.name)) return "Chairperson";
+    if (meeting?.secretary === currentUser.id ||
+      (!isOnlineMeeting && meeting?.secretary === currentUser.name)) return "Company Secretary";
+    if (meeting?.organizer === currentUser.id || meeting?.created_by === currentUser.id ||
+      (!isOnlineMeeting && meeting?.organizer === currentUser.name)) return "Administrator";
     return "Observer";
   })();
 
@@ -575,8 +575,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const canDraftMinutes = hasLeadership && hasGrant("min_create");
   // The trusted token issuer independently enforces real media permissions.
   const canPublishMedia = !isOnlineMeeting
-    || access.is_super_admin
-    || mayOfferRegularScreenShare(myRole, hasGrant("mtg_join"));
+    || (access.loaded && canOfferRegularMeetingPublishing(
+      myLinks, hasGrant("mtg_join"), access.is_super_admin, leaderById,
+    ));
   const canOfferScreenShare = canPublishMedia;
   // Full system administration does not grant ballot eligibility; real
   // membership, attendance and recusal checks still apply.
@@ -592,11 +593,22 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // Online attendance is never restored from browser-local session cache.
   const [attendanceMap,  setAttendanceMap]    = useState<Record<string, AttendanceStatus>>(isOnlineMeeting ? {} : initSession.attendance);
   const [serverQuorum, setServerQuorum] = useState<LiveAttendanceSnapshot["quorum"] | null>(null);
-  const pendingAttendance = useRef(new Set<string>());
+  // Confirmed LiveKit transitions can arrive before the preceding SQL ACK.
+  // Never discard a later Left/rejoin while Present is still pending.
+  const attendanceQueue = useMemo(() => new RegularAttendanceTransitionQueue(), [meetingId, currentUser.id]);
   const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
+  const activeAttendanceMeetingRef = useRef(meetingId);
+  activeAttendanceMeetingRef.current = meetingId;
+  const appliedQuorumRevision = useRef<{ meetingId: string; revision: number } | null>(null);
   const applyVerifiedAttendance = useCallback((snapshot: LiveAttendanceSnapshot) => {
+    const last = appliedQuorumRevision.current;
+    if (!acceptsVerifiedAttendanceRevision(
+      snapshot.meetingId, snapshot.quorum.revision, activeAttendanceMeetingRef.current,
+      last?.meetingId === snapshot.meetingId ? last.revision : -1,
+    )) return;
+    appliedQuorumRevision.current = { meetingId: snapshot.meetingId, revision: snapshot.quorum.revision };
     const statuses = new Set<AttendanceStatus>(["Not Joined", "Present", "Temporarily Away", "Left", "Excused", "Recused"]);
     const next: Record<string, AttendanceStatus> = {};
     for (const [participantId, value] of Object.entries(snapshot.attendanceMap)) {
@@ -980,9 +992,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (isOnlineMeeting) {
       // The online path must never optimistically change quorum or attendee
       // state; it uses the verified Edge + SQL + durable readback contract.
-      if (!meetingId || pendingAttendance.current.has(id)) return;
-      pendingAttendance.current.add(id);
-      void (async () => {
+      if (!meetingId) return;
+      void attendanceQueue.enqueue(id, async () => {
         try {
           const mode = id === currentUser.id ? "Online"
             : meeting?.mode === "Hybrid" ? "In-Person" : "Online";
@@ -1007,10 +1018,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           } catch {
             setServerQuorum(null);
           }
-        } finally {
-          pendingAttendance.current.delete(id);
         }
-      })();
+      });
       return;
     }
     // Preserve existing in-person/offline attendance behaviour unchanged.
@@ -1067,7 +1076,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent, currentUser.id, applyVerifiedAttendance, refreshAttendanceRec, refreshQuorumEvents]);
+  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent, currentUser.id, attendanceQueue, applyVerifiedAttendance, refreshAttendanceRec, refreshQuorumEvents]);
 
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
