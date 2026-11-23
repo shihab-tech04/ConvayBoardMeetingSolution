@@ -2,6 +2,7 @@ import { useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getVisibleNav } from "../../data/navigation";
+import { resolveActiveMainItem } from "../../layouts/accountAccessState";
 import { useSecNavWidth } from "../../hooks/useUI";
 import { useRouteNav } from "../../hooks/useRouteNav";
 
@@ -167,11 +168,17 @@ export function SecondarySidebar({
   const { secNavWidth, secNavCompact } = useSecNavWidth();
 
   const visibleNav = getVisibleNav();
-  const activeMainItem = visibleNav.find(n => n.id === activeMain) ?? visibleNav[0];
+  const activeMainItem = resolveActiveMainItem(visibleNav, activeMain);
 
   const translate = (_key: string, fallback: string): string => fallback;
 
   const getNavLabel = (_parentId: string, _childId: string, _labelKey: string | undefined, fallback: string): string => fallback;
+
+  // A newly invited or revoked user can have zero visible navigation items.
+  // Do not render the nav shell or read an icon until access has been granted.
+  if (!activeMainItem) {
+    return <div className="secondary-sidebar__container" role="status" aria-label="No accessible navigation" />;
+  }
 
   const sectionLabel = activeMainItem?.labelKey
     ? translate(activeMainItem.labelKey, activeMainItem.label)
