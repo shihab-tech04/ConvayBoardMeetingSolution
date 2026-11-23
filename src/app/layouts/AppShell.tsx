@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { useDispatch } from "react-redux";
 import { preloadAllRoutes } from "../routes";
 import type { AppDispatch } from "../store/store";
@@ -6,6 +7,8 @@ import { logout } from "../store/authSlice";
 import { convayAuth } from "../services/supabase/convayAuth";
 import { clearAccessSnapshot, reloadAccessSnapshot, useAccessSnapshot } from "../services/supabase/convayAccess";
 import { getVisibleNav } from "../data/navigation";
+import { mayVisitPath } from "../services/supabase/convayAccess";
+import { redirectDeniedDefaultDashboard } from "./permissionAwareLanding";
 import { workspaceAccessState } from "./accountAccessState";
 import { Button } from "../components/buttons/Button";
 import { clearEntityRegistryCache } from "../hooks/useEntityRegistry";
@@ -23,10 +26,16 @@ export function AppShell() {
   const [retryingAccess, setRetryingAccess] = useState(false);
   const [retryError, setRetryError] = useState("");
   const dispatch = useDispatch<AppDispatch>();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const { fontId } = useSettings();
   const access = useAccessSnapshot();
-  const accessState = workspaceAccessState(access, getVisibleNav().length);
+  const visibleNavigation = getVisibleNav();
+  const accessState = workspaceAccessState(access, visibleNavigation.length);
+  const firstAccessibleRedirect = redirectDeniedDefaultDashboard(
+    location.pathname, mayVisitPath("/home/overview", access), visibleNavigation,
+  );
   const fontFamily = FONTS[fontId].family;
   const { mobileDrawerOpen } = useUIState();
   const { setMobileDrawerOpen } = useUIDispatch();
@@ -41,6 +50,15 @@ export function AppShell() {
 
   // Warm all route chunks in the background so first-click navigation is instant
   useEffect(() => { preloadAllRoutes(); }, []);
+
+  // The post-login default route assumes the dashboard is permitted. Users
+  // with Meeting Participant or other limited roles must land on a route they
+  // are actually authorized to open. Do not alter explicitly requested links.
+  useEffect(() => {
+    if (accessState === "ready" && firstAccessibleRedirect) {
+      navigate(firstAccessibleRedirect, { replace: true });
+    }
+  }, [accessState, firstAccessibleRedirect, navigate]);
 
   const handleConfirmSignOut = () => {
     setSignOutOpen(false);
