@@ -470,7 +470,7 @@ export function MeetingReviewPanel({
           <Row label="Mode"             value={mode} />
           {(mode === "Physical" || mode === "Hybrid") && <Row label="Venue"          value={v(values, "venue")}            warn={!v(values, "venue")} />}
           {(mode === "Virtual"  || mode === "Hybrid") && <Row label="Platform"       value={v(values, "virtual_platform")} />}
-          {(mode === "Virtual"  || mode === "Hybrid") && <Row label="Meeting Link"   value={v(values, "virtual_link")}     warn={!v(values, "virtual_link")} />}
+          {(mode === "Virtual" || mode === "Hybrid") && <Row label="LiveKit Join Link" value={v(values, "virtual_link") || (v(values, "virtual_platform") === "LiveKit" ? "Assigned when saved" : "")} warn={!v(values, "virtual_link") && v(values, "virtual_platform") !== "LiveKit"} />}
           {v(values, "invitation_date")  && <Row label="Invitation Date" value={v(values, "invitation_date")} />}
           {v(values, "board_pack_date")  && <Row label="Board Pack Date" value={v(values, "board_pack_date")} />}
         </SummaryCard>
