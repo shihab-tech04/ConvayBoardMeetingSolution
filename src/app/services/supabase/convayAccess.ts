@@ -126,6 +126,10 @@ export const hasAccess = (code: string, state: AccessSnapshot = current) =>
 const direct: Record<string, string> = {
   "home/overview": "home_dashboard",
   "subscribers/overview": "admin_users",
+  // Navigation catalogue integrity: a real permission label is required.
+  // Company route authorization instead uses freshly verified tenant_admin
+  // membership via convay_company_directory, never global admin_users.
+  "company-management/overview": "admin_users",
   "home/my-tasks": "home_my_tasks",
   "home/my-calendar": "home_my_calendar",
   "meetings/all-meetings": "mtg_view",
