@@ -84,6 +84,16 @@ describe("GV-10 / MT-04 governance-body concurrency and Create Meeting recovery"
     expect(form).toContain("disabled={f.disabled}");
   });
 
+  it("renders the approved Governance Bodies table with correct count, search and empty-state plurals", () => {
+    const page = readFileSync("src/app/pages/psr-verification/InvalidListPage.tsx", "utf8");
+    const table = readFileSync("src/app/components/pages/GeneratedTablePage.tsx", "utf8");
+    expect(page).toContain('entityPlural: "governance bodies"');
+    expect(table).toContain("const entityPlural = cfg.entityPlural ??");
+    expect(table).toContain("countLabel={entityPlural}");
+    expect(table).toContain("emptyLabel={`No ${entityPlural} found.`}");
+    expect(table).toContain("Search ${entityPlural}");
+  });
+
   it("keeps Create Meeting fail-closed until an active persisted body is refreshed", () => {
     expect(meetingGovernanceSetupState(false, null, [])).toBe("missing");
     expect(activeMeetingGovernanceOptions([])).toEqual([]);
