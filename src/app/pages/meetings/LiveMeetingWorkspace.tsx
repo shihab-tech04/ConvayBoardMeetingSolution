@@ -865,11 +865,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (!panelOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches) {
+        event.preventDefault();
+        event.stopImmediatePropagation(); // Do not also close the full-screen meeting shell.
         setPanelOpen(false);
       }
     };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
+    window.addEventListener("keydown", closeOnEscape, { capture: true });
+    return () => window.removeEventListener("keydown", closeOnEscape, { capture: true });
   }, [panelOpen]);
   const [panelTab, setPanelTab]       = useState<PanelTab>("agenda");
   const [chatOpen, setChatOpen]       = useState(false);
