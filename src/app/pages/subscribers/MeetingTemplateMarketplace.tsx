@@ -168,7 +168,7 @@ export function MeetingTemplateMarketplace() {
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14,marginTop:16}}>
       <section style={panel}>
         <AppSelectField id="saas-template-scope" label="Template owner" value={scope}
-          disabled={busy||loading} onChange={value=>setScope(value)}
+          disabled={busy||loading} onChange={value=>{setScope(value);setRequestId(crypto.randomUUID());}}
           options={[{value:"global",label:"Convay starter marketplace"},
             ...(companies?.companies??[]).filter(c=>c.lifecycle_state!=="offboarded")
               .map(c=>({value:c.id,label:c.display_name+" · "+c.lifecycle_state}))]}/>
@@ -189,7 +189,7 @@ export function MeetingTemplateMarketplace() {
         }}>New draft</Button>
         {tenantId&&<div style={{marginTop:14,borderTop:"1px solid var(--border-color,#dce1e8)",paddingTop:14}}>
           <AppSelectField id="saas-marketplace-source" label="Copy published Convay starter"
-            value={sourceId} onChange={setSourceId} disabled={busy}
+            value={sourceId} onChange={value=>{setSourceId(value);setRequestId(crypto.randomUUID());setError("");}} disabled={busy}
             options={[{value:"",label:"Select a published starter"},
               ...starters.map(t=>({value:t.id,label:t.title+" · v"+t.published_revision}))]}/>
           <p style={{...note,marginTop:6}}>Set the new title and unique key in the editor, then choose Copy starter.</p>
