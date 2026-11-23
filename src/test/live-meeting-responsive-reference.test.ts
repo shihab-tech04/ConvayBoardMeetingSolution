@@ -30,6 +30,8 @@ describe("Live Meeting responsive reference adaptation", () => {
     expect(source).toContain('aria-expanded={panelOpen}');
     expect(source).toContain('aria-label="Close board controls"');
     expect(source).toContain('event.key === "Escape"');
+    expect(source).toContain('event.stopImmediatePropagation()');
+    expect(source).toContain('closeOnEscape, { capture: true }');
   });
 
   it("supports small phones, mobile safe areas, tablets and large desktop screens", () => {
@@ -40,6 +42,7 @@ describe("Live Meeting responsive reference adaptation", () => {
     expect(css).toContain("safe-area-inset-top");
     expect(css).toContain("safe-area-inset-bottom");
     expect(css).toContain(".convay-live-gallery");
+    expect(css).toContain(".convay-live-media-gallery");
     expect(css).toContain(".convay-live-document-split");
   });
 
