@@ -702,7 +702,7 @@ function MeetingsSection({ meetings, now, navigate, getRowAction, getStartAction
               role="button"
               tabIndex={0}
               onClick={() => onRowClick(m)}
-              onKeyDown={e => { if (e.key === "Enter") onRowClick(m); }}
+              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onRowClick(m); } }}
               className={`dash-compact-row${isLast ? " dash-compact-row--last" : ""}`}
             >
               {/* Leading indicator */}
