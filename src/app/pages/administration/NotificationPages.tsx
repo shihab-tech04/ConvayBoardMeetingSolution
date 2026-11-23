@@ -131,18 +131,27 @@ async function confirmNotificationRule(
   registry: ReturnType<typeof useNotificationRuleRegistry>,
   id: string,
   values: RuleValues,
+  expectedStatus: NotificationRule["status"],
+  expectedRuleId: string,
 ): Promise<boolean> {
   // A transport ACK alone must not be presented as a verified saved rule.
   if (!registry.refresh) return false;
   await registry.refresh();
   const authoritative = registry.getById(id);
-  return Boolean(authoritative && RULE_FIELDS.every(field => authoritative[field] === values[field]));
+  return Boolean(
+    authoritative && authoritative.id === id &&
+    authoritative.status === expectedStatus &&
+    authoritative.rule_id === expectedRuleId &&
+    RULE_FIELDS.every(field => authoritative[field] === values[field]),
+  );
 }
 
 export function NotificationRulesPage() {
   const registry = useNotificationRuleRegistry();
   const access = useAccessSnapshot();
   const canManage = access.loaded && hasAccess("admin_notifications", access);
+  // A stale or denied read cannot authorize changes from an already-open drawer.
+  const canEditDraft = canManage && !registry.loading && !registry.error;
   const rows: TableRow[] = registry.items.map(rule => ({
     ...rule,
     channel: rule.channels,
@@ -180,7 +189,7 @@ export function NotificationRulesPage() {
     drawerTitle: "Notification Rule Details",
     drawerCols: NOTIF_RULE_DRAWER_COLS,
     drawerActionsResolver(row) {
-      const editAllowed = canManage && row.status !== "Active";
+      const editAllowed = canEditDraft && (row.status === "Draft" || row.status === "Inactive");
       return [
         { id: "edit", label: "Edit Rule", icon: Pencil, color: "#3b82f6",
           enabled: editAllowed, disabledReason: editAllowed ? undefined :
@@ -190,7 +199,7 @@ export function NotificationRulesPage() {
         { id: "deactivate", label: "Deactivate", icon: Pause, color: "#f59e0b",
           enabled: false, disabledReason: unavailable },
         { id: "duplicate", label: "Duplicate", icon: Copy, color: "#8b5cf6",
-          enabled: canManage, disabledReason: "You need admin_notifications permission." },
+          enabled: canEditDraft, disabledReason: "A verified rule read and admin_notifications permission are required." },
         { id: "archive", label: "Archive", icon: Archive, color: "#ef4444",
           enabled: false, disabledReason: "Archiving requires approved server-side rule lifecycle and audit policy." },
       ];
@@ -200,11 +209,11 @@ export function NotificationRulesPage() {
     dataError: registry.error,
     onDataRetry: registry.refresh,
     kpis,
-    entryBtn: canManage ? "Create Notification Rule" : undefined,
+    entryBtn: canEditDraft ? "Create Notification Rule" : undefined,
     formFields: RULE_FORM_FIELDS,
     awaitCreateSave: true,
     async onRowCreate(values) {
-      if (!canManage) return false;
+      if (!canEditDraft) return false;
       const normalized = validateRuleValues(values);
       const id = crypto.randomUUID();
       const created: NotificationRule = {
@@ -212,15 +221,15 @@ export function NotificationRulesPage() {
         ...normalized, status: "Draft", created_at: "",
       };
       const saved = await registry.add(created);
-      return saved && await confirmNotificationRule(registry, id, normalized);
+      return saved && await confirmNotificationRule(registry, id, normalized, "Draft", created.rule_id);
     },
     async onRowUpdate(id, values) {
-      if (!canManage) return false;
+      if (!canEditDraft) return false;
       const current = registry.getById(id);
-      if (!current || current.status === "Active") return false;
+      if (!current || (current.status !== "Draft" && current.status !== "Inactive")) return false;
       const normalized = validateRuleValues(values);
       const saved = await registry.update(id, normalized);
-      return saved && await confirmNotificationRule(registry, id, normalized);
+      return saved && await confirmNotificationRule(registry, id, normalized, current.status, current.rule_id);
     },
     searchPlaceholder: "Search notification rules",
   };
