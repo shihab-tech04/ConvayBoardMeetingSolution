@@ -943,7 +943,6 @@ function UnitFormModal({
               </div>
             </section>
           )}
-        </div>
 
         {errors.save && <p role="alert" className="text-sm text-red-600">{errors.save}</p>}
       </div>
