@@ -12,6 +12,10 @@ import {
   type SubscriptionAuditEvent,
   type QuoteForm, type SavedQuote, type SavedInvoice, type SubscriptionDirectory,
 } from "../../services/saas/subscriptionQuotes";
+import {
+  createProvisioningCompany,listCompanies,readCompany,
+  type CompanyDirectory,type CompanyProfile,
+} from "../../services/saas/companyDirectory";
 
 type Tab = "overview" | "pricing" | "billing" | "companies" | "templates" | "usage";
 type PendingAction = { action: "issue_quote" | "void_quote" | "create_invoice" | "issue_invoice"; quote: SavedQuote; invoice?: SavedInvoice };
@@ -45,6 +49,15 @@ export function SubscribersPage() {
   const [auditEvents,setAuditEvents] = useState<SubscriptionAuditEvent[]|null>(null);
   const [auditError,setAuditError] = useState("");
   const [auditLoading,setAuditLoading] = useState(false);
+  const [companies,setCompanies] = useState<CompanyDirectory|null>(null);
+  const [companyProfile,setCompanyProfile] = useState<CompanyProfile|null>(null);
+  const [selectedCompanyId,setSelectedCompanyId] = useState<string|null>(null);
+  const [companyName,setCompanyName] = useState("");
+  const [companyRequestId,setCompanyRequestId] = useState(() => crypto.randomUUID());
+  const [companyError,setCompanyError] = useState("");
+  const [companyLoading,setCompanyLoading] = useState(false);
+  const [companyWorking,setCompanyWorking] = useState(false);
+  const [confirmProvision,setConfirmProvision] = useState(false);
 
   const refresh = async () => {
     const result = await subscriptionAction<SubscriptionDirectory>("list");
@@ -67,6 +80,50 @@ export function SubscribersPage() {
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
+
+  // Company lifecycle is a separate authenticated SQL contract from quote pricing.
+  // A quote cannot implicitly provision or activate a tenant.
+  useEffect(() => {
+    if (tab!=="companies") return;
+    let active=true;
+    setCompanyLoading(true);setCompanyError("");
+    void listCompanies().then(value => { if (active) setCompanies(value); })
+      .catch(reason => { if (active) setCompanyError(reason instanceof Error ? reason.message : "Unable to load SQL companies"); })
+      .finally(() => { if (active) setCompanyLoading(false); });
+    return () => { active=false; };
+  },[tab]);
+  useEffect(() => {
+    if (tab!=="companies" || !selectedCompanyId) {
+      setCompanyProfile(null);
+      return;
+    }
+    let active=true;
+    setCompanyLoading(true);setCompanyError("");
+    void readCompany(selectedCompanyId).then(value => { if (active) setCompanyProfile(value); })
+      .catch(reason => { if (active) {setCompanyProfile(null);setCompanyError(reason instanceof Error ? reason.message : "Unable to verify company details");} })
+      .finally(() => { if (active) setCompanyLoading(false); });
+    return () => { active=false; };
+  },[tab,selectedCompanyId]);
+  const provisionCompany = async () => {
+    if (companyWorking || companyLoading) return;
+    setCompanyWorking(true);setCompanyError("");
+    try {
+      const verified=await createProvisioningCompany(companyName,companyRequestId);
+      const directory=await listCompanies();
+      if (!directory.companies.some(item => item.id===verified.company.id))
+        throw new Error("Company saved but directory readback is incomplete. Refresh before retrying.");
+      setCompanies(directory);
+      setSelectedCompanyId(verified.company.id);
+      setCompanyProfile(verified);
+      setCompanyName("");
+      setCompanyRequestId(crypto.randomUUID());
+      toast.success("Company provisioning record verified in SQL");
+    } catch(reason) {
+      setCompanyError(reason instanceof Error ? reason.message : "Unable to verify company provisioning");
+    } finally {
+      setCompanyWorking(false);setConfirmProvision(false);
+    }
+  };
 
   const change = (update: (prev:QuoteForm)=>QuoteForm) => {
     setForm(update);
@@ -316,10 +373,70 @@ export function SubscribersPage() {
         </div>
       </section>}
 
-      {tab==="companies" && <section style={panel}>
+      {tab==="companies" && <section style={panel} aria-label="Verified company directory and 360 profile">
         <h2 style={{fontSize:19,fontWeight:650,marginBottom:12}}>Company onboarding & 360° profiles</h2>
-        <p style={note}>A company invitation, verified Company Super Admin, tenant-scoped members, subscriptions and meetings must be linked to the authoritative tenant record. Existing tenant-control SQL is present, but production tenant isolation has not been certified. No company workspace is activated by saving a quote.</p>
-        <p role="status" style={{...note,marginTop:12}}>Tenant activation: {directory.tenant_isolation_certified?"Verified":"Not certified"} · Company provisioning actions are withheld until the complete SQL/Storage/LiveKit isolation gates pass.</p>
+        <p style={note}>Company records, verified memberships, template versions and administration history are loaded from Convay SQL. Creating a provisioning record does not activate a workspace or subscription.</p>
+        <p role="status" style={{...note,marginTop:12}}>Tenant activation: {directory.tenant_isolation_certified?"Verified":"Not certified"} · Workspace access, subscription activation and LiveKit tenant isolation remain disabled until certified.</p>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:14,marginTop:16}}>
+          <div style={{...panel,padding:14}}>
+            <h3 style={{fontWeight:650,marginBottom:12}}>Create provisioning company</h3>
+            <AppTextField id="company-provisioning-name" label="Company name" required
+              value={companyName} onChange={value=>{setCompanyName(value);setCompanyRequestId(crypto.randomUUID());setCompanyError("");}}
+              placeholder="Registered organization name"/>
+            <p style={{...note,marginTop:8}}>A Platform Super Admin can register an organization for onboarding. No user invitation, payment or tenant meeting is activated by this step.</p>
+            <Button variant="primary" size="sm" disabled={companyWorking||companyLoading||companyName.trim().length<3||companyName.trim().length>160}
+              onClick={()=>setConfirmProvision(true)}>Create provisioning record</Button>
+          </div>
+          <div style={{...panel,padding:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
+              <h3 style={{fontWeight:650}}>Company directory</h3>
+              <Button variant="secondary" size="sm" disabled={companyLoading||companyWorking}
+                onClick={()=>{setCompanyLoading(true);setCompanyError("");void listCompanies().then(setCompanies)
+                  .catch(e=>setCompanyError(e instanceof Error?e.message:"Unable to refresh companies"))
+                  .finally(()=>setCompanyLoading(false));}}>Refresh SQL</Button>
+            </div>
+            {companyLoading && <p role="status" style={note}>Checking company SQL records…</p>}
+            {companyError && <p role="alert" style={{...note,color:"#b91c1c"}}>{companyError}</p>}
+            {companies && companies.companies.length===0 && <p style={note}>No registered companies yet.</p>}
+            {companies?.companies.map(company=><div key={company.id}
+              style={{borderTop:"1px solid var(--border-color,#dce1e8)",padding:"10px 0"}}>
+              <Button variant={company.id===selectedCompanyId?"primary":"secondary"} size="sm"
+                onClick={()=>setSelectedCompanyId(company.id)}>{company.display_name}</Button>
+              <p style={note}>{company.lifecycle_state} · {company.active_member_count} active members · {company.published_template_count} published templates</p>
+            </div>)}
+          </div>
+        </div>
+        {selectedCompanyId && companyProfile && companyProfile.company.id===selectedCompanyId && (
+          <section aria-label="Selected company 360 detail" style={{marginTop:18}}>
+            <h3 style={{fontSize:17,fontWeight:650}}>{companyProfile.company.display_name} · Company 360</h3>
+            <p style={note}>Tenant ID: {companyProfile.company.id} · Status: {companyProfile.company.lifecycle_state}</p>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:12,marginTop:12}}>
+              <div style={{...panel,padding:14}}>
+                <h4 style={{fontWeight:650}}>Users and access ({companyProfile.members.length})</h4>
+                {companyProfile.members.length===0 && <p style={note}>No company memberships recorded.</p>}
+                {companyProfile.members.map(member=><p key={member.user_id} style={{...note,marginTop:8}}>
+                  <strong>{member.display_name}</strong> · {member.membership_role} · {member.membership_state}
+                  <span style={{display:"block"}}>{member.email}</span>
+                </p>)}
+              </div>
+              <div style={{...panel,padding:14}}>
+                <h4 style={{fontWeight:650}}>Meeting templates ({companyProfile.templates.length})</h4>
+                {companyProfile.templates.length===0 && <p style={note}>No company templates published or drafted.</p>}
+                {companyProfile.templates.map(template=><p key={template.id} style={{...note,marginTop:8}}>
+                  <strong>{template.title}</strong> · Draft v{template.current_revision} · Published {template.published_revision??"none"}
+                </p>)}
+              </div>
+              <div style={{...panel,padding:14}}>
+                <h4 style={{fontWeight:650}}>Immutable admin history ({companyProfile.events.length})</h4>
+                {companyProfile.events.length===0 && <p style={note}>No administrative events recorded.</p>}
+                {companyProfile.events.map(event=><p key={event.id} style={{...note,marginTop:8}}>
+                  <strong>{event.action.replace(/_/g," ")}</strong> · {new Date(event.occurred_at).toLocaleString()}
+                </p>)}
+              </div>
+            </div>
+            <p role="status" style={{...note,marginTop:12}}>Subscription: not activated · Meetings: not activated · SQL/Storage/LiveKit isolation: not certified.</p>
+          </section>
+        )}
       </section>}
 
       {tab==="templates" && <section style={panel}>
@@ -336,6 +453,13 @@ export function SubscribersPage() {
         <p style={{...note,marginTop:12}}><ShieldCheck size={15} style={{display:"inline",marginRight:6}}/>Audit rows are immutable in SQL. Existing meeting and template behavior is preserved.</p>
       </section>}
 
+      {confirmProvision && <SConfirmModal
+        title="Create a provisioning company?"
+        message={`Register "${companyName.trim()}" in the SQL company directory? This will not activate a subscription, meetings or workspace access.`}
+        confirmLabel="Create provisioning record"
+        onClose={()=>{if(!companyWorking)setConfirmProvision(false);}}
+        onConfirm={()=>void provisionCompany()}
+      />}
       {pending && <SConfirmModal
         title={pending.action==="void_quote"?"Void this quote?":"Confirm billing transition"}
         message={pending.action==="issue_quote"
