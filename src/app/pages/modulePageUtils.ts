@@ -34,6 +34,8 @@ export interface MobileCardMapping {
 
 export interface PageCfg {
   title: string; titleKey?: string;
+  /** Optional grammatical plural for counts, search and empty states. */
+  entityPlural?: string;
   desc: string; descKey?: string;
   cols: ColDef[];
   /** Optional separate column definitions for the details drawer (supports groups). If absent, drawer auto-generates from cols. */
