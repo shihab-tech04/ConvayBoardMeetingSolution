@@ -96,6 +96,8 @@ export interface PageCfg {
     values: Record<string, EntryFormValue>,
     onValuesChange: (patch: Record<string, EntryFormValue>) => void,
   ) => React.ReactNode>;
+  /** Optional create-wizard preflight. Return a visible error rather than advancing with invalid data. */
+  validateCreateStep?: (step: number, values: Record<string, EntryFormValue>) => string | null;
   /** Called after a row is created. Use to sync with external registries. */
   onRowCreate?: (values: Record<string, unknown>) => void | boolean | Promise<void | boolean>;
   /** Hold the create wizard open until the authoritative save succeeds. */

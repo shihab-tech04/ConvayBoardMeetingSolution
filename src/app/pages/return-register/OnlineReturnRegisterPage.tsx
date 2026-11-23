@@ -43,7 +43,8 @@ import { patchFormOptions } from "../../utils/patchFormOptions";
 import { MeetingContextualModals } from "../meetings/MeetingContextualModals";
 import { calculateMeetingQuorum, quorumStatusLabel } from "../../utils/quorumCalculation";
 import { toast } from "sonner";
-import { Video, Copy } from "lucide-react";
+import { Video, Copy, ExternalLink, RefreshCw, AlertTriangle } from "lucide-react";
+import { activeMeetingGovernanceOptions, meetingGovernanceSetupState } from "./meetingCreatePrerequisites";
 
 // ─── Parse repeatable-group flat values (e.g. participants__0__user) ──────────
 function parseRepeatableGroup(
@@ -126,6 +127,51 @@ export function OnlineReturnRegisterPage() {
 
   // ── Location & Access: inject Convay card inside the s3-mode section ─────────
   const meetingSections = useMemo(() => MEETING_FORM_SECTIONS.map(sec => {
+    if (sec.id === "s0-identity") return {
+      ...sec,
+      extraContent: (values: Record<string, unknown>) => {
+        const activeOptions = activeMeetingGovernanceOptions(govRegistry.items);
+        const state = meetingGovernanceSetupState(Boolean(govRegistry.loading), govRegistry.error, activeOptions);
+        const selectedBody = String(values.committee ?? "");
+        const staleChoice = state === "ready" && !!selectedBody && !activeOptions.some(option => option.value === selectedBody);
+        if (state === "ready" && !staleChoice) return null;
+        return (
+          <div role={state === "missing" || state === "error" || staleChoice ? "alert" : "status"}
+               className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--foreground)]">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-[var(--primary)]" />
+              <div className="min-w-0 space-y-2">
+                <p className="font-semibold">
+                  {state === "loading" ? "Loading governance bodies…"
+                    : state === "error" ? "Could not load governance bodies"
+                    : staleChoice ? "Previously selected governance body is no longer active"
+                    : "No active Board / Committee is configured"}
+                </p>
+                {state !== "loading" && <>
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    {state === "error" ? "Refresh the authenticated governance registry before continuing."
+                      : staleChoice ? "Choose an active Board / Committee before scheduling. You can save the meeting as a draft meanwhile."
+                      : "A real, active governance body is required. An authorized administrator can add one in Governance Bodies. Keep this meeting form open, then refresh the list."}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <a href={`${import.meta.env.BASE_URL}governance-org/governance-bodies`}
+                       target="_blank" rel="noopener noreferrer"
+                       className="inline-flex items-center gap-1 font-semibold text-[var(--primary)] underline underline-offset-2">
+                      Open Governance Bodies <ExternalLink size={13} aria-hidden="true" />
+                    </a>
+                    <button type="button"
+                      onClick={() => { void Promise.resolve(govRegistry.refresh?.()).catch(() => toast.error("Could not refresh governance bodies. Try again.")); }}
+                      className="inline-flex items-center gap-1 font-semibold text-[var(--primary)] underline underline-offset-2">
+                      <RefreshCw size={13} aria-hidden="true" /> Refresh Board / Committee list
+                    </button>
+                  </div>
+                </>}
+              </div>
+            </div>
+          </div>
+        );
+      },
+    };
     if (sec.id !== "s3-mode") return sec;
     return {
       ...sec,
@@ -174,7 +220,7 @@ export function OnlineReturnRegisterPage() {
         );
       },
     };
-  }), []);
+  }), [govRegistry.items, govRegistry.loading, govRegistry.error]);
 
   // ── Resolved meeting actions (status-aware, permission-aware) ───────────────
   const { resolve: resolveMeetingActions } = useResolvedActions("meeting");
@@ -361,10 +407,7 @@ export function OnlineReturnRegisterPage() {
   }, [registry]);
 
   // ── Dynamic form options ───────────────────────────────────────────────────
-  const govOptions = govRegistry.items.map(g => ({
-    value: g.id ?? g.body_name,
-    label: g.body_name,
-  }));
+  const govOptions = activeMeetingGovernanceOptions(govRegistry.items);
 
   // Approved agendas available to link to a new meeting
   const approvedAgendaOptions = agendaRegistry.items
@@ -682,6 +725,53 @@ export function OnlineReturnRegisterPage() {
         bmsUsers={bmsUserRegistry.items}
       />
     ),
+    validateCreateStep: (step, values) => {
+      if (step === 0) {
+        const error = [
+          ...validateMeetingIdentity(normalizeMeetingIdentity(values)),
+          ...validateMeetingSchedule(normalizeMeetingSchedule(values)),
+        ][0];
+        if (error) return error;
+        if (!govOptions.some(body => body.value === String(values.committee ?? "")))
+          return "Select an active Board / Committee. Use the setup and refresh actions if none are available.";
+        const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
+        if (leadership.missing.length) return `${meetingLeadershipLabel(leadership.missing[0])} must be an active registered user.`;
+      }
+      if (step === 1) {
+        let participants: DraftParticipantLink[] = [];
+        try { participants = JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
+        catch { return "Participant selection is invalid. Reopen the Participants step."; }
+        if (!Array.isArray(participants) || participants.length === 0)
+          return "Add at least one participant before continuing. You can save a draft instead.";
+        if (!participants.some(p => p.is_required)) return "Mark at least one participant as required.";
+        if (!participants.some(p => p.quorum_eligible)) return "Mark at least one participant as quorum-eligible.";
+      }
+      if (step === 2) {
+        let selected: SelectedAgendaEntry[] = [];
+        try { selected = JSON.parse(String(values.selected_agenda_ids_json ?? "[]")) as SelectedAgendaEntry[]; }
+        catch { return "Agenda selection is invalid. Reopen the Agendas step."; }
+        if (!Array.isArray(selected) || !selected.length)
+          return "Select an approved, meeting-ready agenda before continuing. You can save a draft instead.";
+        for (const entry of selected) {
+          const agenda = agendaRegistry.items.find(a => (a.agenda_id ?? a.id) === entry.agenda_id);
+          if (!agenda || agenda.approval_status !== "Approved" || (agenda as { meeting_readiness?: string }).meeting_readiness !== "Meeting Ready")
+            return "A selected agenda is missing, not approved or not Meeting Ready. Refresh or edit the agenda first.";
+        }
+      }
+      if (step === 3) {
+        const body = govRegistry.items.find(b =>
+          b.id === String(values.committee ?? "") && b.status === "Active",
+        );
+        if (!body || !quorumRuleRegistry.items.some(r =>
+          (r.governance_body_id === body.id || r.governance_body_id === body.body_id) && r.status === "Active"))
+          return "An active, verified quorum rule is required for this Board / Committee. Save a draft until it is configured.";
+        const accessError = meetingAccessBlockers(values)[0];
+        if (accessError) return accessError;
+        if (["Physical", "Hybrid"].includes(String(values.mode ?? "Physical")) && !String(values.venue ?? "").trim())
+          return "Enter the meeting venue before continuing.";
+      }
+      return null;
+    },
     stepRenderers: {
       1: (values, onValuesChange) => (
         <ParticipantSelectorStep
@@ -713,6 +803,7 @@ export function OnlineReturnRegisterPage() {
           governanceBodies={govRegistry.items}
           quorumRules={quorumRuleRegistry.items}
           allDocuments={documentRegistry.items}
+          onRefreshQuorumRules={() => quorumRuleRegistry.refresh?.()}
         />
       ),
     },
