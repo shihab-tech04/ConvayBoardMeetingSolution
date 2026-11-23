@@ -110,6 +110,7 @@ export const hasAccess = (code: string, state: AccessSnapshot = current) =>
 // the desktop/mobile navigation and direct route access.
 const direct: Record<string, string> = {
   "home/overview": "home_dashboard",
+  "subscribers/overview": "admin_users",
   "home/my-tasks": "home_my_tasks",
   "home/my-calendar": "home_my_calendar",
   "meetings/all-meetings": "mtg_view",
@@ -184,6 +185,7 @@ export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   if (!state.loaded) return false;
   if (state.is_super_admin) return true;
   const normalizedPath = "/" + path.replace(/^\/+|\/+$/g, "");
+  if (/^\/subscribers(?:\/|$)/.test(normalizedPath)) return state.is_super_admin;
   if (/^\/(?:administration\/roles-permissions(?:\/|$)|administration\/integrations(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(normalizedPath)) return false;
   const required = permissionForPath(path);
   return !!required && hasAccess(required, state);
