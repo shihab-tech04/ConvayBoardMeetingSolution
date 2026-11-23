@@ -1,6 +1,7 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import { persistOrgUnitChange, type OrgSaveResult } from "./orgUnitPersistence";
+import { validateOrgUnitFormStep, firstInvalidOrgUnitStep, type UnitFormValues } from "./orgUnitFormValidation";
 import { createPortal } from "react-dom";
 import {
   Building2, ChevronRight, ChevronDown, Plus, Pencil, Eye,
@@ -588,21 +589,6 @@ function FooterActions({
 
 const FORM_STEPS = ["Unit Type", "Basic Info", "Parent & Path", "Leadership", "Review"];
 
-interface UnitFormValues {
-  unit_type: string;
-  unit_name: string;
-  code: string;
-  description: string;
-  phone: string;
-  email: string;
-  address: string;
-  parent_unit_id: string;
-  effective_start_at: string;
-  head_user_id: string;
-  deputy_user_id: string;
-  status: "Draft" | "Active";
-}
-
 function UnitFormModal({
   editUnit,
   defaultParentId,
@@ -636,6 +622,8 @@ function UnitFormModal({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const saveInFlight = useRef(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const originalValues = useRef(vals);
 
   const set = useCallback(<K extends keyof UnitFormValues>(k: K, v: UnitFormValues[K]) => {
     setVals(prev => ({ ...prev, [k]: v }));
@@ -663,40 +651,28 @@ function UnitFormModal({
     return `${parentPath} › ${vals.unit_name || "New Unit"}`;
   }, [vals.parent_unit_id, vals.unit_name, allUnits]);
 
-  const activeUsers = users.filter(u => u.account_status === "active" || u.account_status === "pending_activation");
+  const activeUsers = users.filter(u => u.account_status === "active");
 
-  // Duplicate code check
-  const codeIsDuplicate = vals.code.trim() !== "" && allUnits.some(
-    u => u.code?.toUpperCase() === vals.code.toUpperCase().trim() && u.id !== editUnit?.id,
-  );
-
-  // Step validation
   function validateStep(s: number): boolean {
-    const e: Record<string, string> = {};
-    if (s === 0 && !vals.unit_type) e.unit_type = "Select a unit type";
-    if (s === 1) {
-      if (!vals.unit_name.trim()) e.unit_name = "Unit name is required";
-      if (codeIsDuplicate) e.code = "This code is already in use";
-    }
-    if (s === 2) {
-      const needsParent = (VALID_PARENT_TYPES[vals.unit_type] ?? []).length > 0;
-      if (needsParent && !vals.parent_unit_id) e.parent_unit_id = "Select a parent unit";
-      if (vals.parent_unit_id && detectCycle(editUnit?.id ?? "", vals.parent_unit_id, allUnits))
-        e.parent_unit_id = "This would create a circular reference";
-    }
-    setErrors(e);
-    return Object.keys(e).length === 0;
+    const found = validateOrgUnitFormStep(s, vals, allUnits, users, editUnit);
+    setErrors(found);
+    return Object.keys(found).length === 0;
   }
-
-  function nextStep() { if (validateStep(step)) setStep(s => s + 1); }
-  function prevStep() { setStep(s => s - 1); }
+  function nextStep() { if (step < FORM_STEPS.length - 1 && validateStep(step)) setStep(s => s + 1); }
+  function prevStep() { setErrors({}); setStep(s => Math.max(0, s - 1)); }
   async function handleSubmit(saveStatus: "Draft" | "Active") {
-    if (saveInFlight.current || !validateStep(step)) return;
+    if (saveInFlight.current) return;
+    const invalid = firstInvalidOrgUnitStep(vals, allUnits, users, editUnit, saveStatus);
+    if (invalid) { setStep(invalid.step); setErrors(invalid.errors); return; }
     saveInFlight.current = true;
     setSaving(true);
     setErrors(prev => { const next = { ...prev }; delete next.save; return next; });
     try {
-      const saved = await onConfirm({ ...vals, status: saveStatus });
+      const saved = await onConfirm({
+        ...vals, unit_name: vals.unit_name.trim(), code: vals.code.trim().toUpperCase(),
+        phone: vals.phone.trim(), email: vals.email.trim(), address: vals.address.trim(),
+        status: saveStatus,
+      });
       if (!saved) setErrors(prev => ({ ...prev, save: "The organization record was not saved. Review access or reload and retry." }));
     } catch (error) {
       setErrors(prev => ({
@@ -710,40 +686,66 @@ function UnitFormModal({
   }
 
   const isEdit = !!editUnit;
+  const isDirty = JSON.stringify(vals) !== JSON.stringify(originalValues.current);
+  const requestClose = () => {
+    if (saveInFlight.current) return;
+    if (isDirty && !window.confirm("Discard your unsaved unit changes?")) return;
+    onClose();
+  };
+  const closeHandler = useRef(requestClose);
+  closeHandler.current = requestClose;
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    dialogRef.current?.querySelector<HTMLElement>('[data-org-unit-close]')?.focus();
+    const keyHandler = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented &&
+          !(event.target as HTMLElement | null)?.closest('[role="listbox"],[role="menu"]')) {
+        event.preventDefault();
+        closeHandler.current();
+      }
+    };
+    document.addEventListener("keydown", keyHandler);
+    return () => { document.removeEventListener("keydown", keyHandler); previousFocus?.focus(); };
+  }, []);
 
   return createPortal(
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={e => { if (e.target === e.currentTarget) requestClose(); }}
     >
-      <div className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[92vh]">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="org-unit-dialog-title" className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-xl flex flex-col max-h-[92dvh] min-h-0 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border flex-shrink-0">
           <div className="flex items-center gap-3">
             <Building2 size={20} className="text-primary" />
-            <p className="font-semibold text-foreground">{isEdit ? "Edit Unit" : "Create Unit"}</p>
+            <p id="org-unit-dialog-title" className="font-semibold text-foreground">{isEdit ? "Edit Unit" : "Create Unit"}</p>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={18} /></button>
+          <button data-org-unit-close aria-label="Close unit form" onClick={requestClose} disabled={saving}
+            className="p-1 rounded hover:bg-muted text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+            <X size={18} />
+          </button>
         </div>
 
         {/* Step bar */}
-        <div className="flex items-center px-6 py-3 border-b border-border flex-shrink-0 gap-0.5 overflow-x-auto">
+        <div aria-label="Unit creation progress" className="grid grid-cols-5 gap-1 px-4 sm:px-6 py-3 border-b border-border flex-shrink-0">
           {FORM_STEPS.map((label, i) => (
-            <div key={i} className="flex items-center gap-0.5 flex-shrink-0">
-              <div
-                className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold transition-colors
-                  ${i < step ? "bg-primary text-primary-foreground" : i === step ? "bg-primary text-primary-foreground ring-2 ring-primary/30" : "bg-muted text-muted-foreground"}`}
-              >
+            <div key={label} aria-current={i === step ? "step" : undefined}
+              className="min-w-0 flex flex-col items-center gap-1">
+              <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold
+                ${i <= step ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
                 {i < step ? <CheckCircle size={12} /> : i + 1}
-              </div>
-              <span className={`text-xs px-1 hidden sm:block ${i === step ? "text-foreground font-medium" : "text-muted-foreground"}`}>{label}</span>
-              {i < FORM_STEPS.length - 1 && <div className="w-4 h-px bg-border mx-1" />}
+              </span>
+              <span className={`hidden sm:block w-full text-center text-[11px] leading-tight truncate
+                ${i === step ? "font-semibold text-foreground" : "text-muted-foreground"}`}>{label}</span>
             </div>
           ))}
         </div>
+        <p className="sm:hidden text-xs px-5 py-2 border-b border-border text-muted-foreground">
+          Step {step + 1} of {FORM_STEPS.length}: <strong>{FORM_STEPS[step]}</strong>
+        </p>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 sm:px-6 py-4 sm:py-5 space-y-4">
           {/* Step 0: Unit Type */}
           {step === 0 && (
             <div className="space-y-4">
@@ -752,7 +754,12 @@ function UnitFormModal({
                 {PHASE1_TYPES.map(type => (
                   <button
                     key={type}
-                    onClick={() => { set("unit_type", type); set("parent_unit_id", ""); }}
+                    onClick={() => {
+                      set("unit_type", type);
+                      const preferredId = vals.parent_unit_id || defaultParentId || "";
+                      const preferred = allUnits.find(u => u.id === preferredId);
+                      set("parent_unit_id", preferred && validateParentType(type, preferred.unit_type) ? preferredId : "");
+                    }}
                     className={`flex items-center gap-3 p-3 rounded-lg border transition-colors text-left ${
                       vals.unit_type === type
                         ? "border-primary bg-primary/5 text-foreground"
@@ -778,13 +785,13 @@ function UnitFormModal({
           {step === 1 && (
             <div className="space-y-4">
               <AppTextField
-                id="unit_name" label="Unit Name" required
+                id="unit_name" label="Unit Name" required compact
                 value={vals.unit_name} onChange={v => set("unit_name", v)}
                 placeholder="e.g. Finance Division"
                 error={errors.unit_name}
               />
               <AppTextField
-                id="code" label="Short Code"
+                id="code" label="Short Code" compact
                 value={vals.code} onChange={v => set("code", v.toUpperCase())}
                 placeholder="e.g. FIN"
                 error={errors.code}
@@ -794,11 +801,13 @@ function UnitFormModal({
                 value={vals.description} onChange={v => set("description", v)}
                 rows={3} placeholder="Optional description of this unit's purpose and responsibilities"
               />
-              <div className="grid grid-cols-2 gap-4">
-                <AppTextField id="phone" label="Phone" value={vals.phone} onChange={v => set("phone", v)} placeholder="+880 2..." />
-                <AppTextField id="email" label="Email" value={vals.email} onChange={v => set("email", v)} placeholder="unit@example.com" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <AppTextField id="phone" label="Phone" compact value={vals.phone} onChange={v => set("phone", v)}
+                  error={errors.phone} placeholder="+880 2..." />
+                <AppTextField id="email" label="Email" compact value={vals.email} onChange={v => set("email", v)}
+                  error={errors.email} placeholder="unit@example.com" />
               </div>
-              <AppTextField id="address" label="Address" value={vals.address} onChange={v => set("address", v)} placeholder="Street address" />
+              <AppTextField id="address" label="Address" compact value={vals.address} onChange={v => set("address", v)} placeholder="Street address" />
             </div>
           )}
 
@@ -821,6 +830,11 @@ function UnitFormModal({
                     ]}
                     error={errors.parent_unit_id}
                   />
+                  {parentOptions.length === 0 && (
+                    <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
+                      No eligible parent units yet. Create and activate the required parent first.
+                    </p>
+                  )}
                   {vals.parent_unit_id && (
                     <div className="rounded-lg bg-muted/40 border border-border p-3">
                       <p className="text-xs text-muted-foreground mb-1">Full path after save</p>
@@ -836,8 +850,15 @@ function UnitFormModal({
                   type="date"
                   value={vals.effective_start_at}
                   onChange={e => set("effective_start_at", e.target.value)}
+                  aria-invalid={!!errors.effective_start_at}
+                  aria-describedby={errors.effective_start_at ? "effective-start-error" : undefined}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
                 />
+                {errors.effective_start_at && (
+                  <p id="effective-start-error" role="alert" className="text-xs text-destructive mt-1">
+                    {errors.effective_start_at}
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -847,6 +868,7 @@ function UnitFormModal({
             <div className="space-y-4">
               <AppSelectField
                 id="head" label="Unit Head"
+                error={errors.head_user_id}
                 value={vals.head_user_id}
                 onChange={v => set("head_user_id", v)}
                 options={[
@@ -856,6 +878,7 @@ function UnitFormModal({
               />
               <AppSelectField
                 id="deputy" label="Deputy Head"
+                error={errors.deputy_user_id}
                 value={vals.deputy_user_id}
                 onChange={v => set("deputy_user_id", v)}
                 options={[
@@ -879,6 +902,11 @@ function UnitFormModal({
                   ["Parent",      selectedParent?.unit_name || (VALID_PARENT_TYPES[vals.unit_type]?.length === 0 ? "Root unit" : "—")],
                   ["Full Path",   futurePath],
                   ["Head User",   activeUsers.find(u => u.id === vals.head_user_id)?.name ?? "— Assign Later —"],
+                  ["Deputy",      activeUsers.find(u => u.id === vals.deputy_user_id)?.name ?? "— None —"],
+                  ["Description", vals.description || "—"],
+                  ["Phone",       vals.phone || "—"],
+                  ["Email",       vals.email || "—"],
+                  ["Address",     vals.address || "—"],
                   ["Eff. Date",   vals.effective_start_at || "—"],
                 ].map(([l, v]) => (
                   <div key={l} className="flex items-center justify-between px-3 py-2 text-sm">
@@ -894,16 +922,17 @@ function UnitFormModal({
         {/* Save failures stay visible in the modal until server confirmation succeeds. */}
         {errors.save && <p role="alert" className="px-6 pb-2 text-sm text-red-600">{errors.save}</p>}
         {/* Footer */}
-        <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-border flex-shrink-0">
+        <div className="flex items-center justify-between gap-3 px-4 sm:px-6 py-3 sm:py-4 border-t border-border flex-shrink-0">
           <button
-            onClick={step === 0 ? onClose : prevStep}
+            onClick={step === 0 ? requestClose : prevStep}
+            disabled={saving}
             className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg transition-colors"
           >
             {step === 0 ? <><X size={14} /> Cancel</> : <><ChevronLeft size={14} /> Back</>}
           </button>
           <div className="flex items-center gap-2">
             {step < FORM_STEPS.length - 1 ? (
-              <button onClick={nextStep} className="px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors">
+              <button onClick={nextStep} disabled={saving} className="px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors">
                 Continue
               </button>
             ) : (
@@ -1054,10 +1083,10 @@ export function OrganizationStructurePage() {
   }, [auditReg, currentUser]);
 
   const handleFormConfirm = useCallback(async (values: UnitFormValues): Promise<boolean> => {
+    if (editingUnit ? !perm.edit_units : !perm.create_units) return false;
     const now = new Date().toISOString();
     let result: OrgSaveResult;
     if (editingUnit) {
-      const prevParent = editingUnit.parent_unit_id;
       result = await persistOrgUnitChange(
         () => orgReg.update(editingUnit.id, {
           unit_name:          values.unit_name,
@@ -1068,7 +1097,7 @@ export function OrganizationStructurePage() {
           email:              values.email || undefined,
           address:            values.address || undefined,
           parent_unit_id:     values.parent_unit_id || undefined,
-          parent_unit:        allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? editingUnit.parent_unit,
+          parent_unit:        allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? "—",
           head_user_id:       values.head_user_id || undefined,
           deputy_user_id:     values.deputy_user_id || undefined,
           effective_start_at: values.effective_start_at || undefined,
@@ -1078,13 +1107,9 @@ export function OrganizationStructurePage() {
           path_ids:           values.parent_unit_id ? buildPathIds(values.parent_unit_id, units).concat(editingUnit.id) : [editingUnit.id],
           path_label:         values.parent_unit_id ? `${buildPathLabel(values.parent_unit_id, units)} › ${values.unit_name}` : values.unit_name,
         }),
-        async () => {
-          const updated = await emitAudit(editingUnit.id, "org_unit_updated", `Unit updated: ${values.unit_name}`);
-          if (prevParent === values.parent_unit_id) return updated;
-          const parentChange = await emitAudit(editingUnit.id, "org_parent_changed",
-            `Parent changed from ${prevParent ?? "root"} to ${values.parent_unit_id || "root"}`);
-          return Boolean(updated && parentChange);
-        },
+        // SQL BEFORE trigger convay_entity_track writes immutable entity_changes
+        // in the same transaction. bms.audit direct INSERT is denied in production.
+        () => true,
       );
     } else {
       const newId = generateId("OU", units.map(u => u.unit_id));
@@ -1113,7 +1138,8 @@ export function OrganizationStructurePage() {
           path_ids:           values.parent_unit_id ? [...buildPathIds(values.parent_unit_id, units), newId] : [newId],
           path_label:         parentPath ? `${parentPath} › ${values.unit_name}` : values.unit_name,
         }),
-        () => emitAudit(newId, "org_unit_created", `Unit created: ${values.unit_name} (${values.unit_type})`),
+        // The server mutation atomically writes entity_changes via convay_entity_track.
+        () => true,
       );
     }
     if (result === "not-saved") return false;
@@ -1124,7 +1150,7 @@ export function OrganizationStructurePage() {
     setEditingUnit(undefined);
     setDefaultParentId(undefined);
     return true;
-  }, [editingUnit, orgReg, units, currentUser, emitAudit]);
+  }, [editingUnit, orgReg, units, currentUser, perm.edit_units, perm.create_units]);
 
   // Alias for path functions inside handleFormConfirm
   const allUnits = units;
@@ -1353,10 +1379,19 @@ export function OrganizationStructurePage() {
 
       {/* Content area */}
       <div className="bg-background border border-border rounded-xl overflow-hidden">
-        {filteredUnits.length === 0 ? (
+        {orgReg.loading ? (
+          <div role="status" className="py-16 text-center text-sm text-muted-foreground">Loading organization units…</div>
+        ) : orgReg.error ? (
+          <div role="alert" className="flex flex-col items-center gap-3 py-12 px-4 text-center">
+            <p className="text-sm text-destructive">Unable to load units: {orgReg.error}</p>
+            <button onClick={() => { void orgReg.refresh?.(); }}
+              className="rounded-lg px-4 py-2 text-sm bg-primary text-primary-foreground">Retry loading</button>
+          </div>
+        ) : filteredUnits.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Network size={40} className="text-muted-foreground mb-3 opacity-40" />
-            <p className="text-sm font-medium text-muted-foreground">No units found</p>
+            <p className="text-sm font-medium text-muted-foreground">{units.length === 0 ? "No organization units yet" : "No units match your filters"}</p>
+            {units.length === 0 && perm.create_units && <button onClick={() => openCreate()} className="mt-3 rounded-lg px-4 py-2 bg-primary text-primary-foreground text-sm">Create first Organization</button>}
             {(search || activeFilterCount > 0) && (
               <button onClick={() => { setSearch(""); setFilters({ type: "", status: "", parent: "", hasUsers: null, hasChildren: null }); }} className="mt-2 text-xs text-primary hover:underline">Clear filters</button>
             )}
