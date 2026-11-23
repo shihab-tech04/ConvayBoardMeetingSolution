@@ -19,8 +19,12 @@ export function liveMeetingUrl(
   const path = liveMeetingRoute(meetingId);
   if (!path || !origin) return null;
   const baseParts = String(basePath).split("/").filter(Boolean);
-  const url = new URL(`/${[...baseParts, path.slice(1)].join("/")}`, origin);
-  return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  try {
+    const url = new URL(`/${[...baseParts, path.slice(1)].join("/")}`, origin);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 export function liveMeetingInvitation(
