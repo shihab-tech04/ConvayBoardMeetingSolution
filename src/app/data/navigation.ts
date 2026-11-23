@@ -182,9 +182,9 @@ export const NAVIGATION: MainNavDef[] = [
   },
   {
     id: "subscribers",
-    label: "Subscribers",
+    label: "Subscriptions Management",
     icon: CreditCard,
-    children: [{ id: "overview", label: "Subscriber Management", icon: Building2 }],
+    children: [{ id: "overview", label: "Subscriptions Overview", icon: Building2 }],
   },
   {
     id: "administration",
