@@ -755,12 +755,8 @@ export function OnlineReturnRegisterPage() {
         if (agendaError) return agendaError;
       }
       if (step === 3) {
-        const body = govRegistry.items.find(b =>
-          b.id === String(values.committee ?? "") && b.status === "Active",
-        );
-        if (!body || !quorumRuleRegistry.items.some(r =>
-          (r.governance_body_id === body.id || r.governance_body_id === body.body_id) && r.status === "Active"))
-          return "An active, verified quorum rule is required for this Board / Committee. Save a draft until it is configured.";
+        // A verified quorum rule is needed to assess quorum, not to prepare or
+        // schedule a meeting. Do not fabricate a default policy on Step 4.
         const accessError = meetingAccessBlockers(values)[0];
         if (accessError) return accessError;
         if (["Physical", "Hybrid"].includes(String(values.mode ?? "Physical")) && !String(values.venue ?? "").trim())
@@ -1058,13 +1054,8 @@ export function OnlineReturnRegisterPage() {
 
         blockers.push(...meetingAccessBlockers(values));
 
-        const body2 = govRegistry.items.find(b => b.id === committee || b.body_id === committee || b.body_name === committee);
-        const govRule = quorumRuleRegistry.items.find(r =>
-          (r.governance_body_id === body2?.id || r.governance_body_id === body2?.body_id) && r.status === "Active",
-        );
-        if (!govRule)
-          blockers.push("No active quorum rule found for the selected Board / Committee");
-
+        // An absent policy remains "Not configured" in projections, but does
+        // not block SQL-backed scheduling. Governance rules are never invented.
         if (blockers.length > 0) {
           toast.error(`Cannot schedule: ${blockers[0]}${blockers.length > 1 ? ` (+${blockers.length - 1} more)` : ""}`);
           return false;
