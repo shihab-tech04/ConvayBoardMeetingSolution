@@ -12,6 +12,8 @@ export interface EntityRegistry<T extends { id: string }> {
   update: (id: string, patch: Partial<T>) => boolean | Promise<boolean>;
   remove: (id: string) => boolean | Promise<boolean>;
   getById: (id: string) => T | undefined;
+  /** SQL revision from the authoritative registry, for multi-record transaction checks. */
+  getRevision?: (id: string) => number | undefined;
   loading?: boolean;
   error?: string | null;
   refresh?: () => Promise<void>;
@@ -118,7 +120,8 @@ export function createEntityRegistry<T extends { id: string }>(
         return true;
       }, []);
       const getById = useCallback((id: string) => merge(read()).find(x => x.id === id), []);
-      return { items: merge(custom), add, update, remove, getById };
+      return { items: merge(custom), add, update, remove, getById,
+        getRevision: id => merge(read()).some(x => x.id === id) ? 1 : undefined };
     };
   }
 
@@ -239,8 +242,9 @@ export function createEntityRegistry<T extends { id: string }>(
     const getById = useCallback((id: string) =>
       store<T>(storageKey).items.find(x => x.id === id), []);
     const refresh = useCallback(() => load(true), []);
+    const getRevision = useCallback((id: string) => store<T>(storageKey).versions.get(id), []);
     return {
-      items: state.items, add, update, remove, getById, refresh,
+      items: state.items, add, update, remove, getById, getRevision, refresh,
       loading: !state.loaded && !NO_LEGACY_RECORDS.has(storageKey),
       error: state.error,
     };
