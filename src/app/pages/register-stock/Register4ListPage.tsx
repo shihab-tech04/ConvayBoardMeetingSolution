@@ -130,7 +130,7 @@ const AGENDA_FILTERS: FilterDef[] = [
   },
   { key: "owner_name",    label: "Owner",          type: "text" },
   { key: "purpose_filter", label: "Purpose",         type: "select",
-    options: ["For noting", "For discussion", "For approval", "For information", "For review"] },
+    options: ["For Information", "For Discussion", "For Review", "For Approval", "For Decision", "For noting", "For discussion", "For approval", "For information", "For review"] },
   { key: "confidentiality", label: "Confidentiality", type: "select",
     options: ["Public", "Internal", "Confidential", "Restricted"] },
   { key: "has_children",  label: "Has Child Agendas", type: "select", options: ["Yes", "No"] },
@@ -596,7 +596,7 @@ export function Register4ListPage() {
     if (q) rows = rows.filter(r => String(r._search ?? "").includes(q) || String(r.agenda_title ?? "").toLowerCase().includes(q));
     if (allApplied.approval_status)  rows = rows.filter(r => r.approval_status === allApplied.approval_status);
     if (allApplied.owner_name)        rows = rows.filter(r => String(r.owner_name ?? "").toLowerCase().includes(allApplied.owner_name.toLowerCase()));
-    if (allApplied.purpose_filter)    rows = rows.filter(r => r.purpose_filter === allApplied.purpose_filter);
+    if (allApplied.purpose_filter)    rows = rows.filter(r => String(r.purpose_filter ?? "").toLowerCase() === allApplied.purpose_filter.toLowerCase());
     if (allApplied.confidentiality)   rows = rows.filter(r => r.confidentiality === allApplied.confidentiality);
     if (allApplied.has_children)      rows = rows.filter(r => r.has_children === allApplied.has_children);
     return rows;
