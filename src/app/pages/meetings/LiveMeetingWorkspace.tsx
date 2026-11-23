@@ -1,5 +1,5 @@
 import { LIVE_MEETINGS_RELEASED } from "../../services/liveMeetingReleaseGate";
-import "../../styles/live-meeting-responsive.css";
+import "../../../styles/live-meeting-responsive.css";
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 
 import { toast } from "sonner";
