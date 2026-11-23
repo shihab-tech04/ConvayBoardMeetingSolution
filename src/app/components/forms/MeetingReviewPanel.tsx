@@ -316,10 +316,8 @@ export function MeetingReviewPanel({
 
     meetingAccessBlockers(values).forEach(label => out.push({ label, step: 3 }));
 
-    if (!quorumStats.configured)
-      out.push({ label: "Quorum rules must be configured",                       step: 3 });
-    if (quorumStats.configured && !quorumStats.met)
-      out.push({ label: `Projected quorum not met (${quorumStats.eligible} eligible, ${quorumStats.required} required)`, step: 3 });
+    // Quorum is assessed at meeting time; an unconfigured or not-yet-met
+    // projection is information, not a scheduling blocker.
 
     if (docStats.missingAccess > 0)
       out.push({ label: `${docStats.missingAccess} document access conflict${docStats.missingAccess > 1 ? "s" : ""} must be resolved`, step: 2 });
@@ -491,7 +489,7 @@ export function MeetingReviewPanel({
               }
             </div>
           ) : (
-            <Empty text="Quorum not configured" />
+            <Empty text="Quorum not configured — scheduling is allowed" />
           )}
         </SummaryCard>
 
