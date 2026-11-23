@@ -33,6 +33,8 @@ import { collectAgendaRegisterDescendants, collectAgendaRegisterAncestors } from
 import { buildAgendaPreviewOutline } from "./agendaPreviewOutline";
 import { isAgendaOwnedBy, resolveAgendaOwnerUserId } from "./agendaOwnerIdentity";
 import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
+import { sanitizeAgendaHtml } from "../../utils/sanitizeAgendaHtml";
+import { convayAuth } from "../../services/supabase/convayAuth";
 
 // ── Duration helpers ──────────────────────────────────────────────────────────
 
@@ -274,20 +276,20 @@ export function Register4ListPage() {
 
   function hasPermission(action: string): boolean {
     const permMap: Record<string, string> = {
-      submit:           "agenda_submit",
-      approve:          "agenda_approve",
-      reject:           "agenda_approve",
-      request_revision: "agenda_approve",
-      reopen:           "agenda_reopen",
-      archive:          "agenda_archive",
-      view_history:     "agenda_view_history",
-      create:           "agenda_create",
-      edit:             "agenda_edit",
+      submit:           "agd_submit",
+      approve:          "agd_approve",
+      reject:           "agd_approve",
+      request_revision: "agd_review",
+      reopen:           "agd_approve",
+      archive:          "agd_review",
+      view_history:     "agd_view",
+      create:           "agd_submit",
+      edit:             "agd_submit",
     };
     const permId = permMap[action];
     if (permId && myPermissions.includes(permId)) return true;
     // Super Admin / Board Secretary fallback (same as resolveAgendaActions)
-    return myRole === "Super Admin" || myRole === "Board Secretary" || myRole === "Admin";
+    return myRole === "Super Admin";
   }
 
   // ── Doc count helper ──────────────────────────────────────────────────────
@@ -542,7 +544,7 @@ export function Register4ListPage() {
       approval_status: parent.approval_status ?? "Draft",
       confidentiality: parent.confidentiality ?? "",
       purpose_filter:  parent.purpose ?? "",
-      updated_at_display: formatDate(parent.updated_at),
+      updated_at_display: formatDate(parent.updated_at ?? parent.created_at),
       has_children:   children.length > 0 ? "Yes" : "No",
       // Combined search text (searched client-side)
       _search:        `${parent.agenda_title ?? ""} ${parent.agenda_reference ?? ""} ${resolveUserName(parent.owner_user_id ?? "")} ${childSearchText}`.toLowerCase(),
@@ -854,8 +856,8 @@ export function Register4ListPage() {
               <div
                 className="drawer-rich-html"
                 style={{ fontSize: "0.875rem", color: "var(--color-text-primary)", lineHeight: 1.6 }}
-                // Safe render: server-stripped HTML. For Tiptap output this is safe-ish; ideally use DOMPurify.
-                dangerouslySetInnerHTML={{ __html: drawerItem.description.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "") }}
+                // Strictly sanitize untrusted stored rich text before displaying it.
+                dangerouslySetInnerHTML={{ __html: sanitizeAgendaHtml(drawerItem.description) }}
               />
             </div>
           )}
@@ -1056,13 +1058,13 @@ export function Register4ListPage() {
 
     return (
       <div style={{ display: "flex", gap: 8 }}>
-        {(isOwner || hasPermission("edit")) && (
+        {canEdit && (
           <Button variant="primary" size="sm" leadingIcon={Edit2}
             onClick={() => { closeDrawer(); openEdit(drawerItem.id, null); }}>
             Edit Agenda
           </Button>
         )}
-        {hasPermission("create") && (
+        {canEdit && hasPermission("create") && (
           <Button variant="secondary" size="sm" leadingIcon={Plus}
             onClick={() => { closeDrawer(); openEdit(drawerItem.id, null); }}>
             Add Child
