@@ -46,6 +46,7 @@ import { reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase
 import { buildMeetingStartBatch } from "../../utils/meetingStartCommand";
 import { LiveMeetingMedia } from "./LiveMeetingMedia";
 import { OnlinePresenceTransition } from "./onlinePresenceTransition";
+import { RegularAttendanceTransitionQueue } from "./regularMeetingAttendanceQueue";
 import { commitLiveAttendance, readLiveAttendance, type LiveAttendanceSnapshot } from "./regularMeetingAttendanceTransport";
 import { mayOfferRegularScreenShare } from "./regularMeetingScreenShareState";
 import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
@@ -592,7 +593,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // Online attendance is never restored from browser-local session cache.
   const [attendanceMap,  setAttendanceMap]    = useState<Record<string, AttendanceStatus>>(isOnlineMeeting ? {} : initSession.attendance);
   const [serverQuorum, setServerQuorum] = useState<LiveAttendanceSnapshot["quorum"] | null>(null);
-  const pendingAttendance = useRef(new Set<string>());
+  // Confirmed LiveKit transitions can arrive before the preceding SQL ACK.
+  // Never discard a later Left/rejoin while Present is still pending.
+  const attendanceQueue = useMemo(() => new RegularAttendanceTransitionQueue(), [meetingId, currentUser.id]);
   const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
@@ -980,9 +983,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     if (isOnlineMeeting) {
       // The online path must never optimistically change quorum or attendee
       // state; it uses the verified Edge + SQL + durable readback contract.
-      if (!meetingId || pendingAttendance.current.has(id)) return;
-      pendingAttendance.current.add(id);
-      void (async () => {
+      if (!meetingId) return;
+      void attendanceQueue.enqueue(id, async () => {
         try {
           const mode = id === currentUser.id ? "Online"
             : meeting?.mode === "Hybrid" ? "In-Person" : "Online";
@@ -1007,10 +1009,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           } catch {
             setServerQuorum(null);
           }
-        } finally {
-          pendingAttendance.current.delete(id);
         }
-      })();
+      });
       return;
     }
     // Preserve existing in-person/offline attendance behaviour unchanged.
@@ -1067,7 +1067,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent, currentUser.id, applyVerifiedAttendance, refreshAttendanceRec, refreshQuorumEvents]);
+  }, [participants, meetingLinks, meetingId, attendanceMap, attendanceItems, meeting, quorumMet, govBodies, quorumRules, bmsUsers, isOnlineMeeting, updateAttendanceRec, addAttendanceRec, addQuorumEvent, currentUser.id, attendanceQueue, applyVerifiedAttendance, refreshAttendanceRec, refreshQuorumEvents]);
 
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
