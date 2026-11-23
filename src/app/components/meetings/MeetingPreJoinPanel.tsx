@@ -25,6 +25,8 @@ export interface MeetingPreJoinPanelProps {
   initialRole: PreJoinRole;
   /** Media publish allowance mirrors the trusted issuer's saved meeting role. */
   publisherAllowed?: boolean;
+  /** Never offer a join before the SQL live session can admit participants. */
+  joinBlockedReason?: string;
   allowedRoles?: PreJoinRole[];
   onJoin: (options: { micOn: boolean; camOn: boolean; role: PreJoinRole }) => void;
   onBack: () => void;
@@ -67,7 +69,7 @@ function formatTime12h(raw?: string): string {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function MeetingPreJoinPanel({
-  meeting, initialRole, publisherAllowed, onJoin, onBack,
+  meeting, initialRole, publisherAllowed, joinBlockedReason, onJoin, onBack,
 }: MeetingPreJoinPanelProps) {
   const canPublishMedia = publisherAllowed ?? (initialRole !== "Observer" && initialRole !== "Guest");
   const [micOn,   setMicOn]   = useState(canPublishMedia);
@@ -263,7 +265,7 @@ export function MeetingPreJoinPanel({
               {/* Ready indicator */}
               <div className="meeting-prejoin__context">
                 <span className="meeting-prejoin__ready-dot" aria-hidden="true" />
-                Ready to join
+                {joinBlockedReason ? "Waiting for LiveKit meeting" : "Ready to join"}
               </div>
 
               {/* Title + governance body */}
@@ -328,9 +330,13 @@ export function MeetingPreJoinPanel({
 
             </div>
 
+            {/* Admission is issued only after the host starts the SQL live session. */}
+            {joinBlockedReason && <p role="status" aria-live="polite" className="meeting-prejoin__alert-text" style={{ margin: "0 0 0.5rem" }}>
+              {joinBlockedReason}
+            </p>}
             {/* Actions — pushed to bottom */}
             <div className="meeting-prejoin__actions">
-              <PrimaryButton fullWidth size="lg" onClick={() => onJoin({
+              <PrimaryButton fullWidth size="lg" disabled={Boolean(joinBlockedReason)} onClick={() => onJoin({
                 micOn: canPublishMedia && micOn,
                 camOn: canPublishMedia && camOn,
                 role: initialRole,
@@ -338,7 +344,7 @@ export function MeetingPreJoinPanel({
                 Join Meeting
               </PrimaryButton>
               {canPublishMedia && !devicesAlreadyOff && (
-                <SecondaryButton fullWidth size="lg" onClick={() => onJoin({ micOn: false, camOn: false, role: initialRole })}>
+                <SecondaryButton fullWidth size="lg" disabled={Boolean(joinBlockedReason)} onClick={() => onJoin({ micOn: false, camOn: false, role: initialRole })}>
                   Join with devices off
                 </SecondaryButton>
               )}
