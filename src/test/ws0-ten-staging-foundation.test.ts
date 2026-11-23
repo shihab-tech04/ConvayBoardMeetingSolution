@@ -15,3 +15,14 @@ describe("TEN staging foundation remains non-activated and preserves legacy data
     expect(sql).not.toMatch(/create policy.+convay_entity_records/i);
   });
 });
+
+describe("TEN staging guard denies forged ownership while tenant activation is OFF", () => {
+  const guard = readFileSync("supabase/migrations/20261123102350_convay_ten_staging_ownership_claim_guard.sql", "utf8");
+  it("rejects non-null client tenant IDs and subsequent mutations", () => {
+    expect(guard).toContain("tg_op = 'INSERT' and new.tenant_id is not null");
+    expect(guard).toContain("tg_op = 'UPDATE' and new.tenant_id is distinct from old.tenant_id");
+    expect(guard).toContain("errcode = '42501'");
+    expect(guard).toContain("before insert or update on public.convay_entity_records");
+    expect(guard).toContain("revoke all on function");
+  });
+});
