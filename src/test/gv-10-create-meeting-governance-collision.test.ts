@@ -74,6 +74,16 @@ describe("GV-10 / MT-04 governance-body concurrency and Create Meeting recovery"
     expect(registry).toHaveLength(2);
   });
 
+  it("keeps unsupported charter attachments visible but disabled before a failed save", () => {
+    const fields = readFileSync("src/app/pages/boardMeetingFormFields.ts", "utf8");
+    const form = readFileSync("src/app/components/forms/EntryForm.tsx", "utf8");
+    const charterField = fields.match(/\{ key: "charter"[^\n]*\}/)?.[0] ?? "";
+    expect(charterField).toContain('type: "file"');
+    expect(charterField).toContain("disabled: true");
+    expect(charterField).toContain("Secure charter upload is not connected yet");
+    expect(form).toContain("disabled={f.disabled}");
+  });
+
   it("keeps Create Meeting fail-closed until an active persisted body is refreshed", () => {
     expect(meetingGovernanceSetupState(false, null, [])).toBe("missing");
     expect(activeMeetingGovernanceOptions([])).toEqual([]);
