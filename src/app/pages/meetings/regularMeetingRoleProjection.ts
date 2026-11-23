@@ -26,9 +26,12 @@ const roleAliases: Record<string, RegularMeetingRole> = {
   "guest": "Guest",
 };
 
-const publishableRoles = new Set<RegularMeetingRole>([
-  "Chairperson", "Company Secretary", "Board Member",
-  "Independent Director", "Presenter", "Administrator",
+// This list must match the trusted token issuer EXACTLY. Display aliases
+// such as "secretary" are not additional permissions.
+const trustedPublisherAliases = new Set([
+  "chairperson", "chair", "meeting secretary", "company secretary",
+  "member", "board member", "independent director",
+  "presenter", "organizer", "administrator",
 ]);
 
 export function savedRegularMeetingRole(role: unknown): RegularMeetingRole {
@@ -50,8 +53,7 @@ export function canOfferRegularMeetingPublishing(
     return actorLinks.every(link => {
       const role = link.participant_type;
       return typeof role === "string"
-        && Object.prototype.hasOwnProperty.call(roleAliases, role.trim().toLowerCase())
-        && publishableRoles.has(savedRegularMeetingRole(role));
+        && trustedPublisherAliases.has(role.trim().toLowerCase());
     });
   }
   return isVerifiedLeaderById;
