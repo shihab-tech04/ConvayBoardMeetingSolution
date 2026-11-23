@@ -8,7 +8,7 @@ import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "../
 const agenda = (id: string, status: string, readiness: string) => ({
   id, agenda_id: id, agenda_title: "Agenda " + id,
   approval_status: status, meeting_readiness: readiness,
-}) as AgendaSubmission;
+}) as unknown as AgendaSubmission;
 
 describe("MT-04 optional agendas in the five-step Create Meeting journey", () => {
   it("accepts zero agendas and a missing default JSON value", () => {
