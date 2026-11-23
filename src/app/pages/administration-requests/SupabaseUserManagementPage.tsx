@@ -215,6 +215,7 @@ export function SupabaseUserManagementPage() {
     }
     setWorking(true);
     setFormError("");
+    let invitedUserId: string | null = null;
     try {
       if (mode === "invite") {
         const confirmed = await convayAuth.users("invite", {
@@ -224,7 +225,11 @@ export function SupabaseUserManagementPage() {
           ...userBusinessFields(form),
         });
         requireUserMutationAck("invite", confirmed, { email: form.email.trim() });
-        toast.success("Invitation sent. The account stays inactive until the user verifies their email and sets a password.");
+        // The verified user API returns the durable profile ID. Use it to
+        // continue directly to explicit admin role assignment (no auto-grant).
+        const acknowledgedUserId = (confirmed as { user?: { user_id?: unknown } }).user?.user_id;
+        if (typeof acknowledgedUserId === "string") invitedUserId = acknowledgedUserId;
+        toast.success("Invitation sent. Assign the user's roles before they can access the workspace.");
       } else if (mode === "edit" && editing) {
         const confirmed = await convayAuth.users("update", {
           user_id: editing.user_id, name: form.name.trim(), username: form.username.trim(),
@@ -247,6 +252,11 @@ export function SupabaseUserManagementPage() {
       setEditId(null);
       setForm(blank);
       await loadUsers();
+      if (invitedUserId) {
+        setSelectedRoles([]);
+        setRoleAssignId(invitedUserId);
+        setAssignError("");
+      }
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "Unable to save user");
     } finally {
@@ -414,7 +424,7 @@ export function SupabaseUserManagementPage() {
                 onChange={v => setField("phone", v)} placeholder="Phone number"/>
             </>
           )}
-          {mode === "invite" && <p className="text-sm text-slate-600">Convay will email a secure invitation link. The account remains inactive until the recipient verifies this address and chooses their own password.</p>}
+          {mode === "invite" && <p className="text-sm text-slate-600">Convay will email a secure invitation link. After sending, assign a role in the next step. The account stays inactive until the recipient verifies this address and chooses a password; workspace access also requires an assigned role with permissions.</p>}
           {mode === "password" && (
             <AppPasswordField id="convay-user-password" label="Password" value={form.password}
               onChange={v => setField("password", v)} autoComplete="new-password"
@@ -432,7 +442,7 @@ export function SupabaseUserManagementPage() {
           <Button variant="primary" size="lg" onClick={() => { void saveRoleAssignments(); }} loading={working}>Save Roles</Button>
         </div>}>
         <div className="flex flex-col gap-3">
-          <p>Select which application roles this user may use. Permissions take effect from the selected roles.</p>
+          <p>Select which application roles this user may use. Permissions take effect from the selected roles. An invited user can complete password setup without a role, but will see an access-pending screen until an authorized role is assigned.</p>
           {access.roles.filter(r => r.status === "Active" && !r.is_system_role).length === 0 &&
             <p>No custom roles yet. Create one from Role Management.</p>}
           {access.roles.filter(r => r.status === "Active" && !r.is_system_role).map(r => (
