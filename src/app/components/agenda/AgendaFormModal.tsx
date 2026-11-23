@@ -34,11 +34,13 @@ import { UnifiedDocumentViewer } from "../documents/UnifiedDocumentViewer";
 import { DocumentComposerModal } from "../documents/DocumentComposerModal";
 import { agendaReference, validateCompleteAgenda } from "./agendaCreationFields";
 import { saveAgendaChildWithAck } from "./agendaChildPersistence";
+import { convayAuth } from "../../services/supabase/convayAuth";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PURPOSES    = ["For Information", "For Discussion", "For Review", "For Approval", "For Decision"];
 const CONFIDENTIAL = ["Public", "Internal", "Confidential", "Restricted"];
+const EDITABLE_STATUSES = new Set(["Draft", "Incomplete", "Reopened", "Revision Requested"]);
 
 // ── Duration helpers ──────────────────────────────────────────────────────────
 
@@ -306,6 +308,7 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   const [saving,     setSaving]     = useState(false);
   // Locks the entire child save/auto-draft journey until the SQL registry ACK.
   const childWriteInFlight = useRef(false);
+  const [documentLinkBusy, setDocumentLinkBusy] = useState(false);
 
   // Document picker / uploader
   const [pickerOpen,   setPickerOpen]   = useState(false);
@@ -496,6 +499,10 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
     const existing = parentId ? agendaReg.items.find(a => a.id === parentId) : null;
     const id = existing?.id ?? generateId("AGD", agendaReg.items.map(a => a.agenda_id));
     const metadata = parentMetadata(id);
+    if (existing && !EDITABLE_STATUSES.has(existing.approval_status)) {
+      toast.error("Reopen this agenda before changing approved or submitted content.");
+      return null;
+    }
     const saved = existing
       ? await agendaReg.update(id, { ...metadata, approval_status: existing.approval_status, updated_at: now } as never)
       : await agendaReg.add({
@@ -519,6 +526,12 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   async function persistChild(pid: string): Promise<string | null> {
     if (saving || childWriteInFlight.current) return null;
+    if (savedParent && !EDITABLE_STATUSES.has(savedParent.approval_status)) {
+      toast.error("Reopen the parent agenda before editing children."); return null;
+    }
+    if (cf.id && !EDITABLE_STATUSES.has(agendaReg.items.find(a => a.id === cf.id)?.approval_status ?? "")) {
+      toast.error("Reopen this child agenda before editing its approved content."); return null;
+    }
     childWriteInFlight.current = true;
     setSaving(true);
     try {
@@ -743,6 +756,9 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   async function handleSaveAgenda() {
     if (saving) return;
     if (!parentId || !pf.title.trim()) { setPErr({ title: "Title is required." }); return; }
+    if (savedParent && !EDITABLE_STATUSES.has(savedParent.approval_status)) {
+      toast.error("Reopen this agenda before changing submitted or approved content."); return;
+    }
     if (children.length === 0) {
       toast.error("Add at least one child agenda before saving.");
       return;
