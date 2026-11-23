@@ -1,3 +1,4 @@
+import { isAgendaMeetingReady } from "../../pages/return-register/meetingAgendaSelection";
 /**
  * AgendaDocumentStep — Step 2 custom renderer.
  *
@@ -90,10 +91,10 @@ function agendaReadinessLabel(agenda: AgendaSubmission, allAgendas: AgendaSubmis
   if (hasBlockingChild) {
     return { label: "Partially Approved", color: "amber", schedulingBlocked: true };
   }
-  // Check Meeting Readiness
+  // Match the same policy used by Meeting Review and save validation.
   const mr = (agenda as { meeting_readiness?: string }).meeting_readiness;
-  if (mr && mr !== "Meeting Ready") {
-    return { label: `Approved — ${mr}`, color: "amber", schedulingBlocked: true };
+  if (!isAgendaMeetingReady(agenda, allAgendas)) {
+    return { label: `Approved — ${mr || "Child approval required"}`, color: "amber", schedulingBlocked: true };
   }
   return { label: "Approved ✓ Meeting Ready", color: "emerald", schedulingBlocked: false };
 }
