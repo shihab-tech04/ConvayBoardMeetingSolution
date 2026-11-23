@@ -50,6 +50,8 @@ import { RegularAttendanceTransitionQueue, acceptsVerifiedAttendanceRevision } f
 import { commitLiveAttendance, readLiveAttendance, type LiveAttendanceSnapshot } from "./regularMeetingAttendanceTransport";
 import { canOfferRegularMeetingPublishing, savedRegularMeetingRole, type RegularMeetingRole } from "./regularMeetingRoleProjection";
 import { canonicalLiveControlStatus, canonicalLiveStatusKey, requestedLiveSessionStatus } from "./regularMeetingSessionState";
+import { resolveCanonicalOnlineRoomEntry } from "./onlineMeetingEntryState";
+import { meetingStartWindowState } from "../../utils/meetingStartWindow";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -429,9 +431,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const isOnlineMeeting = LIVE_MEETINGS_RELEASED && (meeting?.mode === "Virtual" || meeting?.mode === "Hybrid");
   // Never request a live-attendance readback until SQL confirms an active room.
   // The attendance gateway correctly rejects meetings that have not started.
-  const hasCanonicalOnlineSession = isOnlineMeeting &&
-    liveSessions.filter(session => session.meeting_id === meetingId &&
-      (session.session_status === "active" || session.session_status === "paused")).length === 1;
+  const canonicalRoomEntry = resolveCanonicalOnlineRoomEntry(
+    meeting?.approval_status,
+    liveSessions.filter(session => session.meeting_id === meetingId),
+  );
+  const hasCanonicalOnlineSession = isOnlineMeeting && canonicalRoomEntry.canJoin;
 
   // Build participant list from registry — no synthetic defaults
   const baseParticipants: VirtualParticipant[] = (() => {
@@ -761,7 +765,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const determineInitialPhase = (): "readiness" | "prejoin" | "meeting" => {
     // Online hosts start from the same verified LiveKit lobby as invitees.
     // Manual, in-person attendance is not a prerequisite for a virtual room.
-    if (isOnlineMeeting && (entryAction === "join_meeting" || entryAction === "start_meeting")) return "prejoin";
+    if (isOnlineMeeting) return "prejoin";
     if (ctrlStatus !== "not-started") return "meeting";
     if (entryAction === "start_meeting") return "readiness";
     if (entryAction === "join_meeting")  return "prejoin";
@@ -778,25 +782,27 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const activeJoinSessions = isOnlineMeeting
     ? liveSessions.filter(s => s.meeting_id === meetingId && (s.session_status === "active" || s.session_status === "paused"))
     : [];
-  const joinBlockedReason = !isOnlineMeeting || activeJoinSessions.length === 1
-    ? undefined
-    : activeJoinSessions.length === 0
-      ? "Waiting for the authorized host to start this LiveKit meeting. This page checks automatically."
-      : "Multiple live sessions were found. Contact the meeting organizer.";
+  const joinBlockedReason = !isOnlineMeeting ? undefined : canonicalRoomEntry.reason;
   useEffect(() => {
     if (!isOnlineMeeting || phase !== "prejoin") return;
-    const refresh = () => { void Promise.resolve(refreshLiveSessions?.()).catch(() => undefined); };
+    // Another host can change BOTH the meeting approval state and session in
+    // the same SQL transaction. Polling only sessions traps invitees waiting
+    // with a stale Scheduled meeting even after the room has started.
+    const refresh = () => {
+      void Promise.all([refreshMeetings?.(), refreshLiveSessions?.()])
+        .catch(() => undefined);
+    };
     refresh();
     const timer = window.setInterval(refresh, 12000);
     return () => window.clearInterval(timer);
-  }, [isOnlineMeeting, phase, refreshLiveSessions]);
+  }, [isOnlineMeeting, phase, refreshMeetings, refreshLiveSessions]);
   // Every entry path must wait for confirmed SQL session state, not just
   // join_meeting. A browser-restored control state is not room authority.
   useEffect(() => {
-    if (isOnlineMeeting && phase === "meeting" && activeJoinSessions.length !== 1) {
+    if (isOnlineMeeting && phase === "meeting" && !canonicalRoomEntry.canJoin) {
       setPhase("prejoin");
     }
-  }, [isOnlineMeeting, phase, activeJoinSessions.length]);
+  }, [isOnlineMeeting, phase, canonicalRoomEntry.canJoin]);
   const [myMicOn, setMyMicOn]         = useState(true);
   const [myCamOn, setMyCamOn]         = useState(true);
   // Separate user request from provider-confirmed sharing.
@@ -1733,7 +1739,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         publisherAllowed={canPublishMedia}
         joinBlockedReason={joinBlockedReason}
         forceStartBusy={startBusy}
-        onForceStart={access.loaded && canControlMeeting && ctrlStatus === "not-started" && activeJoinSessions.length === 0
+        onForceStart={access.loaded && canControlMeeting && canonicalRoomEntry.mayAttemptStart &&
+          (access.is_super_admin || (
+            ["published", "ready to start"].includes(String(meeting?.approval_status ?? "").trim().toLowerCase())
+            && meetingStartWindowState(meeting as unknown as Record<string, unknown>, new Date()) === "available"
+          ))
           ? () => { void handleStart(); } : undefined}
         startLabel={access.is_super_admin ? "Force Start Now" : "Start Meeting Now"}
         onJoin={opts => {
@@ -1931,7 +1941,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* Video stage */}
           <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
-            {isOnlineMeeting && activeJoinSessions.length === 1 && (
+            {isOnlineMeeting && canonicalRoomEntry.canJoin && (
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
                 <LiveMeetingMedia meetingId={meetingId}
                   micOn={canPublishMedia && myMicOn} camOn={canPublishMedia && myCamOn}
