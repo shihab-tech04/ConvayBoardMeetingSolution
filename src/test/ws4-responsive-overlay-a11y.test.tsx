@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ResponsiveOverlay } from "../app/components/shared/ResponsiveOverlay";
 
 vi.mock("../app/hooks/useUI", () => ({
@@ -54,7 +55,8 @@ describe("WS4 responsive overlay accessibility", () => {
     );
     const panel = screen.getByRole("dialog", { name: "Meeting actions" });
     await waitFor(() => expect(panel).toHaveFocus());
-    fireEvent.keyDown(panel, { key: "Tab" });
+    // userEvent simulates native Tab traversal; fireEvent.keyDown does not.
+    await userEvent.tab();
     expect(screen.getByRole("button", { name: "Save meeting" })).toHaveFocus();
   });
 
