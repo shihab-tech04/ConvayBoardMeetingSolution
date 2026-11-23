@@ -37,7 +37,7 @@ describe("LM: audited recovery of an ended LiveKit meeting", () => {
     expect(sql).toContain("pg_catalog.current_setting('convay.authorized_meeting_reopen',true)");
     expect(sql).toContain("p.account_role='super_admin'");
     expect(sql).toContain("convay_private.has_permission('mtg_start')");
-    expect(sql).toContain("v_total");
+    expect(sql).toContain("total_sessions");
     expect(sql).toContain("FOR UPDATE");
     expect(sql).toContain("previous_session.record_id");
     expect(sql).not.toMatch(/UPDATE public\.convay_entity_records[^;]*session_status[^;]*'active'/is);
