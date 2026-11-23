@@ -45,7 +45,13 @@ describe("MT-27 no generic meeting DELETE before server security activation", ()
   it("does not restore generic registry.remove via an alternate event path", () => {
     const source = readFileSync(
       resolve(process.cwd(), "src/app/pages/return-register/OnlineReturnRegisterPage.tsx"), "utf8");
-    expect(source).toContain("guardMeetingDrawerAction({ id: a.id");
+    // Legacy generic deletion stays blocked. The new dedicated UI path checks
+    // Draft status, server revision and the ACK/readback contract instead.
+    expect(source).toContain("const guarded = guardMeetingDrawerAction({");
+    expect(source).toContain('id: "delete_draft"');
+    expect(source).toContain("enabled: savedDraft && a.enabled");
+    expect(source).toContain("loadDraftDeletionSnapshot(recordId)");
+    expect(source).toContain("await deleteDraftMeeting(");
     expect(source).toContain("toast.error(DRAFT_DELETION_UNAVAILABLE_REASON)");
     expect(source).not.toMatch(/registry\.remove\s*\(/);
   });
