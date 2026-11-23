@@ -556,7 +556,7 @@ export function OnlineReturnRegisterPage() {
       !!m.committee, !!m.chairperson, !!m.secretary,
       !!(m.venue || m.virtual_link),
       totalParticipants > 0,
-      canonicalAgendaLinks.length > 0,
+      // Agendas are optional for both scheduling and starting a meeting.
       canonicalDocLinks.length > 0 || documentRegistry.items.some(d => d.related_meeting === mid),
       !!quorumRule,
     ];
