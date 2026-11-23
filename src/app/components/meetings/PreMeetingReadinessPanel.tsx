@@ -10,7 +10,8 @@
  *  - Start the meeting only when blockers are resolved (or override with reason)
  */
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useId } from "react";
+import "./preMeetingReadiness.css";
 import {
   CheckCircle, XCircle, AlertTriangle, Users, Layers, FileText,
   X, ChevronDown, ChevronUp,
@@ -45,19 +46,22 @@ function Section({ title, icon, children, defaultOpen = true }: {
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const contentId = useId();
   return (
-    <div style={{ borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
+    <section className="pre-meeting-readiness__section">
       <button
         type="button"
+        className="pre-meeting-readiness__section-toggle"
         onClick={() => setOpen(v => !v)}
-        style={{ width: "100%", padding: "0.65rem 1rem", background: "var(--muted)", display: "flex", alignItems: "center", gap: "0.5rem", border: "none", cursor: "pointer", color: "var(--foreground)", textAlign: "left" }}
+        aria-expanded={open}
+        aria-controls={contentId}
       >
         {icon}
-        <span style={{ flex: 1, fontSize: "0.82rem", fontWeight: 700 }}>{title}</span>
-        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        <span className="pre-meeting-readiness__section-heading">{title}</span>
+        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
-      {open && <div style={{ padding: "0.75rem 1rem", background: "var(--background)" }}>{children}</div>}
-    </div>
+      {open && <div id={contentId} className="pre-meeting-readiness__section-content">{children}</div>}
+    </section>
   );
 }
 
@@ -65,9 +69,9 @@ function Section({ title, icon, children, defaultOpen = true }: {
 
 function InfoRow({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
   return (
-    <div style={{ display: "flex", gap: "1rem", padding: "0.3rem 0", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
-      <span style={{ width: 160, fontSize: "0.78rem", color: "var(--muted-foreground)", flexShrink: 0 }}>{label}</span>
-      <span style={{ flex: 1, fontSize: "0.82rem", color: warn ? "#f59e0b" : "var(--foreground)", fontWeight: warn ? 600 : 400 }}>{value || "—"}</span>
+    <div className="pre-meeting-readiness__info-row">
+      <span className="pre-meeting-readiness__info-label">{label}</span>
+      <span className="pre-meeting-readiness__info-value" style={warn ? { color: "var(--color-warning, #b45309)", fontWeight: 600 } : undefined}>{value || "—"}</span>
     </div>
   );
 }
@@ -90,7 +94,7 @@ function StatusChip({ ok, warn, label }: { ok?: boolean; warn?: boolean; label: 
 interface PreMeetingReadinessPanelProps {
   meetingId: string;
   onClose: () => void;
-  onStartMeeting: (attendance: Record<string, ReadinessAttendance>) => void;
+  onStartMeeting: (attendance: Record<string, ReadinessAttendance>) => Promise<boolean> | boolean | void;
 }
 
 export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }: PreMeetingReadinessPanelProps) {
@@ -286,7 +290,10 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
       if (!await saveAttendance()) return;
       if (!stillMounted.current || attendanceEditVersion.current !== editVersion ||
           JSON.stringify(latestAttendance.current) !== JSON.stringify(requested)) return;
-      onStartMeeting(requested);
+      const result = await onStartMeeting(requested);
+      if (result === false) {
+        throw new Error("Meeting was not started. Review the error and retry.");
+      }
       started = true;
       setStartingMeeting(true);
     } catch {
@@ -306,10 +313,10 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
     s === "Scheduled" ? "#3b82f6" : s === "In Progress" ? "#22c55e" : "#94a3b8";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "var(--background)", color: "var(--foreground)", overflow: "hidden" }}>
+    <div className="pre-meeting-readiness">
 
       {/* ── HEADER ────────────────────────────────────────────────────────── */}
-      <div style={{ padding: "1rem 1.5rem", borderBottom: "1px solid var(--border)", background: "var(--card)", flexShrink: 0 }}>
+      <header className="pre-meeting-readiness__header">
         <div style={{ display: "flex", alignItems: "flex-start", gap: "1rem" }}>
           <div style={{ flex: 1 }}>
             <p style={{ margin: "0 0 0.15rem", fontSize: "0.7rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--muted-foreground)" }}>Pre-Meeting Readiness</p>
@@ -325,7 +332,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
               </span>
             </div>
           </div>
-          <button type="button" onClick={() => { if (!attendanceSaveInFlight.current && !startRequested.current) onClose(); }} disabled={savingAttendance || startingMeeting} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted-foreground)", padding: "0.25rem" }}>
+          <button type="button" aria-label="Close meeting readiness" onClick={() => { if (!attendanceSaveInFlight.current && !startRequested.current) onClose(); }} disabled={savingAttendance || startingMeeting} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted-foreground)", padding: "0.5rem" }}>
             <X size={18} />
           </button>
         </div>
@@ -336,10 +343,10 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
           {warnings.map((w, i) => <StatusChip key={`w${i}`} warn label={w} />)}
           {!hasCriticalBlocker && warnings.length === 0 && <StatusChip ok label="Ready to start" />}
         </div>
-      </div>
+      </header>
 
       {/* ── SCROLLABLE BODY ───────────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "1rem 1.5rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      <main className="pre-meeting-readiness__body">
 
         {/* Meeting Setup */}
         <Section title="Meeting Setup" icon={<CheckCircle size={15} />}>
@@ -356,7 +363,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
         {/* Participants */}
         <Section title="Participants" icon={<Users size={15} />}>
           {/* Summary counts */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "0.4rem", marginBottom: "0.75rem" }}>
+          <div className="pre-meeting-readiness__metrics">
             {[
               { label: "Total Invited",       value: myLinks.length },
               { label: "Checked In",          value: presentCount },
@@ -365,7 +372,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
               { label: "Leadership Present",  value: `${requiredPresent}/${requiredLinks.length}` },
               { label: "Not Joined",          value: myLinks.filter(l => (attendanceMap[l.user_id] ?? "Not Joined") === "Not Joined").length },
             ].map(({ label, value }) => (
-              <div key={label} style={{ padding: "0.5rem 0.6rem", borderRadius: 6, background: "var(--muted)", textAlign: "center" }}>
+              <div key={label} className="pre-meeting-readiness__metric">
                 <p style={{ margin: 0, fontSize: "1rem", fontWeight: 700 }}>{value}</p>
                 <p style={{ margin: 0, fontSize: "0.65rem", color: "var(--muted-foreground)" }}>{label}</p>
               </div>
@@ -440,7 +447,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
         </Section>
 
         {/* Quorum */}
-        <Section title="Quorum" icon={<CheckCircle size={15} />}>
+        <Section title="Quorum" icon={<CheckCircle size={15} />} defaultOpen={false}>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
             <InfoRow label="Quorum Rule"    value={quorumResult.status !== "not_configured" ? `Min. ${quorumResult.requiredCount} members${quorumResult.requiredPercent > 0 ? ` (${quorumResult.requiredPercent}%)` : ""}` : "Not Configured"} warn={quorumResult.status === "not_configured"} />
             <InfoRow label="Required Count" value={quorumResult.requiredCount > 0 ? String(quorumResult.requiredCount) : "—"} />
@@ -464,7 +471,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
         </Section>
 
         {/* Agendas */}
-        <Section title="Agendas" icon={<Layers size={15} />}>
+        <Section title="Agendas" icon={<Layers size={15} />} defaultOpen={false}>
           <div style={{ display: "flex", flexDirection: "column" }}>
             <InfoRow label="Linked Agendas"  value={String(linkedAgendaCount)} />
             <InfoRow label="Agenda Documents" value={String(linkedDocIds.size)} />
@@ -475,7 +482,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
         </Section>
 
         {/* Documents */}
-        <Section title="Documents" icon={<FileText size={15} />}>
+        <Section title="Documents" icon={<FileText size={15} />} defaultOpen={false}>
           <div style={{ display: "flex", flexDirection: "column" }}>
             <InfoRow label="Total Documents"    value={String(linkedDocs.length)} />
             <InfoRow label="Missing Content"    value={String(missingDocContent.length)} warn={missingDocContent.length > 0} />
@@ -514,12 +521,12 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
             )}
           </div>
         )}
-      </div>
+      </main>
 
       {/* ── FOOTER ────────────────────────────────────────────────────────── */}
-      <div style={{ padding: "0.75rem 1.5rem", borderTop: "1px solid var(--border)", background: "var(--card)", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+      <footer className="pre-meeting-readiness__footer">
         <SecondaryButton onClick={onClose} disabled={savingAttendance || startingMeeting}>Close</SecondaryButton>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+        <div className="pre-meeting-readiness__footer-actions">
           {attendanceError && <span role="alert" style={{ fontSize: "0.72rem", color: "#ef4444", maxWidth: 320 }}>{attendanceError}</span>}
           <SecondaryButton onClick={() => { void saveAttendance(); }} disabled={savingAttendance || startingMeeting}>
             {savingAttendance ? "Saving…" : "Save Attendance"}
@@ -532,7 +539,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
             {savingAttendance ? "Saving attendance…" : startingMeeting ? "Starting meeting…" : "Start Meeting"}
           </PrimaryButton>
         </div>
-      </div>
+      </footer>
     </div>
   );
 }
