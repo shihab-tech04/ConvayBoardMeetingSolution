@@ -87,6 +87,13 @@ DECLARE
  v_invalid boolean := false;
 BEGIN
  IF OLD.entity_key <> 'bms.agenda' THEN RETURN NEW; END IF;
+ IF NEW.created_by IS DISTINCT FROM OLD.created_by THEN
+   RAISE EXCEPTION 'Agenda creator identity cannot be reassigned' USING ERRCODE='42501';
+ END IF;
+ IF NOT (convay_private.has_permission('agd_review') OR convay_private.has_permission('agd_approve'))
+    AND OLD.created_by IS DISTINCT FROM auth.uid() THEN
+   RAISE EXCEPTION 'Agenda author may edit only their own records' USING ERRCODE='42501';
+ END IF;
  IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id THEN
    RAISE EXCEPTION 'Agenda tenant cannot change through ordinary editing' USING ERRCODE='42501';
  END IF;
