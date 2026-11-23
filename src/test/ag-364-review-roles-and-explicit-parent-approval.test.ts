@@ -31,6 +31,8 @@ describe("AG-364 separate Agenda author, reviewer, approver and parent signoff",
     expect(sql).toContain("entity_key='bms.agenda'");
     expect(sql).toContain("AND (convay_private.has_permission('agd_review') OR convay_private.has_permission('agd_approve'))");
     expect(sql).toContain("Agenda reviewer cannot change content");
+    expect(sql).toContain("Agenda archiving requires approver permission");
+    expect(sql).toContain("Agenda approver permission required for this transition");
     expect(sql).toContain("Agenda tenant cannot change through ordinary editing");
     expect(sql).toContain("convay_private.enforce_entity_state_transition()");
     expect(sql).toContain("new.payload->'approval_history'->-1->>'action'='request_revision'");
