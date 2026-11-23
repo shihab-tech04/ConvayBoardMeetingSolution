@@ -99,6 +99,10 @@ export function LiveMeetingMedia({
   const [refresh, setRefresh] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  // Browser autoplay policies may block incoming participant audio even after
+  // the LiveKit room connects. This is separate from the user's microphone.
+  const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false);
+  const [audioUnlockBusy, setAudioUnlockBusy] = useState(false);
   // Serialize provider publish/unpublish commands across rapid share toggles.
   const shareOperations = useRef<Promise<void>>(Promise.resolve());
   const callbacks = useRef({ onPresence, onMicChange, onCamChange, onSharingChange, requestAdmission, onParticipants });
@@ -110,6 +114,7 @@ export function LiveMeetingMedia({
     let connected = false;
     setStatus("Connecting");
     setError("");
+    setAudioPlaybackBlocked(false);
     const render = () => {
       setRefresh(n => n + 1);
       const members = nextRoom ? [nextRoom.localParticipant, ...nextRoom.remoteParticipants.values()] : [];
@@ -155,6 +160,11 @@ export function LiveMeetingMedia({
         }
         if (ended) return;
         nextRoom = new sdk.Room({ adaptiveStream: true, dynacast: true });
+        if (sdk.RoomEvent.AudioPlaybackStatusChanged) {
+          nextRoom.on(sdk.RoomEvent.AudioPlaybackStatusChanged, () => {
+            if (!ended) setAudioPlaybackBlocked(nextRoom?.canPlaybackAudio === false);
+          });
+        }
         for (const name of ["TrackSubscribed", "TrackUnsubscribed", "TrackPublished", "TrackUnpublished", "ParticipantConnected", "ParticipantDisconnected",
           "TrackMuted", "TrackUnmuted", "LocalTrackPublished", "LocalTrackUnpublished"]) {
           const event = sdk.RoomEvent[name];
@@ -175,11 +185,13 @@ export function LiveMeetingMedia({
             callbacks.current.onPresence(true, nextRoom?.localParticipant?.identity);
           }
           setStatus("Connected");
+          setAudioPlaybackBlocked(nextRoom?.canPlaybackAudio === false);
           render();
         });
         nextRoom.on(sdk.RoomEvent.Disconnected, () => {
           if (ended) return;
           setStatus("Disconnected");
+          setAudioPlaybackBlocked(false);
           // Publishing ends when the provider disconnects, regardless of UI intent.
           callbacks.current.onSharingChange(false);
           if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom?.localParticipant?.identity); }
@@ -189,6 +201,7 @@ export function LiveMeetingMedia({
         connected = true;
         setRoom(nextRoom);
         setStatus("Connected");
+        setAudioPlaybackBlocked(nextRoom.canPlaybackAudio === false);
         callbacks.current.onPresence(true, nextRoom.localParticipant.identity);
         render();
       } catch (cause) {
@@ -266,6 +279,23 @@ export function LiveMeetingMedia({
   }, [room]);
 
   const members = room ? [room.localParticipant, ...room.remoteParticipants.values()] : [];
+  async function enableIncomingAudio() {
+    if (!room || status !== "Connected" || audioUnlockBusy) return;
+    setAudioUnlockBusy(true);
+    try {
+      // LiveKit must be invoked inside a real click to satisfy autoplay rules.
+      await room.startAudio();
+      const stillBlocked = room.canPlaybackAudio === false;
+      setAudioPlaybackBlocked(stillBlocked);
+      if (stillBlocked) setError("Your browser still blocks meeting sound. Allow sound for this site, then try again.");
+      else setError("");
+    } catch (cause) {
+      setAudioPlaybackBlocked(true);
+      setError(cause instanceof Error ? cause.message : "Unable to enable incoming meeting audio.");
+    } finally {
+      setAudioUnlockBusy(false);
+    }
+  }
   async function selectDevice(kind: "audioinput" | "videoinput", deviceId: string) {
     if (!room || !deviceId) return;
     try { await room.switchActiveDevice(kind, deviceId); }
@@ -280,6 +310,15 @@ export function LiveMeetingMedia({
       </>}
       {status === "Disconnected" && <button type="button" onClick={() => { setRoom(null); setAttempt(n => n + 1); }}>Rejoin</button>}
     </div>
+    {status === "Connected" && audioPlaybackBlocked && (
+      <div role="status" aria-live="polite" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "0.55rem 0.7rem", borderRadius: 8, border: "1px solid #a16207", background: "#422006", color: "#fef3c7", fontSize: 13 }}>
+        <span>Incoming meeting audio is blocked by your browser.</span>
+        <button type="button" aria-label="Enable incoming meeting audio" disabled={audioUnlockBusy} onClick={() => { void enableIncomingAudio(); }}
+          style={{ minHeight: 38, padding: "0.4rem 0.75rem", color: "#111827", background: "#fbbf24", border: "none", borderRadius: 6, cursor: audioUnlockBusy ? "wait" : "pointer", fontWeight: 650 }}>
+          {audioUnlockBusy ? "Enabling audio…" : "Enable Audio"}
+        </button>
+      </div>
+    )}
     {error && <p role="alert" style={{ color: "#fca5a5" }}>{error}</p>}
     {status === "Connected" && <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", alignContent: "start" }}>
       {members.map((member: any) => <MemberTile key={member.identity} member={member} local={room.localParticipant === member} refresh={refresh} />)}
