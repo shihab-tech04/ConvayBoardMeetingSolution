@@ -101,8 +101,11 @@ Deno.serve(async req => {
       entityRows<OnlineLink>("bms.meetingParticipantLinks", meetingId, jwt),
       entityRows<OnlineSession>("bms.liveSessions", meetingId, jwt),
     ]);
-    const session = sessions.find(item => item.session_status === "active" || item.session_status === "paused")
-      ?? sessions[0] ?? null;
+    // SQL attendance requires exactly one active or paused session.
+    // Do not issue provider credentials for contradictory live-session records.
+    const activeSessions = sessions.filter(item => item.session_status === "active" || item.session_status === "paused");
+    if (activeSessions.length !== 1) return response(req, 409, { error: "Meeting session state is inconsistent." });
+    const session = activeSessions[0];
     const admission = {
       meeting, session, links, userId: user.id,
       isSuperAdmin: snapshot.is_super_admin === true,
