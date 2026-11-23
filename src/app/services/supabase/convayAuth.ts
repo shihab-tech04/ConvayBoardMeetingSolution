@@ -267,6 +267,25 @@ export const convayAuth = {
       startedAt: typeof receipt.startedAt === "string" ? receipt.startedAt : undefined };
   },
 
+  /** Reopen a closed online meeting only through the audited Super Admin SQL RPC. */
+  async reopenMeeting(meetingId: string, reason: string): Promise<{ meetingId: string; sessionId: string; reopenedAt: string }> {
+    const id = meetingId.trim();
+    const cleanReason = reason.trim();
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) throw new Error("A saved meeting ID is required");
+    if (cleanReason.length < 10 || cleanReason.length > 500) throw new Error("Provide a reopening reason (10–500 characters)");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_reopen_meeting", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_meeting_id: id, p_reason: cleanReason }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Meeting could not be reopened."));
+    const receipt = await res.json() as { meetingId?: unknown; sessionId?: unknown; status?: unknown; reopenedAt?: unknown };
+    if (receipt.meetingId !== id || typeof receipt.sessionId !== "string"
+      || receipt.status !== "In Progress" || typeof receipt.reopenedAt !== "string") {
+      throw new Error("Reopening was not confirmed by SQL. Refresh before retrying.");
+    }
+    return { meetingId: id, sessionId: receipt.sessionId, reopenedAt: receipt.reopenedAt };
+  },
+
   async applyBatch(operations: Array<{
     entity_key: string;
     action: "create" | "update" | "delete";
