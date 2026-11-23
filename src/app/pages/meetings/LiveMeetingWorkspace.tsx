@@ -756,6 +756,30 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     return "meeting";
   };
   const [phase, setPhase]             = useState<"readiness" | "prejoin" | "meeting">(determineInitialPhase);
+  // The token gateway requires exactly one active or paused SQL live session.
+  // Do not enter the media workspace while the host has not started the meeting.
+  const activeJoinSessions = isOnlineMeeting
+    ? liveSessions.filter(s => s.meeting_id === meetingId && (s.session_status === "active" || s.session_status === "paused"))
+    : [];
+  const joinBlockedReason = !isOnlineMeeting || activeJoinSessions.length === 1
+    ? undefined
+    : activeJoinSessions.length === 0
+      ? "Waiting for the authorized host to start this LiveKit meeting. This page checks automatically."
+      : "Multiple live sessions were found. Contact the meeting organizer.";
+  useEffect(() => {
+    if (!isOnlineMeeting || phase !== "prejoin") return;
+    const refresh = () => { void Promise.resolve(refreshLiveSessions?.()).catch(() => undefined); };
+    refresh();
+    const timer = window.setInterval(refresh, 12000);
+    return () => window.clearInterval(timer);
+  }, [isOnlineMeeting, phase, refreshLiveSessions]);
+  // Registry data can arrive after the route first renders. A cached local
+  // control state must never skip the authenticated waiting room.
+  useEffect(() => {
+    if (isOnlineMeeting && entryAction === "join_meeting" && phase === "meeting" && activeJoinSessions.length !== 1) {
+      setPhase("prejoin");
+    }
+  }, [isOnlineMeeting, entryAction, phase, activeJoinSessions.length]);
   const [myMicOn, setMyMicOn]         = useState(true);
   const [myCamOn, setMyCamOn]         = useState(true);
   // Separate user request from provider-confirmed sharing.
@@ -1615,7 +1639,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         meeting={meeting}
         initialRole={myRole as PreJoinRole}
         publisherAllowed={canPublishMedia}
+        joinBlockedReason={joinBlockedReason}
         onJoin={opts => {
+          if (joinBlockedReason) { toast.info(joinBlockedReason); return; }
           setMyMicOn(canPublishMedia && opts.micOn);
           setMyCamOn(canPublishMedia && opts.camOn);
           setPhase("meeting");
