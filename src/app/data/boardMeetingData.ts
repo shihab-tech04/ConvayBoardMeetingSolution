@@ -784,12 +784,22 @@ export interface Minutes {
   co_authors: string;
   quorum_statement: string;
   discussion_summary: string;
+  notes?: string;
   next_meeting_date: string;
   closing_time: string;
   version: string;
   approval_status: string;
   created_at: string;
   meeting_date?: string;
+  /** MN-02 server-authoritative source meeting snapshot; no client editing. */
+  meeting_context?: {
+    committee: string;
+    meeting_type: string;
+    mode: string;
+    venue: string;
+    time_zone: string;
+    confidentiality: string;
+  };
 }
 
 // ─── BoardPack Interface ───────────────────────────────────────────────────────
