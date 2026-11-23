@@ -742,7 +742,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const lastCanonicalStatusKey = useRef("");
   useEffect(() => {
     if (!meetingId || !meeting) return;
-    const canonical = liveSessions.find(item => item.meeting_id === meetingId);
+    const canonical = liveSessions.find(item => item.meeting_id === meetingId && (item.session_status === "active" || item.session_status === "paused"))
+      ?? liveSessions.find(item => item.meeting_id === meetingId);
     if (!canonical) return;
     const next = canonicalLiveControlStatus(canonical.session_status, meeting.approval_status);
     if (!next) return;
@@ -1009,6 +1010,31 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // Persist meeting and live session in one SQL transaction before changing the UI.
   const startRequest = useRef<Promise<boolean> | null>(null);
   const [startBusy, setStartBusy] = useState(false);
+  const [reopenBusy, setReopenBusy] = useState(false);
+  const [reopenMeetingOpen, setReopenMeetingOpen] = useState(false);
+  const [reopenMeetingReason, setReopenMeetingReason] = useState("");
+  const reopeningInFlight = useRef(false);
+  const handleReopen = useCallback(async (reason: string): Promise<boolean> => {
+    if (reopeningInFlight.current || !access.loaded || !access.is_super_admin || !meetingId) return false;
+    reopeningInFlight.current = true;
+    setReopenBusy(true);
+    try {
+      await convayAuth.reopenMeeting(meetingId, reason);
+      setCtrlStatusRaw("in-progress");
+      setReopenMeetingOpen(false);
+      setReopenMeetingReason("");
+      try { await Promise.all([refreshMeetings?.(), refreshLiveSessions?.()]); }
+      catch { toast.info("Meeting reopened. Refresh to load the latest session."); }
+      toast.success("Meeting reopened with an audit record. You can now join.");
+      return true;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to reopen the meeting.");
+      return false;
+    } finally {
+      reopeningInFlight.current = false;
+      setReopenBusy(false);
+    }
+  }, [meetingId, access.loaded, access.is_super_admin, refreshMeetings, refreshLiveSessions]);
   const handleStart = useCallback((): Promise<boolean> => {
     if (startRequest.current) return startRequest.current;
     const request = (async () => {
@@ -1065,7 +1091,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const handleEnd = useCallback((): Promise<boolean> => {
     if (endRequest.current) return endRequest.current;
     const request = (async () => {
-      const session = liveSessions.find(item => item.meeting_id === meetingId);
+      const session = liveSessions.find(item => item.meeting_id === meetingId && (item.session_status === "active" || item.session_status === "paused"));
       if (!meeting || !session) {
         toast.error("Meeting session has not loaded. Refresh before ending the meeting.");
         return false;
@@ -1733,12 +1759,18 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       );
     }
     return (
+      <>
       <MeetingPreJoinPanel
         meeting={meeting}
         initialRole={myRole as PreJoinRole}
         publisherAllowed={canPublishMedia}
         joinBlockedReason={joinBlockedReason}
-        forceStartBusy={startBusy}
+        forceStartBusy={startBusy || reopenBusy}
+        onReopen={access.loaded && access.is_super_admin && hasGrant("mtg_start") &&
+          String(meeting?.approval_status ?? "").trim().toLowerCase() === "awaiting minutes" &&
+          activeJoinSessions.length === 0 &&
+          liveSessions.some(item => item.meeting_id === meetingId && item.session_status === "ended")
+          ? () => setReopenMeetingOpen(true) : undefined}
         onForceStart={access.loaded && canControlMeeting && canonicalRoomEntry.mayAttemptStart &&
           (access.is_super_admin || (
             ["published", "ready to start"].includes(String(meeting?.approval_status ?? "").trim().toLowerCase())
@@ -1756,6 +1788,25 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         }}
         onBack={() => onClose()}
       />
+      <AppModal open={reopenMeetingOpen} title="Reopen ended meeting" size="sm"
+        onClose={() => { if (!reopenBusy) setReopenMeetingOpen(false); }}
+        footer={<>
+          <SecondaryButton disabled={reopenBusy} onClick={() => setReopenMeetingOpen(false)}>Cancel</SecondaryButton>
+          <PrimaryButton disabled={reopenBusy || reopenMeetingReason.trim().length < 10 || reopenMeetingReason.trim().length > 500}
+            onClick={() => { void handleReopen(reopenMeetingReason); }}>
+            {reopenBusy ? "Reopening…" : "Reopen Meeting"}
+          </PrimaryButton>
+        </>}
+      >
+        <p style={{ marginBottom: 12 }}>Only Super Admin may reopen an ended online meeting before minutes are recorded. The previous session will remain in the audit history; a new session will be started.</p>
+        <label htmlFor="meeting-reopen-reason" style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>Reason for reopening (required)</label>
+        <textarea id="meeting-reopen-reason" value={reopenMeetingReason} maxLength={500} rows={4}
+          onChange={event => setReopenMeetingReason(event.target.value)}
+          placeholder="Explain why this ended meeting needs to be reopened…"
+          style={{ width: "100%", resize: "vertical", padding: 12, border: "1px solid var(--border, #64748b)", borderRadius: 8, background: "var(--background, #fff)", color: "var(--foreground, #111827)" }} />
+        <p style={{ marginTop: 8, fontSize: 12 }}>{reopenMeetingReason.trim().length}/500 · Minimum 10 characters</p>
+      </AppModal>
+      </>
     );
   }
 
