@@ -47,7 +47,9 @@ describe("MT-04 Create Meeting setup, options, recovery and fail-closed scheduli
     expect(meetingPage).toContain("activeMeetingGovernanceOptions(govRegistry.items)");
     expect(meetingPage).toContain("validateCreateStep: (step, values)");
     expect(meetingPage).toContain("Mark at least one participant as required.");
-    expect(meetingPage).toContain("A selected agenda is missing, not approved or not Meeting Ready.");
+    expect(meetingPage).toContain("validateOptionalMeetingAgendas(selected, agendaRegistry.items)[0]");
+    expect(meetingPage).toContain("validateOptionalMeetingAgendas(agendaEntriesParsed, agendaRegistry.items)");
+    expect(meetingPage).not.toContain("At least one approved agenda must be selected");
     expect(meetingPage).toContain("An active, verified quorum rule is required");
   });
   it("shows actionable authenticated registry setup without discarding wizard state", () => {
