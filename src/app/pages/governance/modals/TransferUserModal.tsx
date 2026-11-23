@@ -13,21 +13,14 @@
  */
 
 import { useState, useMemo, useRef } from "react";
-import { toast } from "sonner";
 import { createPortal } from "react-dom";
 import { X, ArrowRight, AlertTriangle, Search, CheckCircle, Users } from "lucide-react";
 
 import type { OrgUnit } from "../../../data/boardMeetingData";
-import type { BmsUser } from "../../../data/bmsUsers";
 import { useBmsUserRegistry } from "../../../data/bmsUsers";
-import { useAuditEventRegistry, generateId, useOrgUnitRegistry } from "../../../data/boardMeetingData";
-import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import {
-  buildPathLabel,
-  buildUnitAssignmentPatch,
-  buildUnitClearancePatch,
-  resolveUnitUsers,
-} from "../../../utils/orgHierarchy";
+import { useOrgUnitRegistry } from "../../../data/boardMeetingData";
+import { convayAuth } from "../../../services/supabase/convayAuth";
+import { buildPathLabel, resolveUnitUsers } from "../../../utils/orgHierarchy";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -48,9 +41,7 @@ const STEPS = ["Select User", "Destination", "Details", "Impact", "Confirm"];
 
 export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialUserId }: Props) {
   const bmsUsers    = useBmsUserRegistry();
-  const auditReg    = useAuditEventRegistry();
   const orgReg      = useOrgUnitRegistry();
-  const currentUser = useCurrentUser();
 
   const [step, setStep] = useState(initialUserId ? 1 : 0);
   const [selectedUserId, setSelectedUserId]   = useState(initialUserId ?? "");
@@ -63,6 +54,7 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
   const [handoverUserId, setHandoverUserId]   = useState("");
   const [saving, setSaving]                   = useState(false);
   const saveInFlight = useRef(false);
+  const requestId = useRef<{ fingerprint: string; id: string } | null>(null);
   const [error, setError]                     = useState("");
 
   // Selected user
@@ -133,6 +125,7 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
     if (step === 1 && destUnitId === sourceUnitId) { setError("Destination must be different from the current unit."); return false; }
     if (step === 2 && !effectiveDate)  { setError("Effective date is required."); return false; }
     if (step === 2 && !reason.trim())  { setError("A transfer reason is required."); return false; }
+    if (step === 2 && effectiveDate > new Date().toISOString().slice(0, 10)) { setError("Future-dated transfers require scheduling and cannot be completed immediately."); return false; }
     setError("");
     return true;
   }
@@ -144,53 +137,42 @@ export function TransferUserModal({ unit, allUnits, onClose, onSuccess, initialU
 
   async function handleConfirm() {
     if (saveInFlight.current || !selectedUser || !destUnit) return;
-    if (selectedUser.primary_org_unit_id === destUnit.id) {
-      setError("Source and destination units must be different.");
+    const prior = selectedUser.primary_org_unit_id || null;
+    if (!prior || prior === destUnit.id) {
+      setError("Select a member assigned to another active unit.");
       return;
+    }
+    if (!reason.trim() || !effectiveDate || effectiveDate > new Date().toISOString().slice(0, 10)) {
+      setError("Provide a valid, non-future effective date and transfer reason.");
+      return;
+    }
+    const fingerprint = [
+      selectedUser.id, prior, destUnit.id, effectiveDate,
+      reason.trim(), newDesignation.trim(), handoverUserId,
+    ].join(":");
+    if (!requestId.current || requestId.current.fingerprint !== fingerprint) {
+      requestId.current = { fingerprint, id: crypto.randomUUID() };
     }
     saveInFlight.current = true;
     setSaving(true);
     setError("");
-    const now = new Date().toISOString();
-    const patch: Partial<BmsUser> = {
-      ...buildUnitClearancePatch(),
-      ...buildUnitAssignmentPatch(destUnit),
-      updated_at: now,
-      ...(newDesignation ? { position: newDesignation } : {}),
-    };
-
     try {
-      // The live user-directory source rejects direct member writes. Only a
-      // server-confirmed authorized transfer may be reported as complete.
-      const saved = await bmsUsers.update(selectedUser.id, patch);
-      if (!saved) throw new Error("Transfer was not saved. Use authorized User Management.");
-
-      let auditSaved = false;
-      try {
-        auditSaved = await auditReg.add({
-          id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-          created_at:      now,
-          event_id:        `AUDIT-XFER-${Date.now()}`,
-          entity_type:     "OrgUnit",
-          entity_id:       destUnit.id,
-          action:          "org_user_transferred",
-          actor:           currentUser?.name ?? "System",
-          actor_role:      currentUser?.designation ?? "",
-          timestamp:       now,
-          ip_address:      "",
-          details:         `${selectedUser.name} transferred from ${sourcePath} to ${destPath}. Reason: ${reason}. Effective: ${effectiveDate}.`,
-          approval_status: "Approved",
-        });
-      } catch {
-        // The primary transfer has already been confirmed; do not claim rollback.
-      }
-      if (!auditSaved) {
-        toast.warning("Transfer saved, but the activity journal could not be verified.");
-      }
+      await convayAuth.commitOrgMemberAssignment({
+        memberId: selectedUser.id,
+        expectedUnitId: prior,
+        newUnitId: destUnit.id,
+        operation: "transfer",
+        requestId: requestId.current.id,
+        reason: reason.trim(),
+        effectiveDate,
+        position: newDesignation.trim() || undefined,
+        handoverUserId: handoverUserId || undefined,
+      });
+      await bmsUsers.refresh?.();
       onSuccess?.();
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Unable to transfer the user.");
+      setError(failure instanceof Error ? failure.message : "Unable to verify transfer.");
     } finally {
       saveInFlight.current = false;
       setSaving(false);

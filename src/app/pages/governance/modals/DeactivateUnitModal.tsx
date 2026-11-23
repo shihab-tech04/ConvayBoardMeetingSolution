@@ -31,6 +31,7 @@ import type { OrgUnit } from "../../../data/boardMeetingData";
 import { useOrgUnitRegistry, useUnitHeadRegistry } from "../../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../../data/bmsUsers";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { convayAuth } from "../../../services/supabase/convayAuth";
 import {
   findChildren,
   resolveUnitUsers,
@@ -75,10 +76,16 @@ export function DeactivateUnitModal({
   // Dependencies
   const assignedUsers   = useMemo(() => resolveUnitUsers(unit.id, bmsUsers.items), [unit.id, bmsUsers.items]);
   const childUnits      = useMemo(() => findChildren(unit.id, allUnits), [unit.id, allUnits]);
-  const activeHeads     = useMemo(
+  const activeHeads = useMemo(
     () => headReg.items.filter((a) => a.unit_id === unit.id && a.status === "active"),
     [headReg.items, unit.id],
   );
+  const headProjectionCount = [unit.head_user_id, unit.deputy_user_id]
+    .filter(userId => Boolean(userId) &&
+      !activeHeads.some(head => head.user_id === userId)).length;
+  const unresolvedLeadershipCount = activeHeads.length + headProjectionCount;
+  const sourceReady = !bmsUsers.loading && !bmsUsers.error &&
+    !orgReg.loading && !orgReg.error && !headReg.loading && !headReg.error;
 
   const deps: Dep[] = useMemo(() => [
     {
@@ -95,16 +102,16 @@ export function DeactivateUnitModal({
     },
     {
       key:      "heads",
-      label:    `Active leadership assignments (${activeHeads.length})`,
-      count:    activeHeads.length,
-      resolved: activeHeads.length === 0,
+      label:    `Active leadership assignments (${unresolvedLeadershipCount})`,
+      count:    unresolvedLeadershipCount,
+      resolved: unresolvedLeadershipCount === 0,
     },
-  ], [assignedUsers.length, childUnits.length, activeHeads.length]);
+  ], [assignedUsers.length, childUnits.length, unresolvedLeadershipCount]);
 
-  const allResolved = unitCanDeactivate({
+  const allResolved = sourceReady && unitCanDeactivate({
     assignedUsers: assignedUsers.length,
     childUnits: childUnits.length,
-    activeHeads: activeHeads.length,
+    activeHeads: unresolvedLeadershipCount,
   });
 
   // ── Confirm deactivation ──────────────────────────────────────────────────────
@@ -113,7 +120,9 @@ export function DeactivateUnitModal({
     if (saveInFlight.current) return;
     if (!allResolved) {
       setStep("inspect");
-      setError("Resolve actual user, child-unit and leadership assignments before deactivation.");
+      setError(sourceReady
+        ? "Resolve actual user, child-unit and leadership assignments before deactivation."
+        : "Authoritative user, unit or leadership data is unavailable. Refresh before deactivation.");
       return;
     }
     saveInFlight.current = true;
@@ -128,26 +137,23 @@ export function DeactivateUnitModal({
         deactivated_at:      now,
         deactivated_by:      currentUser?.id ?? "system",
         deactivation_reason: deactivationReason || undefined,
-        head_user_id:        undefined,
-        head:                "",
         updated_at:          now,
       });
       if (!saved) throw new Error("The unit was not deactivated. Check access and reload.");
 
-      // The authoritative database trigger records the mutation and actor
-      // in immutable entity_changes in the same transaction. Direct bms.audit
-      // inserts are denied and must not be attempted from the client.
-      // A second registry read verifies the acknowledged status; never replay
-      // a committed write when a readback is unavailable.
+      // Check the SQL record, not the stale current React registry closure.
+      let confirmed = false;
       try {
-        if (!orgReg.refresh) throw new Error("SQL refresh unavailable");
-        await orgReg.refresh();
-        if (orgReg.getById(unit.id)?.status !== "Deactivated") {
-          toast.warning("Deactivation was acknowledged, but SQL readback could not be confirmed. Refresh before another change.");
-        }
-      } catch {
-        toast.warning("Deactivation was acknowledged, but SQL readback is unavailable. Refresh before another change.");
+        const authoritative = await convayAuth.registry<OrgUnit>("bms.orgunits", "list");
+        confirmed = authoritative.records.some(record =>
+          record.payload.id === unit.id && record.payload.status === "Deactivated");
+      } catch { /* The acknowledged write may already have committed. */ }
+      if (!confirmed) {
+        toast.warning("Deactivation acknowledged, but SQL readback is unverified. Refresh before another operation.");
+        onClose();
+        return;
       }
+      await orgReg.refresh?.();
       onSuccess?.();
       onClose();
     } catch (failure) {
