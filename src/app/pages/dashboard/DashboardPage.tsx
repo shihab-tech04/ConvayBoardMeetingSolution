@@ -1124,7 +1124,7 @@ export function DashboardPage() {
 
   const getStartNowAction = useCallback((meeting: Meeting): DashboardStartAction => {
     const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);
-    const state = resolveMeetingStartCardState(meeting as Record<string, unknown>, resolved);
+    const state = resolveMeetingStartCardState(meeting as unknown as Record<string, unknown>, resolved);
     return {
       ...state,
       onClick: () => {
