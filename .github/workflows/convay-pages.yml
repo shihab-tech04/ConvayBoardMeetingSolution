@@ -40,6 +40,11 @@ jobs:
       - name: Verify router under GitHub Pages base path
         run: pnpm exec vitest run src/test/pages-router-basename.test.ts --config vite.pages.test.config.ts
       - name: Build for repository-subpath deployment
+        env:
+          # Regular meeting has its own SQL/Edge path. Never enable missing
+          # Quick Meeting guest/backend journeys via this release.
+          VITE_CONVAY_REGULAR_LIVE_ENABLED: "true"
+          VITE_CONVAY_QUICK_MEETING_ENABLED: "false"
         run: pnpm exec vite build --config vite.figma.config.ts --base /ConvayBoardMeetingSolution/
       - name: Verify production entry
         run: |
@@ -52,7 +57,7 @@ jobs:
           cmp dist/index.html dist/404.html
       - name: Embed exact release commit
         run: |
-          printf '{"commit":"%s"}\n' "$GITHUB_SHA" > dist/release.json
+          printf '{"commit":"%s","regular_live":true,"quick_meeting":false}\n' "$GITHUB_SHA" > dist/release.json
       - name: Upload production Pages artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
@@ -89,6 +94,8 @@ jobs:
                       release = json.load(response)
                   if release.get("commit") != expected:
                       raise RuntimeError("Stale or unexpected public commit: " + repr(release))
+                  if release.get("regular_live") is not True or release.get("quick_meeting") is not False:
+                      raise RuntimeError("Public release flags differ from approved Convay activation")
                   with urllib.request.urlopen(base + "?release=" + expected, timeout=12) as response:
                       html = response.read().decode("utf-8")
                   if "Convay Board Meeting solution v3.0" not in html:
