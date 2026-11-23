@@ -20,6 +20,7 @@ import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./us
 import { createLatestUserDirectoryRead, isUserDirectoryStatsUnavailable } from "./userDirectoryRead";
 import { userDirectoryCountLabel } from "./userDirectorySubtitle";
 import { requireUserMutationAck } from "./userMutationAck";
+import { requireRoleAssignmentReadback } from "./roleAssignmentReadback";
 
 type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
@@ -155,10 +156,13 @@ export function SupabaseUserManagementPage() {
     setWorking(true);
     setAssignError("");
     try {
-      await convayAuth.access("assign_roles", { user_id: roleAssignId, role_ids: selectedRoles });
-      await reloadAccessSnapshot();
+      const confirmation = await convayAuth.access<{ ok?: boolean }>("assign_roles", {
+        user_id: roleAssignId, role_ids: selectedRoles,
+      });
+      const confirmedSnapshot = await reloadAccessSnapshot();
+      requireRoleAssignmentReadback(confirmation, confirmedSnapshot, roleAssignId, selectedRoles);
       setRoleAssignId(null);
-      toast.success("User roles updated");
+      toast.success("User roles updated and verified");
     } catch (error) {
       setAssignError(error instanceof Error ? error.message : "Unable to assign roles");
     } finally {

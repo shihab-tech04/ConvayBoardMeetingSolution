@@ -68,11 +68,12 @@ export function LoginForm({ isDesktop, onForgotPassword }: LoginFormProps) {
       <div className="lp-form__fields">
         <AppTextField
           id="login-user-id"
-          label="User ID or email"
+          label="Email address or Super Admin ID"
           value={userId}
           onChange={setUserId}
           onKeyDown={handleKeyDown}
-          placeholder="Enter your User ID or email"
+          placeholder="Enter your registered email address"
+          helper="Invited users sign in with the email address they verified."
           autoComplete="username"
         />
 

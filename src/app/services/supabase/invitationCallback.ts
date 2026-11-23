@@ -16,5 +16,11 @@ export function readSupabaseInvitationCallback(search: string, hash: string): Su
 
 export function isSupabaseInvitationCallback(search: string, hash: string): boolean {
   const callback = readSupabaseInvitationCallback(search, hash);
-  return callback.type === "invite" && Boolean(callback.accessToken);
+  // The provider can redirect failed/expired invite links to the configured
+  // Site URL without an access token. Route those to the invitation page so
+  // the recipient sees a recoverable error rather than an unrelated login.
+  const hasProviderError = new URLSearchParams(search).has("error")
+    || new URLSearchParams(hash.replace(/^#/, "")).has("error");
+  return callback.type === "invite"
+    && (Boolean(callback.accessToken) || hasProviderError);
 }
