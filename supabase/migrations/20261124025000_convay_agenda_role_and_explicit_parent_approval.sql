@@ -113,6 +113,10 @@ BEGIN
     AND NOT convay_private.has_permission('agd_approve') THEN
    RAISE EXCEPTION 'Agenda archiving requires approver permission' USING ERRCODE='42501';
  END IF;
+ IF NEW.payload->'meeting_readiness' IS DISTINCT FROM OLD.payload->'meeting_readiness'
+    AND v_next = v_previous AND NOT convay_private.has_permission('agd_approve') THEN
+   RAISE EXCEPTION 'Agenda readiness requires an approver transition' USING ERRCODE='42501';
+ END IF;
  IF NOT convay_private.has_permission('agd_submit') AND
     (NEW.payload - ARRAY['approval_status','approval_history','meeting_readiness',
        'updated_at','updated_by','archived_at','archived_by']) IS DISTINCT FROM
