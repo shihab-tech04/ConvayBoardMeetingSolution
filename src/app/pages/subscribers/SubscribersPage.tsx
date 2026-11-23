@@ -310,7 +310,7 @@ export function SubscribersPage() {
           : pending.action==="void_quote"?"Void this quote? Its audit history will be retained."
           : pending.action==="create_invoice"?"Create a draft invoice from the issued quote? No payment will be collected."
           :"Issue this invoice? Payment remains uncollected until provider reconciliation is implemented."}
-        confirmLabel={pending.action.replaceAll("_"," ")}
+        confirmLabel={pending.action.replace(/_/g," ")}
         danger={pending.action==="void_quote"}
         onClose={()=>{if(!working)setPending(null);}}
         onConfirm={()=>void confirmAction()}
