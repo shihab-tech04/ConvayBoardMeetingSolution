@@ -22,3 +22,19 @@ export class RegularAttendanceTransitionQueue {
     return current;
   }
 }
+
+/**
+ * A slower poll response must never roll back a newer committed SQL quorum
+ * revision or display another meeting's attendance after route switching.
+ */
+export function acceptsVerifiedAttendanceRevision(
+  responseMeetingId: string,
+  quorumRevision: number,
+  activeMeetingId: string,
+  lastAppliedRevision: number,
+): boolean {
+  return responseMeetingId === activeMeetingId
+    && Number.isSafeInteger(quorumRevision)
+    && quorumRevision >= 0
+    && quorumRevision >= lastAppliedRevision;
+}
