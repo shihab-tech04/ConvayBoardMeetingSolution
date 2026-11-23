@@ -313,7 +313,15 @@ export function LiveMeetingMedia({
   }, [room]);
 
   const members = room ? [room.localParticipant, ...room.remoteParticipants.values()] : [];
-  const focusedIdentity = focusedLiveKitIdentity(members, activeSpeakerIdentity);
+  const focusedIdentity = focusedLiveKitIdentity(
+    members.map((member: any) => ({
+      identity: member.identity,
+      isLocal: member === room?.localParticipant,
+      isCameraEnabled: member.isCameraEnabled,
+      isScreenShareEnabled: member.isScreenShareEnabled,
+    })),
+    activeSpeakerIdentity,
+  );
   const focusedMember = members.find((member: any) => member.identity === focusedIdentity) ?? members[0];
   const otherMembers = members.filter((member: any) => member !== focusedMember);
   async function enableIncomingAudio() {
