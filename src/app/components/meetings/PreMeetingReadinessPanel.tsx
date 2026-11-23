@@ -296,10 +296,12 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
       }
       started = true;
       setStartingMeeting(true);
-    } catch {
+    } catch (error) {
       if (stillMounted.current) {
         setStartingMeeting(false);
-        setAttendanceError("Meeting start could not be requested. Refresh and retry.");
+        setAttendanceError(error instanceof Error
+          ? error.message
+          : "Meeting start could not be requested. Refresh and retry.");
       }
     } finally {
       // Keep the button guarded after a successful start request until the
