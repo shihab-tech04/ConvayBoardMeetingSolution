@@ -10,8 +10,6 @@ import { fc, BADGE } from "../modulePageUtils";
 import {
   useAgendaRegistry,
   useAgendaDocumentLinkRegistry,
-  useAuditEventRegistry,
-  generateId,
   type AgendaSubmission,
 } from "../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../data/bmsUsers";
@@ -195,7 +193,6 @@ const CHILD_DRAWER_COLS = [
 export function Register4ListPage() {
   const registry    = useAgendaRegistry();
   const linkReg     = useAgendaDocumentLinkRegistry();
-  const auditReg    = useAuditEventRegistry();
   const bmsUserReg  = useBmsUserRegistry();
   const { users: systemUsers } = useUserRegistry();
   const { roles }   = useRoleRegistry();
@@ -279,9 +276,9 @@ export function Register4ListPage() {
       submit:           "agd_submit",
       approve:          "agd_approve",
       reject:           "agd_approve",
-      request_revision: "agd_review",
+      request_revision: "agd_approve",
       reopen:           "agd_approve",
-      archive:          "agd_review",
+      archive:          "agd_approve",
       view_history:     "agd_view",
       create:           "agd_submit",
       edit:             "agd_submit",
@@ -349,29 +346,6 @@ export function Register4ListPage() {
   }, [registry.items]);
 
   // ── Audit / history ───────────────────────────────────────────────────────
-
-  function pushRichHistory(targetId: string, prevStatus: string, newStatus: string, action: string, note?: string, reason?: string) {
-    const target = registry.items.find(a => a.id === targetId);
-    if (!target) return;
-    const entry = {
-      status: newStatus, prev_status: prevStatus, action,
-      by: currentUser.name, actor_role: currentUser.designation,
-      at: new Date().toISOString(), note: note ?? "", reason: reason ?? "",
-    };
-    const prev = (target.approval_history ?? []) as object[];
-    registry.update(targetId, { approval_history: [...prev, entry] } as never);
-  }
-
-  function pushAudit(entityId: string, action: string, details: string) {
-    const now = new Date().toISOString();
-    const existingIds = auditReg.items.map(e => e.id);
-    auditReg.add({
-      id: generateId("AUD", existingIds), event_id: generateId("EVT", existingIds),
-      entity_type: "Agenda", entity_id: entityId, action,
-      actor: currentUser.name, actor_role: currentUser.designation,
-      timestamp: now, ip_address: "127.0.0.1", details, approval_status: "",
-    } as never);
-  }
 
   // ── Approval dialog ───────────────────────────────────────────────────────
 
@@ -491,20 +465,41 @@ export function Register4ListPage() {
 
   function archiveAgenda(id: string) {
     const item = registry.items.find(a => a.id === id);
-    if (!item) return;
+    if (!item || !hasPermission("archive")) {
+      toast.error("You cannot archive this agenda.");
+      return;
+    }
     const descendants = getDescendants(id, registry.items);
-    const doArchive = () => {
-      const now = new Date().toISOString();
-      registry.update(id, { archived_at: now, archived_by: currentUser.name, approval_status: "Archived" } as never);
-      descendants.forEach(d => registry.update(d.id, { archived_at: now, archived_by: currentUser.name, approval_status: "Archived" } as never));
-      toast.info(`Archived${descendants.length > 0 ? ` (${descendants.length + 1} items)` : ""}.`);
-    };
     setConfirmDialog({
       title: "Archive Agenda",
-      message: `This will archive "${item.agenda_title}"${descendants.length > 0 ? ` and ${descendants.length} descendant(s)` : ""}. Approval history is preserved.`,
+      message: `This will archive "${item.agenda_title}" and ${descendants.length} descendant(s). Approval history is preserved.`,
       confirmLabel: "Archive",
       danger: false,
-      onConfirm: () => { doArchive(); setConfirmDialog(null); closeDrawer(); },
+      onConfirm: () => {
+        // Archive the complete hierarchy in one server transaction. If any
+        // member fails RLS or a trigger, none of the records is archived.
+        setConfirmDialog(null);
+        void (async () => {
+          const at = new Date().toISOString();
+          const members = [item, ...descendants];
+          try {
+            await convayAuth.applyBatch(members.map(row => ({
+              entity_key: "bms.agenda" as const, action: "update" as const,
+              record_id: row.id,
+              payload: {
+                approval_status: "Archived", archived_at: at,
+                archived_by: currentUser.name, meeting_readiness: "Archived",
+              },
+            })));
+            await registry.refresh?.();
+            closeDrawer();
+            toast.success(`Archived ${members.length} agenda item(s).`);
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Archive was not saved.");
+            await registry.refresh?.().catch(() => undefined);
+          }
+        })();
+      },
     });
   }
 
