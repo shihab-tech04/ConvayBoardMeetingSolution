@@ -34,7 +34,7 @@ export function liveMeetingInvitation(
 ): string | null {
   const link = liveMeetingUrl(meetingId, origin, basePath);
   return link ? [
-    "Join the scheduled board meeting in Convay (powered by LiveKit).",
+    "Join your LiveKit board meeting securely through Convay.",
     "Sign in with your authorized account.",
     `Meeting: ${meetingId}`,
     `Join: ${link}`,

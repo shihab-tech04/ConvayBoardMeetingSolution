@@ -58,6 +58,17 @@ describe("LM/HM: every meeting card uses real LiveKit, not fake deterministic ro
       .toMatchObject({enabled:true,label:"Continue Live Meeting",entryAction:"continue_meeting"});
   });
 
+  it("keeps invitees in the waiting lobby until a host creates the SQL live session", () => {
+    const workspace = readFileSync("src/app/pages/meetings/LiveMeetingWorkspace.tsx", "utf8");
+    const prejoin = readFileSync("src/app/components/meetings/MeetingPreJoinPanel.tsx", "utf8");
+    expect(workspace).toContain("activeJoinSessions.length === 0");
+    expect(workspace).toContain("joinBlockedReason={joinBlockedReason}");
+    expect(workspace).toContain("if (joinBlockedReason) { toast.info(joinBlockedReason); return; }");
+    expect(workspace).toContain("refreshLiveSessions?.()");
+    expect(prejoin).toContain('disabled={Boolean(joinBlockedReason)}');
+    expect(prejoin).toContain('role="status"');
+  });
+
   it("uses the authorized SQL ID across create, edit, dashboard and review", () => {
     const create = readFileSync("src/app/pages/return-register/OnlineReturnRegisterPage.tsx","utf8");
     const projection = readFileSync("src/app/components/forms/QuorumAndAccessPanel.tsx","utf8");
