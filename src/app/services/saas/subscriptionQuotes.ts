@@ -133,9 +133,19 @@ export async function subscriptionAction<T>(action:string,payload:Record<string,
     method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({p_action:action,p_payload:payload}),
   });
-  const response = await res.json() as T;
-  if (!response || typeof response !== "object") throw new Error("Invalid subscription SQL response");
-  return response;
+  const body: unknown = await res.json().catch(() => null);
+  // A PostgREST error object is JSON too. Never treat a rejected financial
+  // mutation as an accepted quote, invoice, or subscription read.
+  if (!res.ok) {
+    const message = body && typeof body === "object" && !Array.isArray(body)
+      && "message" in body && typeof body.message === "string"
+      ? body.message : "Subscription SQL request failed. Retry after checking your permissions.";
+    throw new Error(message);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Invalid subscription SQL response");
+  }
+  return body as T;
 }
 export function assertSavedQuote(
   result: {quote?:SavedQuote},

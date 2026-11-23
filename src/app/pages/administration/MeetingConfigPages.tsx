@@ -24,6 +24,7 @@ import {
   useVotingMethodRegistry,
 } from "../../data/boardMeetingData";
 import { unverifiedMeetingTypesView } from "./meetingTypesEvidence";
+import { MeetingTemplateMarketplace } from "../subscribers/MeetingTemplateMarketplace";
 import { convayAuth } from "../../services/supabase/convayAuth";
 import { hasAccess, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { activeMeetingGovernanceOptions } from "../return-register/meetingCreatePrerequisites";
@@ -83,6 +84,23 @@ const MEETING_TYPE_DRAWER_COLS: ColDef[] = [
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
 export function MeetingTypesPage() {
+  // The platform-controlled versioned template registry is live in SQL.
+  // Keep the existing fail-closed view for roles that cannot administer the
+  // platform-wide marketplace. Neither route enables meeting-template runtime.
+  const access = useAccessSnapshot();
+  if (access.loaded && access.is_super_admin) {
+    return (
+      <main className="p-6" aria-label="Meeting type configuration">
+        <h1 className="text-2xl font-semibold mb-2">Meeting Types</h1>
+        <p className="mb-5 text-sm text-[var(--text-secondary,#64748b)]">
+          Configure and publish versioned meeting types in Supabase SQL. Published
+          templates are not yet enabled in the meeting creation wizard, and no
+          company workspace is activated by editing them.
+        </p>
+        <MeetingTemplateMarketplace />
+      </main>
+    );
+  }
   const evidence = unverifiedMeetingTypesView();
 
   const cfg: PageCfg = {
