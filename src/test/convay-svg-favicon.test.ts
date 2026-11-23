@@ -7,7 +7,7 @@ const logo = readFileSync("src/app/components/navigation/NCCBankBoardLogo.tsx", 
 
 describe("Convay SVG favicon matches the approved navigation logo", () => {
   it("advertises an SVG favicon that follows Vite's production base path", () => {
-    expect(html).toContain('<link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />');
+    expect(html).toContain('<link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg?v=2" />');
     expect(html.match(/rel="icon"/g)).toHaveLength(1);
     expect("https://shihab-tech04.github.io/ConvayBoardMeetingSolution/favicon.svg")
       .toContain("/ConvayBoardMeetingSolution/favicon.svg");
@@ -17,6 +17,11 @@ describe("Convay SVG favicon matches the approved navigation logo", () => {
     const document = new DOMParser().parseFromString(favicon, "image/svg+xml");
     expect(document.querySelector("parsererror")).toBeNull();
     expect(document.documentElement.getAttribute("viewBox")).toBe("0 0 32 32");
+    // Contrast in dark tabs while staying visible on light tabs: white mark on brand purple tile.
+    const background = document.querySelector("rect");
+    expect(background?.getAttribute("fill")).toBe("#382C83");
+    expect(background?.getAttribute("rx")).toBe("6");
+    expect(document.querySelector("g")?.getAttribute("transform")).toBe("translate(4 4) scale(0.75)");
     const iconPaths = Array.from(document.querySelectorAll("path"));
     const sourcePaths = [...logo.matchAll(/<path\b([^>]+)\/>/g)];
     expect(iconPaths).toHaveLength(3);
@@ -24,8 +29,8 @@ describe("Convay SVG favicon matches the approved navigation logo", () => {
     iconPaths.forEach((path, i) => {
       const d = sourcePaths[i][1].match(/d="([^"]+)"/)?.[1];
       expect(path.getAttribute("d")).toBe(d);
-      expect(path.getAttribute("fill")).toBe("#382C83");
-      expect(path.getAttribute("stroke")).toBe("#382C83");
+      expect(path.getAttribute("fill")).toBe("#FFFFFF");
+      expect(path.getAttribute("stroke")).toBe("#FFFFFF");
     });
   });
 });
