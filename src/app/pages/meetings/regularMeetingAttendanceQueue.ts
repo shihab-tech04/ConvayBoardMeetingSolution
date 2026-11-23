@@ -14,7 +14,7 @@ export class RegularAttendanceTransitionQueue {
   enqueue<T>(participantId: string, transition: () => Promise<T>): Promise<T> {
     const previous = this.pending.get(participantId) ?? Promise.resolve();
     // A failed Present must not suppress a later confirmed Left or rejoin.
-    const current = previous.catch(() => undefined).then(transition);
+    const current = previous.then(transition, transition);
     this.pending.set(participantId, current);
     void current.finally(() => {
       if (this.pending.get(participantId) === current) this.pending.delete(participantId);
