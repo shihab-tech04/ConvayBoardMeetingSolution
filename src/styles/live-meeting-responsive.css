@@ -92,7 +92,7 @@
     min-height: calc(76px + env(safe-area-inset-bottom));
     gap: .3rem !important;
     justify-content: flex-start !important;
-    padding: .35rem .55rem max(.35rem, env(safe-area-inset-bottom)) !important;
+    padding: .35rem 4.7rem max(.35rem, env(safe-area-inset-bottom)) .55rem !important;
     border-top: 1px solid #26364d !important;
     background: #0d1829 !important;
     scrollbar-width: none;
@@ -112,8 +112,9 @@
   .convay-live-dock > span[title="Integration not configured"] { display: none !important; }
   .convay-live-dock-spacer { display: none !important; }
   .convay-live-leave {
-    position: sticky !important;
-    right: 0;
+    position: absolute !important;
+    right: .45rem;
+    bottom: calc(.35rem + env(safe-area-inset-bottom));
     z-index: 3;
     width: 57px;
     min-width: 57px !important;
