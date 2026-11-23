@@ -48,6 +48,7 @@ import { buildPersonalDocumentTasks } from "./personalDocumentTasks";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
+import { useAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
 
 // ── Reusable authorized LiveKit start CTA ────────────────────────────────────
 interface DashboardStartAction extends MeetingStartCardState { onClick: () => void }
@@ -1020,6 +1021,8 @@ export function DashboardPage() {
   const viewRole: ViewRole = deriveDashboardRole(sessionUser.role, currentUser?.role);
 
   const { resolve: resolveMtgActions } = useResolvedActions("meeting");
+  const startAccess = useAccessSnapshot();
+  useEffect(() => { if (!startAccess.loaded && !startAccess.error) void reloadAccessSnapshot().catch(() => undefined); }, [startAccess.loaded, startAccess.error]);
 
   const meetingRegistry = useMeetingRegistry();
   const decisionRegistry = useDecisionRegistry();
@@ -1124,7 +1127,7 @@ export function DashboardPage() {
 
   const getStartNowAction = useCallback((meeting: Meeting): DashboardStartAction => {
     const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);
-    const state = resolveMeetingStartCardState(meeting as unknown as Record<string, unknown>, resolved);
+    const state = resolveMeetingStartCardState(meeting as unknown as Record<string, unknown>, resolved, new Date(), startAccess.loaded && startAccess.is_super_admin);
     return {
       ...state,
       onClick: () => {
@@ -1135,7 +1138,7 @@ export function DashboardPage() {
         setLiveMeeting({ meetingId, entryAction: state.entryAction });
       },
     };
-  }, [resolveMtgActions]);
+  }, [resolveMtgActions, startAccess.loaded, startAccess.is_super_admin]);
 
   const getMeetingRowAction = useCallback((meeting: Meeting) => {
     const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);

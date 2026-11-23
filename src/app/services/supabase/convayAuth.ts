@@ -251,6 +251,22 @@ export const convayAuth = {
     return records;
   },
 
+  /** Server-authorized, audit-stamped Super Admin override (no client-selected actor). */
+  async forceStartMeeting(meetingId: string): Promise<{ meetingId: string; sessionId: string; status: string; alreadyStarted: boolean; startedAt?: string }> {
+    const id = meetingId.trim();
+    if (!/^[A-Za-z0-9_-]{1,180}$/.test(id)) throw new Error("A saved meeting ID is required");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_force_start_meeting", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_meeting_id: id }),
+    });
+    const receipt = await res.json() as { meetingId?: unknown; sessionId?: unknown; status?: unknown; alreadyStarted?: unknown; startedAt?: unknown };
+    if (receipt.meetingId !== id || typeof receipt.sessionId !== "string" || receipt.status !== "In Progress") {
+      throw new Error("Force Start was not confirmed by SQL. Refresh the meeting before retrying.");
+    }
+    return { meetingId: id, sessionId: receipt.sessionId, status: receipt.status, alreadyStarted: receipt.alreadyStarted === true,
+      startedAt: typeof receipt.startedAt === "string" ? receipt.startedAt : undefined };
+  },
+
   async applyBatch(operations: Array<{
     entity_key: string;
     action: "create" | "update" | "delete";
