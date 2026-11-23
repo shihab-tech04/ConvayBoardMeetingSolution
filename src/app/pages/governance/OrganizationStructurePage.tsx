@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { toast } from "sonner";
-import { persistOrgUnitChange, type OrgSaveResult } from "./orgUnitPersistence";
+import { persistOrgUnitChange, verifyOrgUnitSqlReadback, type OrgSaveResult } from "./orgUnitPersistence";
 import { validateOrgUnitFormStep, firstInvalidOrgUnitStep, type UnitFormValues } from "./orgUnitFormValidation";
 import { createPortal } from "react-dom";
 import {
@@ -1086,6 +1086,7 @@ export function OrganizationStructurePage() {
     if (editingUnit ? !perm.edit_units : !perm.create_units) return false;
     const now = new Date().toISOString();
     let result: OrgSaveResult;
+    let savedRecordId = editingUnit?.id ?? "";
     if (editingUnit) {
       result = await persistOrgUnitChange(
         () => orgReg.update(editingUnit.id, {
@@ -1113,6 +1114,7 @@ export function OrganizationStructurePage() {
       );
     } else {
       const newId = generateId("OU", units.map(u => u.unit_id));
+      savedRecordId = newId;
       const parentPath = values.parent_unit_id ? buildPathLabel(values.parent_unit_id, units) : "";
       result = await persistOrgUnitChange(
         () => orgReg.add({
@@ -1145,6 +1147,28 @@ export function OrganizationStructurePage() {
     if (result === "not-saved") return false;
     if (result === "audit-unverified") {
       toast.warning("The organization record was saved, but its activity journal could not be confirmed.");
+    }
+    // Production registry is SQL-backed. Re-fetch the authoritative record
+    // before announcing a completed mutation; never retry a confirmed write
+    // automatically if this independent read fails.
+    if (orgReg.refresh) {
+      const readbackConfirmed = await verifyOrgUnitSqlReadback(
+        orgReg.refresh,
+        orgReg.getById,
+        {
+          id: savedRecordId,
+          unit_name: values.unit_name,
+          unit_type: values.unit_type,
+          status: values.status,
+          code: values.code || undefined,
+          parent_unit_id: values.parent_unit_id || undefined,
+          head_user_id: values.head_user_id || undefined,
+          deputy_user_id: values.deputy_user_id || undefined,
+        },
+      );
+      if (!readbackConfirmed) {
+        toast.warning("Unit write was acknowledged, but SQL readback could not be confirmed. Refresh Organization Structure before making further changes.");
+      }
     }
     setFormOpen(false);
     setEditingUnit(undefined);
