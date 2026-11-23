@@ -6,6 +6,8 @@ import type { ReactNode } from "react";
 import { AppRoot } from "./layouts/AppRoot";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { SubscribersPage } from "./pages/subscribers/SubscribersPage";
+import { CompanyAdminWorkspacePage } from "./pages/company/CompanyAdminWorkspacePage";
+import { useAccessSnapshot } from "./services/supabase/convayAccess";
 
 // ─── Static page imports (no lazy — dynamic import() fails in Make proxy) ────
 
@@ -87,6 +89,15 @@ function AdminOnly({ children }: { children: ReactNode }) {
   if (!allowed) return <div className="table-page"><h1>Access denied</h1><p>Only the Super Admin can manage users, roles and permissions.</p></div>;
   return <>{children}</>;
 }
+function CompanyAdminRoute() {
+  const access=useAccessSnapshot();
+  if(!access.loaded || (!access.is_super_admin &&
+    (access.company_admin_tenant_ids?.length??0)===0)) {
+    return <div className="table-page"><h1>Company access unavailable</h1>
+      <p>A verified Company Super Admin membership is required.</p></div>;
+  }
+  return <CompanyAdminWorkspacePage/>;
+}
 function UsersAdminRoute() { return <AdminOnly><SupabaseUserManagementPage /></AdminOnly>; }
 function RolesAdminRoute() { return <AdminOnly><RoleManagementPage /></AdminOnly>; }
 function PermissionsAdminRoute() { return <AdminOnly><PermissionListPage /></AdminOnly>; }
@@ -123,6 +134,8 @@ export const router = createBrowserRouter([
       { path: "archive-reports",    Component: PlaceholderPage },
       { path: "administration",     Component: PlaceholderPage },
       { path: "subscribers",        Component: PlaceholderPage },
+      { path: "company-management", Component: PlaceholderPage },
+      { path: "company-management/overview", Component: CompanyAdminRoute },
       { path: "subscribers/overview", element: <AdminOnly><SubscribersPage /></AdminOnly> },
 
       // ── Home ──────────────────────────────────────────────────────────────
