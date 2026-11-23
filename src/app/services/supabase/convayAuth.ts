@@ -361,11 +361,40 @@ export const convayAuth = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ p_ops: operations }),
     });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Batch update was rejected by SQL."));
     const result = await res.json() as number;
     if (result !== operations.length) {
-      throw new Error("The meeting could not be saved completely");
+      throw new Error("The batch update was not completely confirmed by SQL.");
     }
     return result;
+  },
+
+  /** Atomic agenda review/archive with per-record SQL revision checks.
+   * Never fall back to the generic batch method on a conflict. */
+  async applyAgendaBatch(operations: Array<{
+    entity_key: "bms.agenda";
+    action: "update";
+    record_id: string;
+    expected_revision: number;
+    payload: Record<string, unknown>;
+  }>): Promise<number> {
+    if (!operations.length || operations.some(op =>
+      op.entity_key !== "bms.agenda" || op.action !== "update" ||
+      !op.record_id || !Number.isSafeInteger(op.expected_revision) ||
+      op.expected_revision < 1
+    )) throw new Error("Agenda data is stale. Refresh before saving.");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_apply_agenda_batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_ops: operations }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res),
+      "Agenda changed or was denied by SQL. Refresh and retry."));
+    const updated = await res.json() as number;
+    if (updated !== operations.length) {
+      throw new Error("Agenda transaction was not fully confirmed by SQL.");
+    }
+    return updated;
   },
 
   /**
