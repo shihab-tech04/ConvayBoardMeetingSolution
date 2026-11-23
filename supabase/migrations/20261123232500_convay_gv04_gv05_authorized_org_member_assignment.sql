@@ -22,7 +22,7 @@ REVOKE ALL ON convay_private.org_member_assignment_receipts FROM PUBLIC, anon, a
 
 CREATE OR REPLACE FUNCTION public.convay_org_member_directory()
 RETURNS TABLE(user_id uuid,primary_org_unit_id text,branch_id text,division_id text,
-  department_id text,assignment_revision bigint, position text)
+  department_id text,assignment_revision bigint, "position" text)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path TO ''
 AS $func$
 BEGIN
