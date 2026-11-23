@@ -133,7 +133,7 @@ begin
     or coalesce(v_field_id,'') !~ '^[a-z][a-z0-9_-]{1,63}$'
     or v_field_id=any(v_field_ids)
     or coalesce(length(btrim(v_title)),0) not between 2 and 100
-    or v_type not in ('text','textarea','date','datetime','number','select',
+    or coalesce(v_type,'') not in ('text','textarea','date','datetime','number','select',
       'multiselect','checkbox','file','participants','agenda','resolution','quorum',
       'meeting_room','duration') then
      raise exception 'Invalid or repeated meeting field ID/type/label' using errcode='22023';
@@ -233,6 +233,7 @@ begin
    ) order by c.updated_at desc)
    from (select * from convay_private.meeting_template_catalog
       where tenant_id is not distinct from v_tenant
+        and (v_tenant is not null or coalesce(v_root,false) or published_revision is not null)
       order by updated_at desc limit 100) c),'[]'::jsonb));
  elsif p_action='read' then
   v_revision:=coalesce((p_payload->>'revision')::integer,v_catalog.published_revision,
