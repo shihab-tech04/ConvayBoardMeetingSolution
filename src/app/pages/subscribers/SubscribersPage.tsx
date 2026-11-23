@@ -8,7 +8,8 @@ import { AppSelectField } from "../../components/forms/AppSelectField";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import {
   PRICE_METRICS, emptyQuoteForm, buildQuotePayload, estimateQuote, displayMoney,
-  subscriptionAction, assertSavedQuote,
+  subscriptionAction, assertSavedQuote, subscriptionAuditRead, assertSubscriptionAuditReadback,
+  type SubscriptionAuditEvent,
   type QuoteForm, type SavedQuote, type SavedInvoice, type SubscriptionDirectory,
 } from "../../services/saas/subscriptionQuotes";
 
@@ -41,6 +42,9 @@ export function SubscribersPage() {
   const [preview,setPreview] = useState<ReturnType<typeof estimateQuote>|null>(null);
   const [selectedQuote,setSelectedQuote] = useState<string|null>(null);
   const [pending,setPending] = useState<PendingAction|null>(null);
+  const [auditEvents,setAuditEvents] = useState<SubscriptionAuditEvent[]|null>(null);
+  const [auditError,setAuditError] = useState("");
+  const [auditLoading,setAuditLoading] = useState(false);
 
   const refresh = async () => {
     const result = await subscriptionAction<SubscriptionDirectory>("list");
@@ -134,6 +138,20 @@ export function SubscribersPage() {
   const invoices=directory.invoices;
   const selected=quotes.find(q=>q.id===selectedQuote)??quotes[0]??null;
   const selectedInvoice=selected ? invoices.find(i=>i.quote_id===selected.id) : null;
+  useEffect(() => {
+    let active=true;
+    setAuditEvents(null);
+    setAuditError("");
+    if (tab!=="billing" || !selected) return () => { active=false; };
+    setAuditLoading(true);
+    void subscriptionAuditRead(selected.id).then(result => {
+      const events=assertSubscriptionAuditReadback(result,selected.id,selected.revision);
+      if (active) setAuditEvents(events);
+    }).catch(reason => {
+      if (active) setAuditError(reason instanceof Error?reason.message:"Unable to load SQL billing history");
+    }).finally(() => { if (active) setAuditLoading(false); });
+    return () => { active=false; };
+  }, [tab,selected?.id,selected?.revision,selectedInvoice?.status]);
 
   return (
     <main className="table-page" style={{maxWidth:1320,margin:"0 auto",padding:"24px"}}>
@@ -277,6 +295,21 @@ export function SubscribersPage() {
                 {selectedInvoice?.status==="draft" && <Button size="sm"
                   onClick={()=>setPending({action:"issue_invoice",quote:selected,invoice:selectedInvoice})}>Issue invoice</Button>}
               </div>
+              <section aria-label="Verified billing audit history" style={{marginTop:20}}>
+                <h3 style={{fontSize:15,fontWeight:650,marginBottom:8}}>Billing history · SQL audit</h3>
+                {auditLoading && <p role="status" style={note}>Loading immutable audit events…</p>}
+                {auditError && <p role="alert" style={{...note,color:"#b91c1c"}}>{auditError}</p>}
+                {auditEvents && auditEvents.length===0 && <p style={note}>No recorded billing events for this quote.</p>}
+                {auditEvents?.map(event=><article key={event.id} style={{
+                  padding:"9px 0",borderTop:"1px solid var(--border-color,#dce1e8)",
+                }}>
+                  <div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap",fontSize:13}}>
+                    <strong>{event.operation.replace(/_/g," ")}</strong>
+                    <time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString()}</time>
+                  </div>
+                  <p style={note}>Event #{event.id} · recorded in Supabase</p>
+                </article>)}
+              </section>
               <p style={{...note,marginTop:16}}>Invoice payments, refunds and automated renewals are not enabled without a verified provider and financial reconciliation.</p>
             </>}
           </section>
