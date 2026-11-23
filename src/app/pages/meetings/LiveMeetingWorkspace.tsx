@@ -1,4 +1,5 @@
 import { LIVE_MEETINGS_RELEASED } from "../../services/liveMeetingReleaseGate";
+import "../../styles/live-meeting-responsive.css";
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 
 import { toast } from "sonner";
@@ -849,7 +850,26 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [docSidebarTab,  setDocSidebarTab]  = useState<"comments" | "motions" | "voting">("comments");
   const [agendaSidebarTab, setAgendaSidebarTab] = useState<"comments" | "motions" | "voting">("comments");
   const [agendaDetailTab, setAgendaDetailTab] = useState<"info" | "activities" | "docs" | "comments" | "voting">("info");
-  const [panelOpen, setPanelOpen]     = useState(true);
+  const [panelOpen, setPanelOpen] = useState(() =>
+    typeof window === "undefined" || !window.matchMedia("(max-width: 767px)").matches
+  );
+  // Preserve the user's manual panel choice until the viewport crosses the mobile boundary.
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const onViewportChange = (event: MediaQueryListEvent) => setPanelOpen(!event.matches);
+    query.addEventListener("change", onViewportChange);
+    return () => query.removeEventListener("change", onViewportChange);
+  }, []);
+  useEffect(() => {
+    if (!panelOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && window.matchMedia("(max-width: 767px)").matches) {
+        setPanelOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [panelOpen]);
   const [panelTab, setPanelTab]       = useState<PanelTab>("agenda");
   const [chatOpen, setChatOpen]       = useState(false);
   const [reactionsOpen, setReactionsOpen] = useState(false);
@@ -1874,20 +1894,20 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     : 0;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0f172a", color: "#f1f5f9", overflow: "hidden", fontFamily: "inherit" }}>
+    <div className="convay-live-root" style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0f172a", color: "#f1f5f9", overflow: "hidden", fontFamily: "inherit" }}>
 
       {/* ── TOP BAR ──────────────────────────────────────────────────────────── */}
-      <div style={{ height: 52, background: "#1e293b", borderBottom: "1px solid #334155", display: "flex", alignItems: "center", padding: "0 1rem", gap: "0.75rem", flexShrink: 0 }}>
+      <div className="convay-live-topbar" style={{ height: 52, background: "#1e293b", borderBottom: "1px solid #334155", display: "flex", alignItems: "center", padding: "0 1rem", gap: "0.75rem", flexShrink: 0 }}>
         <button onClick={() => onClose()} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", padding: "0.3rem", borderRadius: "6px" }}>
           <ArrowLeft size={15} />
         </button>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="convay-live-heading" style={{ flex: 1, minWidth: 0 }}>
           <p style={{ margin: 0, fontSize: "0.82rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{meeting?.meeting_title ?? "Board Meeting"}</p>
           <p style={{ margin: 0, fontSize: "0.68rem", color: "#64748b" }}>{meeting?.meeting_id ?? meeting?.id ?? ""}{meeting?.committee ? ` · ${meeting.committee}` : ""} · {clockStr} · <span style={{ color: "#94a3b8" }}>{myRole}</span></p>
         </div>
 
         {/* Status */}
-        <span style={{ padding: "0.2rem 0.6rem", borderRadius: "9999px", fontSize: "0.7rem", fontWeight: 600, background: `${statusColor}22`, color: statusColor, border: `1px solid ${statusColor}44`, whiteSpace: "nowrap" }}>
+        <span className="convay-live-status" style={{ padding: "0.2rem 0.6rem", borderRadius: "9999px", fontSize: "0.7rem", fontWeight: 600, background: `${statusColor}22`, color: statusColor, border: `1px solid ${statusColor}44`, whiteSpace: "nowrap" }}>
           {statusLabel}
         </span>
 
@@ -1970,13 +1990,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       )}
 
       {/* ── MAIN AREA ──────────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
+      <div className="convay-live-main" style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
 
         {/* Video area */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", position: "relative" }}>
+        <div className="convay-live-stage-column" style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, overflow: "hidden", position: "relative" }}>
 
           {/* View mode bar */}
-          <div style={{ height: 36, background: "#1a2332", borderBottom: "1px solid #334155", display: "flex", alignItems: "center", padding: "0 0.75rem", gap: "0.5rem", flexShrink: 0 }}>
+          <div className="convay-live-viewbar" style={{ height: 36, background: "#1a2332", borderBottom: "1px solid #334155", display: "flex", alignItems: "center", padding: "0 0.75rem", gap: "0.5rem", flexShrink: 0 }}>
             {(["speaker","grid","document"] as ViewMode[]).map(v => (
               <button key={v} onClick={() => setViewMode(v)} style={{ padding: "0.2rem 0.6rem", borderRadius: "4px", background: viewMode === v ? "var(--color-primary)" : "none", color: viewMode === v ? "#fff" : "#64748b", border: "none", cursor: "pointer", fontSize: "0.72rem", fontWeight: viewMode === v ? 600 : 400, textTransform: "capitalize" }}>
                 {v === "speaker" ? "Speaker" : v === "grid" ? "Gallery" : "Present"}
@@ -1984,14 +2004,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             ))}
             <div style={{ flex: 1 }} />
             {isSharing && <span style={{ fontSize: "0.72rem", color: "#22c55e", display: "flex", alignItems: "center", gap: "0.3rem" }}><Monitor size={12} /> Sharing screen</span>}
-            <button onClick={() => setPanelOpen(v => !v)} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.72rem" }}>
+            <button className="convay-live-board-trigger" type="button" aria-label={panelOpen ? "Hide board controls" : "Show board controls"} aria-expanded={panelOpen} onClick={() => setPanelOpen(v => !v)} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.72rem" }}>
               {panelOpen ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
               {panelOpen ? "Hide Panel" : "Board Controls"}
             </button>
           </div>
 
           {/* Video stage */}
-          <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
+          <div className="convay-live-stage" style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
             {isOnlineMeeting && canonicalRoomEntry.canJoin && (
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
                 <LiveMeetingMedia meetingId={meetingId} layout={viewMode === "grid" ? "gallery" : "speaker"}
@@ -2023,7 +2043,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
               </div>
             )}
             {!isOnlineMeeting && viewMode === "grid" && (
-              <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", alignContent: "start", overflowY: "auto" }}>
+              <div className="convay-live-gallery" style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.5rem", alignContent: "start", overflowY: "auto" }}>
                 {participants.map(p => (
                   <div key={p.id} style={{ cursor: "pointer" }} onClick={() => { setActiveSpeakerId(p.id); setViewMode("speaker"); }}>
                     <ParticipantTile p={p} isActive={p.id === activeSpeakerId} />
@@ -2058,9 +2078,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
                       <span style={{ fontSize: "0.62rem", padding: "0.15rem 0.45rem", borderRadius: 9999, background: "#1e3a5f", color: "#60a5fa", fontWeight: 600, flexShrink: 0 }}>Read-only · Live Meeting</span>
                     </div>
                     {/* Doc content + comments split */}
-                    <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+                    <div className="convay-live-document-split" style={{ flex: 1, display: "flex", minHeight: 0 }}>
                       {/* Body */}
-                      <div style={{ flex: 1, overflowY: "auto", padding: "1.5rem 2rem" }}>
+                      <div className="convay-live-document-body" style={{ flex: 1, overflowY: "auto", padding: "1.5rem 2rem" }}>
                         {presentingDoc.content_body ? (
                           <pre style={{ margin: 0, fontFamily: "inherit", fontSize: "0.82rem", color: "#cbd5e1", lineHeight: 1.8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                             {presentingDoc.content_body}
@@ -2795,7 +2815,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           </div>
 
           {/* ── BOTTOM DOCK ──────────────────────────────────────────────────── */}
-          <div style={{ height: 64, background: "#1e293b", borderTop: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0 1rem", flexShrink: 0 }}>
+          <div className="convay-live-dock" role="toolbar" aria-label="Meeting controls" style={{ height: 64, background: "#1e293b", borderTop: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0 1rem", flexShrink: 0 }}>
             <>
             {canPublishMedia && <DockButton active={myMicOn}  danger={!myMicOn}  label={myMicOn  ? "Mute"        : "Unmute"}      onClick={() => setMyMicOn(v => !v)}>
               {myMicOn ? <Mic size={18} /> : <MicOff size={18} />}
@@ -2859,9 +2879,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
               <MoreHorizontal size={18} />
             </DockButton>
 
-            <div style={{ flex: 1 }} />
+            <div className="convay-live-dock-spacer" style={{ flex: 1 }} />
 
-            <button
+            <button className="convay-live-leave" type="button" aria-label="Leave meeting"
               onClick={() => setLeaveConfirmOpen(true)}
               style={{ padding: "0.5rem 1rem", borderRadius: "8px", background: "#ef4444", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.8rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.35rem" }}>
               <Phone size={14} /> Leave
@@ -2871,16 +2891,20 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
         {/* ── RIGHT PANEL ──────────────────────────────────────────────────────── */}
         {panelOpen && (
-          <div style={{ width: 360, borderLeft: "1px solid #334155", display: "flex", flexDirection: "column", background: "#1a2332", flexShrink: 0, overflow: "hidden" }}>
-            <div style={{ display: "flex", borderBottom: "1px solid #334155", flexShrink: 0, overflowX: "auto" }}>
+          <div className="convay-live-sidebar" aria-label="Board workspace" style={{ width: 360, borderLeft: "1px solid #334155", display: "flex", flexDirection: "column", background: "#1a2332", flexShrink: 0, overflow: "hidden" }}>
+            <div className="convay-live-mobile-sidebar-header">
+              <span>{PANEL_TABS.find(tab => tab.id === panelTab)?.label ?? "Board controls"}</span>
+              <button type="button" onClick={() => setPanelOpen(false)} aria-label="Close board controls"><X size={19} /></button>
+            </div>
+            <div className="convay-live-sidebar-tabs" role="tablist" aria-label="Board control sections" style={{ display: "flex", borderBottom: "1px solid #334155", flexShrink: 0, overflowX: "auto" }}>
               {PANEL_TABS.map(tab => (
-                <button key={tab.id} onClick={() => setPanelTab(tab.id)} style={{ flex: 1, minWidth: 0, padding: "0.55rem 0.25rem", background: panelTab === tab.id ? "#1e293b" : "none", color: panelTab === tab.id ? "#f1f5f9" : "#64748b", border: "none", borderBottom: panelTab === tab.id ? "2px solid var(--color-primary)" : "2px solid transparent", cursor: "pointer", fontSize: "0.65rem", fontWeight: panelTab === tab.id ? 700 : 400, display: "flex", flexDirection: "column", alignItems: "center", gap: "0.2rem" }}>
+                <button key={tab.id} type="button" role="tab" aria-selected={panelTab === tab.id} onClick={() => setPanelTab(tab.id)} style={{ flex: 1, minWidth: 0, padding: "0.55rem 0.25rem", background: panelTab === tab.id ? "#1e293b" : "none", color: panelTab === tab.id ? "#f1f5f9" : "#64748b", border: "none", borderBottom: panelTab === tab.id ? "2px solid var(--color-primary)" : "2px solid transparent", cursor: "pointer", fontSize: "0.65rem", fontWeight: panelTab === tab.id ? 700 : 400, display: "flex", flexDirection: "column", alignItems: "center", gap: "0.2rem" }}>
                   {tab.icon} {tab.label}
                 </button>
               ))}
             </div>
 
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: panelTab === "agenda" && (agendaDetailIdx !== null || agendaChildListParentIdx !== null) ? "hidden" : "auto", padding: "0.75rem" }}>
+            <div className="convay-live-sidebar-body" role="tabpanel" style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: panelTab === "agenda" && (agendaDetailIdx !== null || agendaChildListParentIdx !== null) ? "hidden" : "auto", padding: "0.75rem" }}>
 
               {/* ── AGENDA TAB ───────────────────────────────────────────── */}
               {panelTab === "agenda" && (() => {
@@ -4010,7 +4034,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
       {/* ── CHAT OVERLAY ─────────────────────────────────────────────────────── */}
       {chatOpen && (
-        <div style={{ position: "fixed", bottom: 80, right: panelOpen ? 376 : 16, width: 300, height: 360, background: "#1e293b", border: "1px solid #334155", borderRadius: "12px", display: "flex", flexDirection: "column", zIndex: 100 }}>
+        <div className="convay-live-chat" role="region" aria-label="Meeting chat" style={{ position: "fixed", bottom: 80, right: panelOpen ? 376 : 16, width: 300, height: 360, background: "#1e293b", border: "1px solid #334155", borderRadius: "12px", display: "flex", flexDirection: "column", zIndex: 100 }}>
           <div style={{ padding: "0.6rem 0.75rem", borderBottom: "1px solid #334155", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: "0.78rem", fontWeight: 700 }}>Chat</span>
             <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}><X size={14} /></button>
@@ -4041,7 +4065,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       )}
       {/* ── REACTIONS ────────────────────────────────────────────────────────── */}
       {reactionsOpen && (
-        <div style={{ position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)", display: "flex", gap: "0.5rem", padding: "0.5rem 0.75rem", background: "#1e293b", borderRadius: "9999px", border: "1px solid #334155", zIndex: 100 }}>
+        <div className="convay-live-reactions" role="group" aria-label="Meeting reactions" style={{ position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)", display: "flex", gap: "0.5rem", padding: "0.5rem 0.75rem", background: "#1e293b", borderRadius: "9999px", border: "1px solid #334155", zIndex: 100 }}>
           {REACTIONS.map(r => (
             <button key={r} disabled={signalBusy} onClick={() => {
               if (isOnlineMeeting) void writeLiveSignal("reaction", r);
