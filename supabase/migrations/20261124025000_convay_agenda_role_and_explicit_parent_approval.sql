@@ -99,6 +99,9 @@ BEGIN
  END IF;
 
  IF v_next = 'Approved' AND v_previous <> 'Approved' THEN
+   IF v_previous NOT IN ('Pending Approval','Pending Review','Ready for Review','Partially Approved') THEN
+     RAISE EXCEPTION 'Submit an agenda for review before approval' USING ERRCODE='23514';
+   END IF;
    IF NOT convay_private.has_permission('agd_approve') THEN
      RAISE EXCEPTION 'Agenda approver authorization required' USING ERRCODE='42501';
    END IF;
