@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
-import { Building2, CreditCard, FileText, Settings2, ShieldCheck, ArrowRight, Receipt, RefreshCw, Database, Layers } from "lucide-react";
+import { Building2, CreditCard, FileText, Settings2, ShieldCheck, Receipt, RefreshCw, Database } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../../components/buttons/Button";
 import { AppTextField } from "../../components/forms/AppTextField";
@@ -16,6 +15,7 @@ import {
   createProvisioningCompany,listCompanies,readCompany,
   type CompanyDirectory,type CompanyProfile,
 } from "../../services/saas/companyDirectory";
+import { MeetingTemplateMarketplace } from "./MeetingTemplateMarketplace";
 
 type Tab = "overview" | "pricing" | "billing" | "companies" | "templates" | "usage";
 type PendingAction = { action: "issue_quote" | "void_quote" | "create_invoice" | "issue_invoice"; quote: SavedQuote; invoice?: SavedInvoice };
@@ -35,7 +35,6 @@ const emptyDirectory: SubscriptionDirectory = {
 };
 
 export function SubscribersPage() {
-  const navigate = useNavigate();
   const [tab,setTab] = useState<Tab>("overview");
   const [form,setForm] = useState<QuoteForm>(emptyQuoteForm);
   const [requestId,setRequestId] = useState(() => crypto.randomUUID());
@@ -439,12 +438,7 @@ export function SubscribersPage() {
         )}
       </section>}
 
-      {tab==="templates" && <section style={panel}>
-        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12}}><Layers size={20}/><h2 style={{fontSize:19,fontWeight:650}}>Meeting templates & marketplace</h2></div>
-        <p style={note}>Company-owned meeting types require versioned SQL definitions, configurable steps, field validation, approval rules and a wizard that binds each created meeting to its published template version. Existing meeting creation remains unchanged until those contracts pass full journey tests.</p>
-        <Button variant="secondary" onClick={()=>navigate("/administration/meeting-configuration/meeting-types")}
-          trailingIcon={ArrowRight}>View existing meeting types</Button>
-      </section>}
+      {tab==="templates" && <MeetingTemplateMarketplace/>}
 
       {tab==="usage" && <section style={panel}>
         <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12}}><Settings2 size={20}/><h2 style={{fontSize:19,fontWeight:650}}>Usage, add-ons and approval policies</h2></div>
