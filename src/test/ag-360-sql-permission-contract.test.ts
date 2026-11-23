@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-const sql = readFileSync("supabase/patches/convay_agenda_permission_and_state_integrity_20261123.sql", "utf8");
+const sql = readFileSync("supabase/migrations/20261123171021_convay_agenda_permission_and_state_integrity.sql", "utf8");
 
 describe("AG-360 SQL authorization & workflow hardening", () => {
   it("permits an append-only submission ONLY with agd_submit, without granting approval", () => {
