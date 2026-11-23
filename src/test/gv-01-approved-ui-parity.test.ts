@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-const file = new URL("../app/pages/governance/OrganizationStructurePage.tsx", import.meta.url);
-const source = readFileSync(file, "utf8");
+const source = readFileSync(
+  "src/app/pages/governance/OrganizationStructurePage.tsx",
+  "utf8",
+);
 const wizard = source.slice(
   source.indexOf("function UnitFormModal("),
   source.indexOf("// ── Filter panel"),
