@@ -36,7 +36,8 @@ describe("LM-19 role-restricted real-media controls", () => {
     />);
     expect(screen.getByRole("button", { name: /mute microphone|unmute microphone/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /turn on camera|turn off camera/i })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Join with devices off" }));
+    expect(screen.queryByRole("button", { name: "Join with devices off" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Join Meeting" }));
     expect(onJoin).toHaveBeenCalledWith({
       micOn: false, camOn: false, role: "Chairperson",
     });

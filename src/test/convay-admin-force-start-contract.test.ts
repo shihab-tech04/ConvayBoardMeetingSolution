@@ -32,7 +32,7 @@ describe("LM-ADMIN: real Super Admin Force Start contract", () => {
     expect(workspace).toContain("if (access.loaded && access.is_super_admin)");
     expect(workspace).toContain('setPhase("prejoin")');
     expect(lobby).toContain("Force Start Now");
-    expect(lobby).toContain("joinBlockedReason && onForceStart");
+    expect(lobby).toContain("joinBlockedReason && !meetingClosed && onForceStart");
   });
   it("SQL verifies active super_admin identity, stamps the actor and creates exactly one live session", () => {
     expect(sql).toContain("account_role='super_admin'");
