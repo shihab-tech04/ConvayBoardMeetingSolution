@@ -125,6 +125,55 @@ describe("NI-01 SQL-backed rule draft page", () => {
     expect(state.add).not.toHaveBeenCalled();
   });
 
+  it("rejects a server ACK that activates a rule instead of preserving Draft", async () => {
+    state.refresh.mockImplementation(async () => {
+      state.rules = state.rules.map(rule => ({ ...rule, status: "Active" }));
+    });
+    render(<NotificationRulesPage />);
+    let result = true;
+    await act(async () => { result = await state.cfg.onRowCreate!(validRule) as boolean; });
+    expect(result).toBe(false);
+    expect(state.add).toHaveBeenCalledTimes(1);
+    expect(state.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a server readback with mismatched rule identity", async () => {
+    state.refresh.mockImplementation(async () => {
+      state.rules = state.rules.map(rule => ({ ...rule, rule_id: "NR-FOREIGN" }));
+    });
+    render(<NotificationRulesPage />);
+    let result = true;
+    await act(async () => { result = await state.cfg.onRowCreate!(validRule) as boolean; });
+    expect(result).toBe(false);
+  });
+
+  it("rejects a server edit ACK that silently changes the lifecycle status", async () => {
+    state.rules = [{ id: "r2", rule_id: "NR-0002", ...validRule, status: "Draft", created_at: "" }];
+    state.refresh.mockImplementation(async () => {
+      state.rules = state.rules.map(rule => ({ ...rule, status: "Active" }));
+    });
+    render(<NotificationRulesPage />);
+    let result = true;
+    await act(async () => { result = await state.cfg.onRowUpdate!("r2", validRule) as boolean; });
+    expect(result).toBe(false);
+    expect(state.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies unsupported statuses and writes while authoritative reads are unavailable", async () => {
+    state.rules = [{ id: "r3", rule_id: "NR-0003", ...validRule, status: "Archived", created_at: "" }];
+    render(<NotificationRulesPage />);
+    expect(state.cfg.drawerActionsResolver!(state.cfg.rows[0]).find(a => a.id === "edit")?.enabled).toBe(false);
+    expect(await state.cfg.onRowUpdate!("r3", validRule)).toBe(false);
+    state.loading = true;
+    state.error = "Permission denied";
+    render(<NotificationRulesPage />);
+    expect(state.cfg.entryBtn).toBeUndefined();
+    expect(await state.cfg.onRowCreate!(validRule)).toBe(false);
+    expect(await state.cfg.onRowUpdate!("r3", validRule)).toBe(false);
+    expect(state.add).not.toHaveBeenCalled();
+    expect(state.update).not.toHaveBeenCalled();
+  });
+
   it("preserves backend loading/errors without displaying fake rows", () => {
     state.loading = true; state.error = "Permission denied";
     render(<NotificationRulesPage />);
