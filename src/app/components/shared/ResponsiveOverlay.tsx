@@ -1,4 +1,4 @@
-import { useEffect, useRef, ReactNode } from "react";
+import { useEffect, useId, useRef, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { useUIState } from "../../hooks/useUI";
@@ -21,6 +21,8 @@ interface ResponsiveOverlayProps {
   className?: string;
   /** Close button aria label */
   closeLabel?: string;
+  /** Accessible dialog label when the visible title is omitted */
+  ariaLabel?: string;
   /** ID of element that describes the dialog content (aria-describedby) */
   describedBy?: string;
 }
@@ -36,11 +38,13 @@ export function ResponsiveOverlay({
   showCloseButton = true,
   className = "",
   closeLabel = "Close",
+  ariaLabel,
   describedBy,
 }: ResponsiveOverlayProps) {
   const { isDesktop } = useUIState();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
 
   useFocusTrap(panelRef, open);
   useReturnFocus(open);
@@ -59,12 +63,13 @@ export function ResponsiveOverlay({
     };
   }, [open]);
 
-  // Auto-focus close button on open
+  // Keep keyboard focus inside the dialog even when the close button is hidden.
   useEffect(() => {
-    if (open && closeButtonRef.current) {
-      const timer = setTimeout(() => closeButtonRef.current?.focus(), 50);
-      return () => clearTimeout(timer);
-    }
+    if (!open) return;
+    const timer = setTimeout(() => {
+      (closeButtonRef.current ?? panelRef.current)?.focus();
+    }, 50);
+    return () => clearTimeout(timer);
   }, [open]);
 
   // Escape key handler
@@ -96,8 +101,10 @@ export function ResponsiveOverlay({
         ref={panelRef}
         className={`responsive-overlay ${className}`}
         role="dialog"
+        tabIndex={-1}
         aria-modal="true"
-        aria-labelledby={title ? "responsive-overlay-title" : undefined}
+        aria-labelledby={title ? titleId : undefined}
+        aria-label={title ? undefined : ariaLabel ?? "Details panel"}
         aria-describedby={describedBy}
         style={{
           "--overlay-desktop-width": desktopWidth,
@@ -108,7 +115,7 @@ export function ResponsiveOverlay({
         {(title || showCloseButton) && (
           <div className="responsive-overlay__header">
             {title && (
-              <h2 id="responsive-overlay-title" className="responsive-overlay__title">
+              <h2 id={titleId} className="responsive-overlay__title">
                 {title}
               </h2>
             )}
