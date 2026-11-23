@@ -39,6 +39,17 @@ describe("AG-364 separate Agenda author, reviewer, approver and parent signoff",
     expect(sql).not.toContain("SECURITY DEFINER");
   });
 
+  it("archives and restores an Agenda hierarchy atomically without losing approval history", () => {
+    expect(agenda).toContain('function restoreAgenda(id: string)');
+    expect(agenda).toContain('label: "Restore", onClick: () => restoreAgenda(drawerItem.id)');
+    expect(agenda).toContain('status: "Archived", prev_status: row.approval_status ?? "Draft"');
+    expect(agenda).toContain('status: "Draft", prev_status: "Archived", action: "restore"');
+    expect(agenda).toContain('approval_status: "Draft", archived_at: null, archived_by: null');
+    expect(agenda).toContain('record_id: row.id, expected_revision: requireAgendaRevision(row.id)');
+    expect(agenda).toContain('Existing approval history is preserved.');
+    expect(agenda).toContain('await registry.refresh?.()');
+  });
+
   it("does not reassign user roles, mutate the 3 original agendas or alter other registry permissions", () => {
     expect(sql).not.toContain("UPDATE public.convay_user_roles");
     expect(sql).not.toContain("UPDATE public.convay_entity_records");
