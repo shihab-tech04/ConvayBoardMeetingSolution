@@ -36,6 +36,8 @@ import { resolveLifecycleStage, validMeetingDateKey, type LifecycleStage } from 
 import { compareMeetingStart, meetingCountdown } from "./meetingScheduleTime";
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
 import { meetingRecordPath, resolveDashboardMeetingDestination } from "./dashboardContextActions";
+import { resolveMeetingStartCardState, type MeetingStartCardState } from "./liveMeetingCardActions";
+import { liveMeetingUrl } from "../../utils/liveMeetingLink";
 import { actionItemDetailsPath } from "./actionItemDetailsPath";
 import {
   isPersonalMeetingTask, isPersonalAgendaTask, isPersonalRsvpTask,
@@ -46,6 +48,22 @@ import { buildPersonalDocumentTasks } from "./personalDocumentTasks";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
+
+// ── Reusable authorized LiveKit start CTA ────────────────────────────────────
+interface DashboardStartAction extends MeetingStartCardState { onClick: () => void }
+
+function StartMeetingCardButton({ action, size = "sm" }: { action: DashboardStartAction; size?: "sm" | "lg" }) {
+  return (
+    <span title={action.enabled ? action.label : action.disabledReason} style={{ display: "inline-flex" }}>
+      <Button type="button" size={size} variant="primary" leadingIcon={Radio}
+        disabled={!action.enabled}
+        aria-label={action.enabled ? action.label : `${action.label} — ${action.disabledReason}`}
+        onClick={action.onClick}>
+        {action.label}
+      </Button>
+    </span>
+  );
+}
 
 // ── Full-page Meeting Detail Modal ────────────────────────────────────────────
 
@@ -104,9 +122,10 @@ interface MeetingDetailModalProps {
   meeting: Meeting | null;
   onClose: () => void;
   navigate: (path: string) => void;
+  startAction: DashboardStartAction | null;
 }
 
-function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalProps) {
+function MeetingDetailModal({ meeting, onClose, navigate, startAction }: MeetingDetailModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const { themeId } = useSettings();
   const isDark = themeId === "dark-mode";
@@ -219,6 +238,7 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            {startAction && <StartMeetingCardButton action={startAction} />}
             {canJoinLiveWorkspace && (
               <button type="button" onClick={() => { onClose(); navigate(`/meetings/${mid}/live`); }} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: "var(--color-success)", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
                 <Radio size={14} /> Join Live
@@ -267,14 +287,19 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
               {str(m.organizer)   && <DetailField label="Organizer"   value={str(m.organizer)} />}
             </DetailSection>
 
-            {str(m.virtual_link) && (
+            {["Virtual", "Hybrid"].includes(str(m.mode)) && mid && liveMeetingUrl(mid) && (
               <div style={{ marginBottom: 28, padding: "14px 18px", background: "var(--color-primary-alpha-8)", borderRadius: "var(--radius-lg)", display: "flex", alignItems: "center", gap: 12 }}>
                 <Link2 size={16} style={{ color: "var(--color-primary)", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-secondary)", marginBottom: 2 }}>Meeting Link</div>
-                  <a href={str(m.virtual_link)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: "var(--color-primary)", textDecoration: "none", wordBreak: "break-all" }}>
-                    {str(m.virtual_link)}
+                  <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-secondary)", marginBottom: 2 }}>
+                    LiveKit Meeting Link
+                  </div>
+                  <a href={liveMeetingUrl(mid) ?? "#"} style={{ fontSize: 13, color: "var(--color-primary)", textDecoration: "none", wordBreak: "break-all" }}>
+                    {liveMeetingUrl(mid)}
                   </a>
+                  <p style={{ marginTop: 6, fontSize: 12, color: "var(--color-text-secondary)" }}>
+                    Uses the actual saved meeting ID. Sign-in, meeting publication and participant permissions are required.
+                  </p>
                 </div>
               </div>
             )}
@@ -361,13 +386,14 @@ interface HeroSlideProps {
   now: Date;
   navigate: (path: string) => void;
   primaryAction: { label: string; tone: "primary" | "success" | "warning" | "neutral"; icon?: React.ElementType; onClick: () => void } | null;
+  startAction: DashboardStartAction;
   userRole: string;
   isVisible: boolean;
   hasMultiple: boolean;
   onViewDetails: () => void;
 }
 
-function HeroSlide({ meeting, now, navigate, primaryAction, userRole, isVisible, hasMultiple, onViewDetails }: HeroSlideProps) {
+function HeroSlide({ meeting, now, navigate, primaryAction, startAction, userRole, isVisible, hasMultiple, onViewDetails }: HeroSlideProps) {
   const action  = primaryAction ?? { label: "View Details", tone: "neutral" as const, onClick: onViewDetails };
   const mode    = String(meeting.mode ?? "");
   const status  = persistedMeetingStatus(meeting);
@@ -469,12 +495,15 @@ function HeroSlide({ meeting, now, navigate, primaryAction, userRole, isVisible,
       </div>
 
       {/* Actions */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: "auto", paddingBottom: hasMultiple ? 28 : 0 }}>
-        <Button type="button" size="lg" variant="primary" onClick={action.onClick} style={primaryStyle}>
-          {action.label}
-        </Button>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: "auto", paddingBottom: hasMultiple ? 28 : 0 }}>
+        <StartMeetingCardButton action={startAction} size="lg" />
+        {!["Start meeting", "Start Meeting", "Continue meeting", "Continue Meeting"].includes(action.label) && (
+          <Button type="button" size="lg" variant="primary" onClick={action.onClick} style={primaryStyle}>
+            {action.label}
+          </Button>
+        )}
         {!["View Details", "View details", "View Meeting Record"].includes(action.label) && (
-          <Button type="button" size="lg" variant="ghost" onClick={onViewDetails} style={{ color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.18)" }}>
+          <Button type="button" size="lg" variant="ghost" onClick={onViewDetails} style={{ color: "rgba(255,255,255,0.75)", border: "1px solid rgba(255,255,255,0.18)" }}>
             View details
           </Button>
         )}
@@ -490,11 +519,12 @@ interface MeetingHeroCarouselProps {
   now: Date;
   navigate: (path: string) => void;
   getPrimaryAction: (m: Meeting) => { label: string; tone: "primary" | "success" | "warning" | "neutral"; onClick: () => void } | null;
+  getStartAction: (m: Meeting) => DashboardStartAction;
   onViewDetails: (m: Meeting) => void;
   userRole: string;
 }
 
-function MeetingHeroCarousel({ meetings, now, navigate, getPrimaryAction, onViewDetails, userRole }: MeetingHeroCarouselProps) {
+function MeetingHeroCarousel({ meetings, now, navigate, getPrimaryAction, getStartAction, onViewDetails, userRole }: MeetingHeroCarouselProps) {
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
   const [keyboardFocused, setKeyboardFocused] = useState(false);
@@ -574,6 +604,7 @@ function MeetingHeroCarousel({ meetings, now, navigate, getPrimaryAction, onView
             now={now}
             navigate={navigate}
             primaryAction={pa}
+            startAction={getStartAction(m)}
             userRole={userRole}
             isVisible={i === idx}
             hasMultiple={total > 1}
@@ -617,6 +648,7 @@ interface MeetingsSectionProps {
   now: Date;
   navigate: (path: string) => void;
   getRowAction: (m: Meeting) => { label: string; onClick: () => void; highlight: boolean } | null;
+  getStartAction: (m: Meeting) => DashboardStartAction;
   onRowClick: (m: Meeting) => void;
 }
 
@@ -633,7 +665,7 @@ function LiveDot({ status }: { status: string }) {
   );
 }
 
-function MeetingsSection({ meetings, now, navigate, getRowAction, onRowClick }: MeetingsSectionProps) {
+function MeetingsSection({ meetings, now, navigate, getRowAction, getStartAction, onRowClick }: MeetingsSectionProps) {
   return (
     <div className="dash-compact-card">
       {/* Header */}
@@ -662,6 +694,7 @@ function MeetingsSection({ meetings, now, navigate, getRowAction, onRowClick }: 
           const lifecycleStage = resolveLifecycleStage(status, m.meeting_date, now).stage;
           const isOngoing = lifecycleStage === "Meeting Live" || lifecycleStage === "Meeting Paused";
           const rowAction = getRowAction(m);
+          const startAction = getStartAction(m);
 
           return (
             <div
@@ -669,7 +702,7 @@ function MeetingsSection({ meetings, now, navigate, getRowAction, onRowClick }: 
               role="button"
               tabIndex={0}
               onClick={() => onRowClick(m)}
-              onKeyDown={e => { if (e.key === "Enter") onRowClick(m); }}
+              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onRowClick(m); } }}
               className={`dash-compact-row${isLast ? " dash-compact-row--last" : ""}`}
             >
               {/* Leading indicator */}
@@ -698,17 +731,17 @@ function MeetingsSection({ meetings, now, navigate, getRowAction, onRowClick }: 
                 </div>
               </div>
 
-              {/* Immediate action only */}
-              {rowAction && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={rowAction.highlight ? "primary" : "ghost"}
-                  onClick={e => { e.stopPropagation(); rowAction.onClick(); }}
-                >
-                  {rowAction.label}
-                </Button>
-              )}
+              {/* Every meeting card shows a real Start CTA; eligibility stays server-backed. */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}
+                   onClick={e => e.stopPropagation()}>
+                <StartMeetingCardButton action={startAction} />
+                {rowAction && !["Start meeting", "Start Meeting", "Continue meeting", "Continue Meeting"].includes(rowAction.label) && (
+                  <Button type="button" size="sm" variant={rowAction.highlight ? "primary" : "ghost"}
+                    onClick={e => { e.stopPropagation(); rowAction.onClick(); }}>
+                    {rowAction.label}
+                  </Button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -1089,6 +1122,21 @@ export function DashboardPage() {
     }
   }, [navigate]);
 
+  const getStartNowAction = useCallback((meeting: Meeting): DashboardStartAction => {
+    const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);
+    const state = resolveMeetingStartCardState(meeting as unknown as Record<string, unknown>, resolved);
+    return {
+      ...state,
+      onClick: () => {
+        if (!state.enabled || !state.entryAction) return;
+        const meetingId = String(meeting.meeting_id ?? meeting.id ?? "").trim();
+        if (!meetingId) return;
+        setSelectedMeeting(null);
+        setLiveMeeting({ meetingId, entryAction: state.entryAction });
+      },
+    };
+  }, [resolveMtgActions]);
+
   const getMeetingRowAction = useCallback((meeting: Meeting) => {
     const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);
     const action = selectAvailableDirectMeetingAction(resolved);
@@ -1373,6 +1421,7 @@ export function DashboardPage() {
             now={calendarNow}
             navigate={navigate}
             getPrimaryAction={getPrimaryAction}
+            getStartAction={getStartNowAction}
             onViewDetails={setSelectedMeeting}
             userRole={ROLE_LABELS[viewRole]}
           />
@@ -1434,7 +1483,7 @@ export function DashboardPage() {
       {/* Row 2: Ongoing & Upcoming Meetings (50%) + My Tasks (50%) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" style={{ alignItems: "start" }}>
         <div>
-          <MeetingsSection meetings={displayedMeetings} now={calendarNow} navigate={navigate} getRowAction={getMeetingRowAction} onRowClick={setSelectedMeeting} />
+          <MeetingsSection meetings={displayedMeetings} now={calendarNow} navigate={navigate} getRowAction={getMeetingRowAction} getStartAction={getStartNowAction} onRowClick={setSelectedMeeting} />
         </div>
         <div>
           <MyTasksOverviewSection tasks={urgentTasks} navigate={navigate} onTaskAction={handleTaskAction} />
@@ -1459,6 +1508,7 @@ export function DashboardPage() {
         meeting={selectedMeeting}
         onClose={() => setSelectedMeeting(null)}
         navigate={navigate}
+        startAction={selectedMeeting ? getStartNowAction(selectedMeeting) : null}
       />
 
       {/* Live meeting full-screen workspace */}

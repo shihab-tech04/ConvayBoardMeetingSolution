@@ -14,7 +14,9 @@ export function meetingAccessBlockers(values: Record<string, unknown>): string[]
   if ((mode === "Physical" || mode === "Hybrid") && !venue) {
     blockers.push(`${mode} meeting requires a venue address`);
   }
-  if ((mode === "Virtual" || mode === "Hybrid") && !virtualLink) {
+  // LiveKit creates the real, signed-in meeting URL from the SQL meeting ID
+  // during Save. An unsaved meeting must never receive a fake room/password.
+  if ((mode === "Virtual" || mode === "Hybrid") && !virtualLink && String(values.virtual_platform ?? "") !== "LiveKit") {
     blockers.push(`${mode} meeting requires a virtual meeting link`);
   }
   return blockers;
