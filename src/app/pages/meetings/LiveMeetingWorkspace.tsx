@@ -923,6 +923,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // ── Meeting controls ───────────────────────────────────────────────────────
   // Persist meeting and live session in one SQL transaction before changing the UI.
   const startRequest = useRef<Promise<boolean> | null>(null);
+  const [startBusy, setStartBusy] = useState(false);
   const handleStart = useCallback((): Promise<boolean> => {
     if (startRequest.current) return startRequest.current;
     const request = (async () => {
@@ -930,17 +931,25 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         toast.error("Meeting unavailable. Refresh and try again.");
         return false;
       }
+      setStartBusy(true);
       try {
-        const startedAt = nowISO();
-        const session = liveSessions.find(s => s.meeting_id === meetingId);
-        const operations = buildMeetingStartBatch({
-          meetingRecordId: meeting.id,
-          meetingId,
-          actorId: currentUser.id,
-          startedAt,
-          existingSession: session,
-        });
-        await convayAuth.applyBatch(operations);
+        let startedAt = nowISO();
+        if (access.loaded && access.is_super_admin) {
+          // Super Admin override is verified, stamped and committed by SQL.
+          const receipt = await convayAuth.forceStartMeeting(meetingId);
+          if (receipt.startedAt) startedAt = receipt.startedAt;
+        } else {
+          // Ordinary hosts retain existing published/time-window restrictions.
+          const session = liveSessions.find(s => s.meeting_id === meetingId);
+          const operations = buildMeetingStartBatch({
+            meetingRecordId: meeting.id,
+            meetingId,
+            actorId: currentUser.id,
+            startedAt,
+            existingSession: session,
+          });
+          await convayAuth.applyBatch(operations);
+        }
         setCtrlStatusRaw("in-progress");
         setTimeline(prev => ({ ...prev, in_progress_at: startedAt }));
         setAgendaStatuses(prev => ({ ...prev, 0: "In Discussion" }));
@@ -950,16 +959,19 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         } catch {
           toast.info("Meeting started. Refresh to load the latest session details.");
         }
+        if (isOnlineMeeting) setPhase("prejoin");
         return true;
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Unable to start meeting; no changes were saved.");
         return false;
+      } finally {
+        setStartBusy(false);
       }
     })();
     startRequest.current = request;
     void request.finally(() => { startRequest.current = null; });
     return request;
-  }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions]);
+  }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions, access.loaded, access.is_super_admin, isOnlineMeeting]);
 
   // End the meeting and its canonical live session together before changing UI.
   // Draft minutes are entered and saved by the secretary in the following modal;
@@ -1640,6 +1652,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         initialRole={myRole as PreJoinRole}
         publisherAllowed={canPublishMedia}
         joinBlockedReason={joinBlockedReason}
+        forceStartBusy={startBusy}
+        onForceStart={access.loaded && access.is_super_admin && activeJoinSessions.length === 0
+          ? () => { void handleStart(); } : undefined}
         onJoin={opts => {
           if (joinBlockedReason) { toast.info(joinBlockedReason); return; }
           setMyMicOn(canPublishMedia && opts.micOn);
@@ -1765,8 +1780,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         {/* Meeting controls — gated by role */}
         <div style={{ display: "flex", gap: "0.4rem" }}>
           {ctrlStatus === "not-started" && canControlMeeting && (
-            <button onClick={handleStart} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
-              <Play size={12} /> Start
+            <button onClick={() => { void handleStart(); }} disabled={startBusy} style={{ padding: "0.35rem 0.75rem", borderRadius: "6px", background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.3rem" }}>
+              <Play size={12} /> {startBusy ? "Starting…" : access.is_super_admin ? "Force Start Now" : "Start"}
             </button>
           )}
           {ctrlStatus === "in-progress" && canControlMeeting && (
