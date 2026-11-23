@@ -30,6 +30,6 @@ describe("AG-361 — authorized agenda creation and load recovery", () => {
     expect(page).not.toContain("localStorage.setItem");
     expect(page).not.toContain("sessionStorage.setItem");
     expect(page).toContain("useAgendaRegistry()");
-    expect(page).toContain("await convayAuth.applyBatch(ops)");
+    expect(page).toContain("await convayAuth.applyAgendaBatch(ops)");
   });
 });

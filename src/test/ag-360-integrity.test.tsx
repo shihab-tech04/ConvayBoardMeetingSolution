@@ -44,8 +44,8 @@ describe("AG-360 Agenda UI ↔ SQL workflow integrity", () => {
 
   it("review and archive use SQL atomic batches and do not report success before server acknowledgement", () => {
     const src = readFileSync("src/app/pages/register-stock/Register4ListPage.tsx", "utf8");
-    expect(src).toContain("await convayAuth.applyBatch(ops)");
-    expect(src).toContain("await convayAuth.applyBatch(members.map");
+    expect(src).toContain("await convayAuth.applyAgendaBatch(ops)");
+    expect(src).toContain("await convayAuth.applyAgendaBatch(members.map");
     expect(src).toContain("await registry.refresh?.()");
     expect(src).toContain("Approve every active child agenda before approving its parent.");
     expect(src).toContain('approve:          "agd_approve"');

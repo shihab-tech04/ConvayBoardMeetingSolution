@@ -294,6 +294,15 @@ export function Register4ListPage() {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
+  // Fail closed if a batch references a record without an authoritative SQL revision.
+  function requireAgendaRevision(id: string): number {
+    const revision = registry.getRevision?.(id);
+    if (!Number.isSafeInteger(revision) || (revision ?? 0) < 1) {
+      throw new Error("Agenda records have changed. Refresh before saving.");
+    }
+    return revision!;
+  }
+
   function openAdd() {
     // Mirror the SQL registry's agd_submit capability. A read-only user must
     // never be sent into a form that can only fail on Save.
@@ -430,8 +439,8 @@ export function Register4ListPage() {
         // Build ALL child + ancestor changes first. The existing SQL batch RPC
         // processes them in one transaction and rolls all back on any denial.
         const ops: Array<{
-          entity_key: string; action: "update"; record_id: string;
-          payload: Record<string, unknown>;
+          entity_key: "bms.agenda"; action: "update"; record_id: string;
+          expected_revision: number; payload: Record<string, unknown>;
         }> = [];
         const makePatch = (row: AgendaSubmission, newStatus: string, oldStatus: string, kind: string) => ({
           approval_status: newStatus,
@@ -444,16 +453,18 @@ export function Register4ListPage() {
           updated_at: at,
         });
         ops.push({ entity_key: "bms.agenda", action: "update", record_id: agendaId,
+          expected_revision: requireAgendaRevision(agendaId),
           payload: makePatch(item, next, previous, action) });
         const snapshot = registry.items.map(a => a.id === agendaId ? { ...a, approval_status: next } : a);
         cascadeStatusUp(agendaId, next, snapshot, (parentId, newStatus, oldStatus) => {
           const parent = registry.items.find(a => a.id === parentId);
           if (!parent) throw new Error("The agenda hierarchy changed. Refresh before reviewing.");
           ops.push({ entity_key: "bms.agenda", action: "update", record_id: parentId,
+            expected_revision: requireAgendaRevision(parentId),
             payload: makePatch(parent, newStatus, oldStatus, "auto_cascade") });
         });
         // No optimistic local state, no misleading success, no multiple partial writes.
-        await convayAuth.applyBatch(ops);
+        await convayAuth.applyAgendaBatch(ops);
       }
       await registry.refresh?.();
       toast.success({
@@ -493,9 +504,9 @@ export function Register4ListPage() {
           const at = new Date().toISOString();
           const members = [item, ...descendants];
           try {
-            await convayAuth.applyBatch(members.map(row => ({
+            await convayAuth.applyAgendaBatch(members.map(row => ({
               entity_key: "bms.agenda" as const, action: "update" as const,
-              record_id: row.id,
+              record_id: row.id, expected_revision: requireAgendaRevision(row.id),
               payload: {
                 approval_status: "Archived", archived_at: at,
                 archived_by: currentUser.name, meeting_readiness: "Archived",
