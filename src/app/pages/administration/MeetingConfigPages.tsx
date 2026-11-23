@@ -195,7 +195,7 @@ export function QuorumRulesPage() {
     awaitCreateSave: true,
     dataLoading: registry.loading || governance.loading,
     dataError: registry.error ?? governance.error,
-    onDataRetry: async () => { await Promise.all([registry.refresh(), governance.refresh()]); },
+    onDataRetry: async () => { await Promise.all([registry.refresh?.(), governance.refresh?.()]); },
     searchPlaceholder: "Search quorum policies",
     async onRowCreate(values) {
       const signature = JSON.stringify(values);
@@ -206,7 +206,7 @@ export function QuorumRulesPage() {
       }
       await createVersionedQuorumRule(values, pendingCreate.current, governance.items, gateway);
       pendingCreate.current = null;
-      await registry.refresh();
+      await registry.refresh?.();
       return true;
     },
   };
@@ -231,7 +231,7 @@ export function QuorumRulesPage() {
           const id = confirmDeactivation;
           setConfirmDeactivation(null);
           void deactivateQuorumRule(id, gateway)
-            .then(async () => { await registry.refresh(); toast.success("Quorum rule deactivated. You can create a new version."); })
+            .then(async () => { await registry.refresh?.(); toast.success("Quorum rule deactivated. You can create a new version."); })
             .catch(err => toast.error(err instanceof Error ? err.message : "Could not deactivate the rule."));
         }}
       />}
