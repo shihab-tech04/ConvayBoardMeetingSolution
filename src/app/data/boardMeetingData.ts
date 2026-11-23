@@ -3178,7 +3178,9 @@ export type MeetingInteractionType =
   | "document_upload"
   | "agenda_change"
   | "host_action"
-  | "quorum_change";
+  | "quorum_change"
+  | "hand_raise"
+  | "reaction";
 
 export interface MeetingInteraction extends EntityRecord {
   meeting_id: string;
