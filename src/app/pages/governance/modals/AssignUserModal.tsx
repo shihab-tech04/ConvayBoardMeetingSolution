@@ -10,21 +10,14 @@
  */
 
 import { useState, useMemo, useRef } from "react";
-import { toast } from "sonner";
 import { createPortal } from "react-dom";
 import { X, UserCheck, Search, AlertTriangle, CheckCircle, ArrowRight } from "lucide-react";
 
 import type { OrgUnit } from "../../../data/boardMeetingData";
 import type { BmsUser } from "../../../data/bmsUsers";
 import { useBmsUserRegistry } from "../../../data/bmsUsers";
-import { useAuditEventRegistry, generateId } from "../../../data/boardMeetingData";
-import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import {
-  buildUnitAssignmentPatch,
-  buildUnitClearancePatch,
-  isUserAlreadyAssigned,
-  resolveUnitUsers,
-} from "../../../utils/orgHierarchy";
+import { convayAuth } from "../../../services/supabase/convayAuth";
+import { isUserAlreadyAssigned, resolveUnitUsers } from "../../../utils/orgHierarchy";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -39,8 +32,6 @@ interface Props {
 
 export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
   const bmsUsers   = useBmsUserRegistry();
-  const auditReg   = useAuditEventRegistry();
-  const currentUser = useCurrentUser();
 
   const [search, setSearch] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<string>("");
@@ -48,6 +39,7 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
   const saveInFlight = useRef(false);
+  const requestId = useRef<{ fingerprint: string; id: string } | null>(null);
   const [error, setError] = useState<string>("");
 
   // Only active/pending users are eligible
@@ -98,6 +90,7 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
 
   function handleSelectUser(user: BmsUser) {
     setSelectedUserId(user.id);
+    requestId.current = null;
     setOperationType(null);
     setError("");
     setConfirming(false);
@@ -110,8 +103,8 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
   function handleContinue() {
     if (!selectedUser) { setError("Select a user first."); return; }
     if (alreadyInThisUnit) { setError("This user is already assigned to this unit."); return; }
-    if (selectedUser.primary_org_unit_id && !operationType) {
-      setError("Choose whether this is an assignment or transfer.");
+    if (selectedUser.primary_org_unit_id && operationType !== "transfer") {
+      setError("One primary unit is supported. Choose Transfer to change the existing assignment.");
       return;
     }
     setError("");
@@ -120,54 +113,35 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
 
   async function handleConfirm() {
     if (saveInFlight.current || !selectedUser || alreadyInThisUnit) return;
+    const priorUnit = selectedUser.primary_org_unit_id || null;
+    if (priorUnit && operationType !== "transfer") {
+      setError("A member already has one primary unit; select Transfer.");
+      return;
+    }
+    const operation = priorUnit ? "transfer" : "assign";
+    const fingerprint = [selectedUser.id, priorUnit || "", unit.id, operation].join(":");
+    if (!requestId.current || requestId.current.fingerprint !== fingerprint) {
+      requestId.current = { fingerprint, id: crypto.randomUUID() };
+    }
     saveInFlight.current = true;
     setSaving(true);
     setError("");
-    const now = new Date().toISOString();
-    const prevUnitId = selectedUser.primary_org_unit_id;
-
-    const patch: Partial<BmsUser> = {
-      ...buildUnitClearancePatch(),
-      ...buildUnitAssignmentPatch(unit),
-      updated_at: now,
-    };
     try {
-      // The production user-directory registry denies direct account writes.
-      // Do not close or emit audit unless an authorized server confirms save.
-      const saved = await bmsUsers.update(selectedUser.id, patch);
-      if (!saved) throw new Error("Assignment was not saved. Use authorized User Management.");
-
-      const action = operationType === "transfer" ? "org_user_transferred" : "org_user_assigned";
-      const details = operationType === "transfer"
-        ? `User ${selectedUser.name} transferred from ${prevUnitId ?? "—"} to ${unit.unit_name}`
-        : `User ${selectedUser.name} assigned to ${unit.unit_name}`;
-
-      let auditSaved = false;
-      try {
-        auditSaved = await auditReg.add({
-          id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-          created_at:      now,
-          event_id:        `AUDIT-ASSIGN-${Date.now()}`,
-          entity_type:     "OrgUnit",
-          entity_id:       unit.id,
-          action,
-          actor:           currentUser?.name ?? "System",
-          actor_role:      currentUser?.designation ?? "",
-          timestamp:       now,
-          ip_address:      "",
-          details,
-          approval_status: "Approved",
-        });
-      } catch {
-        // A saved assignment must not be represented as rolled back.
-      }
-      if (!auditSaved) {
-        toast.warning("Assignment saved, but the activity journal could not be verified.");
-      }
+      await convayAuth.commitOrgMemberAssignment({
+        memberId: selectedUser.id,
+        expectedUnitId: priorUnit,
+        newUnitId: unit.id,
+        operation,
+        requestId: requestId.current.id,
+        effectiveDate: new Date().toISOString().slice(0, 10),
+      });
+      await bmsUsers.refresh?.();
       onSuccess?.();
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Unable to assign the user.");
+      // No local audit event or artificial success: SQL writes their immutable
+      // receipt and the separate SQL readback is required for completion.
+      setError(failure instanceof Error ? failure.message : "Unable to verify assignment.");
     } finally {
       saveInFlight.current = false;
       setSaving(false);

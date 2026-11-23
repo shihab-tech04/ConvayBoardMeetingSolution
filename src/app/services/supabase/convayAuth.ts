@@ -251,6 +251,69 @@ export const convayAuth = {
     return records;
   },
 
+  /** Tenant-safe legacy/global organization assignment snapshot. */
+  async orgMemberDirectory(): Promise<Array<{
+    user_id: string;
+    primary_org_unit_id: string | null;
+    branch_id: string | null;
+    division_id: string | null;
+    department_id: string | null;
+    assignment_revision: number;
+    position: string | null;
+  }>> {
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_org_member_directory", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new Error("Invalid organization-member SQL readback");
+    return rows;
+  },
+
+  /** Writes primary assignment through a permission-gated, atomic SQL transaction. */
+  async commitOrgMemberAssignment(intent: {
+    memberId: string; expectedUnitId?: string | null; newUnitId: string;
+    operation: "assign" | "transfer"; requestId: string;
+    reason?: string; position?: string; effectiveDate: string; handoverUserId?: string;
+  }): Promise<{ member_id: string; new_unit_id: string; operation: string; revision: number; request_id: string; audit_event_id: string }> {
+    const response = await this.authenticatedRequest("/rest/v1/rpc/convay_assign_org_member", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_member_id: intent.memberId, p_expected_unit_id: intent.expectedUnitId || null,
+        p_new_unit_id: intent.newUnitId, p_operation: intent.operation,
+        p_request_id: intent.requestId, p_reason: intent.reason || null,
+        p_position: intent.position || null, p_effective_date: intent.effectiveDate,
+        p_handover_user_id: intent.handoverUserId || null,
+      }),
+    });
+    const receipt = await response.json() as {
+      member_id?: unknown; old_unit_id?: unknown; new_unit_id?: unknown;
+      operation?: unknown; revision?: unknown; request_id?: unknown; audit_event_id?: unknown;
+    };
+    if (receipt.member_id !== intent.memberId || receipt.new_unit_id !== intent.newUnitId ||
+        receipt.operation !== intent.operation || receipt.request_id !== intent.requestId ||
+        typeof receipt.revision !== "number" || !Number.isSafeInteger(receipt.revision) ||
+        typeof receipt.audit_event_id !== "string" || !receipt.audit_event_id) {
+      throw new Error("Organization assignment has no valid authoritative SQL receipt. Refresh before retrying.");
+    }
+    // A confirmed write must never be replayed automatically: verify a fresh,
+    // server-authorized record and its monotonic revision.
+    let rows: Awaited<ReturnType<typeof this.orgMemberDirectory>>;
+    try {
+      rows = await this.orgMemberDirectory();
+    } catch {
+      throw new Error("Organization assignment was acknowledged, but SQL readback is unavailable. Refresh before another change.");
+    }
+    const member = rows.find(row => row.user_id === intent.memberId);
+    if (!member || member.primary_org_unit_id !== intent.newUnitId ||
+        Number(member.assignment_revision) !== receipt.revision) {
+      throw new Error("Organization assignment was acknowledged, but SQL readback is stale. Refresh before another change.");
+    }
+    return receipt as {
+      member_id: string; new_unit_id: string; operation: string;
+      revision: number; request_id: string; audit_event_id: string;
+    };
+  },
+
   /** Server-authorized, audit-stamped Super Admin override (no client-selected actor). */
   async forceStartMeeting(meetingId: string): Promise<{ meetingId: string; sessionId: string; status: string; alreadyStarted: boolean; startedAt?: string }> {
     const id = meetingId.trim();

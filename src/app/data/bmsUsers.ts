@@ -229,8 +229,14 @@ function useLiveBmsUsers(): EntityRegistry<BmsUser> {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const rows = await convayAuth.memberDirectory();
-      setItems(rows.map(row => ({
+      const [rows, assignedRows] = await Promise.all([
+        convayAuth.memberDirectory(),
+        convayAuth.orgMemberDirectory(),
+      ]);
+      const byMemberId = new Map(assignedRows.map(row => [row.user_id, row]));
+      setItems(rows.map(row => {
+        const assigned = byMemberId.get(row.user_id);
+        return ({
         id: row.user_id,
         name: row.display_name,
         display_name: row.display_name,
@@ -245,8 +251,13 @@ function useLiveBmsUsers(): EntityRegistry<BmsUser> {
         primary_role_id: row.role_ids[0],
         role_id: row.role_ids[0],
         role: row.role_names.join(", "),
-        designation: "",
-      })));
+        designation: assigned?.position || "",
+        position: assigned?.position || undefined,
+        primary_org_unit_id: assigned?.primary_org_unit_id || undefined,
+        branch_id: assigned?.branch_id || undefined,
+        division_id: assigned?.division_id || undefined,
+        department_id: assigned?.department_id || undefined,
+      }); }));
       setError(null);
     } catch (e) {
       setItems([]);
