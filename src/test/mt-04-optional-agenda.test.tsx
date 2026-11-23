@@ -61,6 +61,7 @@ describe("MT-04 optional agendas in the five-step Create Meeting journey", () =>
     const page = readFileSync("src/app/pages/return-register/OnlineReturnRegisterPage.tsx", "utf8");
     const review = readFileSync("src/app/components/forms/MeetingReviewPanel.tsx", "utf8");
     const selection = readFileSync("src/app/components/forms/AgendaDocumentStep.tsx", "utf8");
+    const start = readFileSync("src/app/components/meetings/PreMeetingReadinessPanel.tsx", "utf8");
     expect(page).toContain("validateOptionalMeetingAgendas(selected, agendaRegistry.items)[0]");
     expect(page).toContain("validateOptionalMeetingAgendas(agendaEntriesParsed, agendaRegistry.items)");
     expect(page).not.toContain("At least one approved agenda must be selected");
@@ -68,5 +69,8 @@ describe("MT-04 optional agendas in the five-step Create Meeting journey", () =>
     expect(review).toContain("No agenda attached (optional)");
     expect(selection).toContain("Select Agendas (Optional)");
     expect(selection).toContain("Remove all — continue without agenda");
+    expect(start).not.toContain('blockers.push("No agendas linked to this meeting")');
+    expect(start).toContain("No agenda attached (optional). You can start without one.");
+    expect(page).not.toContain("canonicalAgendaLinks.length > 0,");
   });
 });
