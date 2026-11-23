@@ -96,6 +96,6 @@ export async function deactivateQuorumRule(
     throw new Error("The quorum policy was not deactivated by SQL.");
   const readback = await gateway.list();
   if (readback.find(r => r.id === id)?.status !== "Inactive")
-    throw new Error("Quorum rule deactivation was not confirmed by SQL.");
+    throw new Error("Quorum rule deactivation SQL readback was not confirmed.");
   return true;
 }
