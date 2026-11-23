@@ -37,7 +37,7 @@ describe("MN-01 minutes source integrity", () => {
     expect(page).toContain("...MINUTES_DRAWER_COLS");
   });
   it("requires the SQL guard to derive context and reject forged clients", () => {
-    const sql = readFileSync("supabase/migrations/20261119183500_convay_minutes_source_integrity.sql", "utf8");
+    const sql = readFileSync("supabase/migrations/20261123101317_convay_minutes_source_integrity.sql", "utf8");
     expect(sql).toContain("v_expected_context := jsonb_build_object(");
     expect(sql).toContain("Client minutes context does not match authoritative meeting");
     expect(sql).toContain("new.payload->'meeting_context' is distinct from old.payload->'meeting_context'");
@@ -154,7 +154,7 @@ describe("MN-01 minutes source integrity", () => {
     expect(page).toContain('effective_permissions.includes("min_approve")');
   });
   it("requires server-assigned reviewer, approver, signer and archivist identity", () => {
-    const sql = readFileSync("supabase/migrations/20261119183500_convay_minutes_source_integrity.sql", "utf8");
+    const sql = readFileSync("supabase/migrations/20261123101317_convay_minutes_source_integrity.sql", "utf8");
     expect(sql).toContain("Invalid minutes lifecycle transition");
     expect(sql).toContain("Only assigned secretary may forward minutes");
     expect(sql).toContain("Only assigned chairperson may forward minutes");
@@ -166,7 +166,7 @@ describe("MN-01 minutes source integrity", () => {
   });
   it("keeps Additional Notes in both SQL create and SQL edit payloads", () => {
     const page = readFileSync("src/app/pages/archive-reports/MinutesManagementPage.tsx", "utf8");
-    const sql = readFileSync("supabase/migrations/20261119183500_convay_minutes_source_integrity.sql", "utf8");
+    const sql = readFileSync("supabase/migrations/20261123101317_convay_minutes_source_integrity.sql", "utf8");
     expect(page).toContain('notes:              String(values.notes ?? "")');
     expect(page).toContain('notes: String(values.notes ?? "")');
     expect(sql).toContain("'notes',old.payload->>'notes'");
