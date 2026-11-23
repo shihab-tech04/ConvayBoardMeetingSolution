@@ -5,7 +5,8 @@
  * and quorum settings filled in the form below, plus document access warnings.
  * Read-only: does not write any values back.
  */
-import React, { useMemo, useEffect, useCallback } from "react";
+import React, { useMemo, useEffect } from "react";
+import { liveMeetingUrl } from "../../utils/liveMeetingLink";
 import {
   ShieldCheck, AlertTriangle, CheckCircle2, XCircle,
   Lock, Info,
@@ -26,23 +27,7 @@ export interface QuorumAndAccessPanelProps {
   onRefreshQuorumRules?: () => Promise<unknown> | void;
 }
 
-// ── Convay link generator ─────────────────────────────────────────────────────
-
-function djb2(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); h = h | 0; }
-  return Math.abs(h);
-}
-
-export function generateConvayMeeting(seed: string) {
-  const h = djb2(seed || "convay-default");
-  const meetingId = String(h).padStart(12, "0").slice(0, 12);
-  const password  = String(h % 1000000).padStart(6, "0");
-  const pwd       = (h * 31337).toString(16).padStart(32, "a").slice(0, 32);
-  const link      = `https://app.convay.com/m/j/${meetingId}?pwd=${pwd}`;
-  const invite    = `Please join Convay meeting now.\n\nMeeting ID: ${meetingId}\nPassword: ${password}\nMeeting link: ${link}`;
-  return { meetingId, password, link, invite };
-}
+// LiveKit links are generated from the actual saved SQL meeting ID, not title hashes.
 
 type QuorumStatus = "met" | "at_risk" | "not_met" | "not_configured";
 
@@ -124,28 +109,20 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
   const sc = STATUS_CONFIG[status];
   const Icon = sc.icon;
 
-  // ── Convay meeting generation ──────────────────────────────────────────────
+  // ── Real LiveKit link ──────────────────────────────────────────────────────
   const mode = String(values.mode ?? "Physical");
   const isVirtual = mode === "Virtual" || mode === "Hybrid";
-  const convayMeeting = useMemo(() => {
-    if (!isVirtual) return null;
-    const seed = String(values.meeting_title ?? "") + String(values.meeting_date ?? "") + String(values.committee ?? "");
-    return generateConvayMeeting(seed);
-  }, [isVirtual, values.meeting_title, values.meeting_date, values.committee]);
+  const savedId = String(values._draft_meeting_id ?? values.meeting_id ?? "").trim();
+  const savedLiveUrl = isVirtual && savedId ? liveMeetingUrl(savedId) ?? "" : "";
 
   useEffect(() => {
     if (!onValuesChange) return;
-    if (convayMeeting) {
-      onValuesChange({ virtual_link: convayMeeting.link, virtual_platform: "Convay" });
-    } else {
-      onValuesChange({ virtual_link: "", virtual_platform: "" });
-    }
+    onValuesChange(isVirtual
+      ? { virtual_link: savedLiveUrl, virtual_platform: "LiveKit" }
+      : { virtual_link: "", virtual_platform: "" });
+  // Only synchronize when meeting identity or mode actually changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [convayMeeting?.link]);
-
-  const copyToClipboard = useCallback((text: string) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
-  }, []);
+  }, [isVirtual, savedLiveUrl]);
 
   // Required roles come from the governance rule (not manual form fields)
   const requiredRoles: string[] = useMemo(() => {
