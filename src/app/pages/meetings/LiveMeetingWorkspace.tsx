@@ -407,7 +407,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const { items: agendaDocLinks }                                        = useAgendaDocumentLinkRegistry();
   const { items: allDocuments }                                          = useDocumentRegistry();
   const { items: docCommentThreads, add: addDocThread, update: updateDocThread } = useDocumentCommentRegistry();
-  const { items: interactionItems, add: addInteraction }                = useMeetingInteractionRegistry();
+  const { items: interactionItems, add: addInteraction, refresh: refreshInteractions } = useMeetingInteractionRegistry();
   const { items: liveSessions, refresh: refreshLiveSessions } = useLiveMeetingSessionRegistry();
   const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec, refresh: refreshAttendanceRec } = useAttendanceRegistry();
   const { add: addQuorumEvent, refresh: refreshQuorumEvents }              = useQuorumEventRegistry();
@@ -773,13 +773,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     const timer = window.setInterval(refresh, 12000);
     return () => window.clearInterval(timer);
   }, [isOnlineMeeting, phase, refreshLiveSessions]);
-  // Registry data can arrive after the route first renders. A cached local
-  // control state must never skip the authenticated waiting room.
+  // Every entry path must wait for confirmed SQL session state, not just
+  // join_meeting. A browser-restored control state is not room authority.
   useEffect(() => {
-    if (isOnlineMeeting && entryAction === "join_meeting" && phase === "meeting" && activeJoinSessions.length !== 1) {
+    if (isOnlineMeeting && phase === "meeting" && activeJoinSessions.length !== 1) {
       setPhase("prejoin");
     }
-  }, [isOnlineMeeting, entryAction, phase, activeJoinSessions.length]);
+  }, [isOnlineMeeting, phase, activeJoinSessions.length]);
   const [myMicOn, setMyMicOn]         = useState(true);
   const [myCamOn, setMyCamOn]         = useState(true);
   // Separate user request from provider-confirmed sharing.
@@ -843,6 +843,68 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         ? new Date(event.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
         : "",
     })), [interactionItems, meetingId]);
+  // Server-confirmed signals are shared between all meeting participants.
+  // Poll when the workspace is open; unlike toasts these persist and reconcile.
+  useEffect(() => {
+    if (!isOnlineMeeting || phase !== "meeting" || activeJoinSessions.length !== 1) return;
+    const refresh = () => { void Promise.resolve(refreshInteractions?.()).catch(() => undefined); };
+    refresh();
+    const interval = window.setInterval(refresh, 6000);
+    return () => window.clearInterval(interval);
+  }, [isOnlineMeeting, phase, activeJoinSessions.length, refreshInteractions]);
+
+  const confirmedHandStates = useMemo(() => {
+    const byUser: Record<string, boolean> = {};
+    for (const e of [...interactionItems].filter(e => e.meeting_id === meetingId && e.interaction_type === "hand_raise")
+      .sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))) {
+      if (typeof e.metadata?.raised === "boolean") byUser[e.user_id] = e.metadata.raised;
+    }
+    return byUser;
+  }, [interactionItems, meetingId]);
+  const [signalBusy, setSignalBusy] = useState(false);
+  const recentReactions = useMemo(() => interactionItems
+    .filter(e => e.meeting_id === meetingId && e.interaction_type === "reaction"
+      && REACTIONS.includes(String(e.content ?? ""))
+      && Date.now() - new Date(String(e.created_at ?? "")).getTime() < 15000)
+    .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
+    .slice(0, 3), [interactionItems, meetingId]);
+  const writeLiveSignal = async (kind: "hand_raise" | "reaction", value: boolean | string) => {
+    if (signalBusy || !isOnlineMeeting || activeJoinSessions.length !== 1) {
+      toast.error("Join the active LiveKit meeting before sending participant signals.");
+      return;
+    }
+    setSignalBusy(true);
+    try {
+      const saved = await addInteraction({
+        id: `SIG-${crypto.randomUUID()}`,
+        meeting_id: meetingId,
+        user_id: currentUser.id,
+        interaction_type: kind,
+        content: kind === "reaction" ? String(value) : (value ? "Raised hand" : "Lowered hand"),
+        metadata: kind === "hand_raise" ? { raised: value } : {},
+        created_at: nowISO(),
+      });
+      if (saved === true) {
+        await Promise.resolve(refreshInteractions?.()).catch(() => undefined);
+        if (kind === "reaction") setReactionsOpen(false);
+      }
+    } finally {
+      setSignalBusy(false);
+    }
+  };
+  useEffect(() => {
+    setParticipants(previous => {
+      let changed = false;
+      const next = previous.map(p => {
+        const raised = confirmedHandStates[p.id] ?? false;
+        if (p.handRaised === raised) return p;
+        changed = true;
+        return { ...p, handRaised: raised };
+      });
+      return changed ? next : previous;
+    });
+  }, [confirmedHandStates]);
+
   const sendingChat = useRef(false);
   const postingComment = useRef(false);
   const [chatBusy, setChatBusy] = useState(false);
@@ -1757,8 +1819,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         {/* Quorum badge */}
         <span
           title={`Rule: ${quorumRuleDisplay} · ${presentCount} present of ${eligibleCount} eligible`}
-          style={{ padding: "0.2rem 0.6rem", borderRadius: "9999px", fontSize: "0.7rem", fontWeight: 600, background: quorumMet ? "#14532d22" : "#7f1d1d22", color: quorumMet ? "#22c55e" : "#ef4444", border: `1px solid ${quorumMet ? "#22c55e44" : "#ef444444"}`, whiteSpace: "nowrap", cursor: "help" }}>
-          {quorumMet ? "✓ Quorum" : "✗ No Quorum"} ({presentCount}/{quorumRequired})
+          style={{ padding: "0.2rem 0.6rem", borderRadius: "9999px", fontSize: "0.7rem", fontWeight: 600, background: quorumMet ? "#14532d22" : (quorumRequired === 0 || isOnlineMeeting && !serverQuorum) ? "#334155" : "#7f1d1d22", color: quorumMet ? "#22c55e" : (quorumRequired === 0 || isOnlineMeeting && !serverQuorum) ? "#cbd5e1" : "#ef4444", border: `1px solid ${quorumMet ? "#22c55e44" : (quorumRequired === 0 || isOnlineMeeting && !serverQuorum) ? "#475569" : "#ef444444"}`, whiteSpace: "nowrap", cursor: "help" }}>
+          {isOnlineMeeting && !serverQuorum ? "Quorum Pending"
+            : quorumRequired === 0 ? "Quorum Not Configured"
+            : quorumMet ? "✓ Quorum" : "✗ No Quorum"}
+          {quorumRequired > 0 ? ` (${quorumCalcResult.eligibleCount}/${quorumRequired})` : ""}
         </span>
 
         {/* Active vote indicator */}
@@ -1816,8 +1881,10 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         <div role="alert" style={{ padding: "0.4rem 1rem", background: "#7f1d1d", borderBottom: "1px solid #ef4444", display: "flex", alignItems: "center", gap: "0.5rem", flexShrink: 0 }}>
           <AlertCircle size={14} style={{ color: "#fca5a5", flexShrink: 0 }} />
           <span style={{ fontSize: "0.75rem", color: "#fecaca", fontWeight: 600 }}>
-            Quorum lost — {quorumStatusLabel(quorumCalcResult)}. Present eligible: {quorumCalcResult.eligibleCount} of {quorumCalcResult.requiredCount} required.
-            New votes and formal resolutions are blocked until quorum is restored.
+            {isOnlineMeeting && !serverQuorum ? "Quorum confirmation pending."
+              : quorumRequired === 0 ? "Quorum rule has not been configured."
+              : `Quorum not met — ${quorumStatusLabel(quorumCalcResult)}. Present eligible: ${quorumCalcResult.eligibleCount} of ${quorumCalcResult.requiredCount} required.`}
+            {" "}New votes and formal resolutions remain blocked until SQL confirms quorum.
           </span>
         </div>
       )}
@@ -1845,7 +1912,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
           {/* Video stage */}
           <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
-            {isOnlineMeeting && (
+            {isOnlineMeeting && activeJoinSessions.length === 1 && (
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
                 <LiveMeetingMedia meetingId={meetingId}
                   micOn={canPublishMedia && myMicOn} camOn={canPublishMedia && myCamOn}
@@ -2676,9 +2743,13 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
               <MessageSquare size={18} />
               {chatMessages.length > 0 && <span style={{ position: "absolute", top: -4, right: -4, background: "#ef4444", color: "#fff", fontSize: "0.6rem", borderRadius: "9999px", padding: "1px 4px", fontWeight: 700 }}>{chatMessages.length}</span>}
             </DockButton>
-            <DockButton active={participants.find(p => p.id === currentUser.id)?.handRaised ?? false} label="Raise Hand" onClick={() => { setParticipants(prev => prev.map(p => p.id === currentUser.id ? { ...p, handRaised: !p.handRaised } : p)); toast("Hand raised"); }}>
-              <Hand size={18} />
-            </DockButton>
+            {isOnlineMeeting
+              ? <DockButton active={confirmedHandStates[currentUser.id] === true} label={signalBusy ? "Saving hand…" : confirmedHandStates[currentUser.id] ? "Lower Hand" : "Raise Hand"} onClick={() => { void writeLiveSignal("hand_raise", !(confirmedHandStates[currentUser.id] ?? false)); }}>
+                  <Hand size={18} />
+                </DockButton>
+              : <DockButton active={participants.find(p => p.id === currentUser.id)?.handRaised ?? false} label="Raise Hand" onClick={() => setParticipants(prev => prev.map(p => p.id === currentUser.id ? { ...p, handRaised: !p.handRaised } : p))}>
+                  <Hand size={18} />
+                </DockButton>}
             <DockButton active={reactionsOpen} label="Reactions" onClick={() => setReactionsOpen(v => !v)}>
               <Smile size={18} />
             </DockButton>
@@ -3880,11 +3951,22 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         </div>
       )}
 
+      {/* Persisted participant reactions, refreshed from SQL across clients. */}
+      {isOnlineMeeting && recentReactions.length > 0 && phase === "meeting" && (
+        <div role="status" aria-live="polite" style={{ position: "fixed", bottom: 140, left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "#1e293b", border: "1px solid #334155", padding: "0.4rem 0.7rem", borderRadius: 12, color: "#f1f5f9", fontSize: "0.8rem" }}>
+          {recentReactions.map(e => <span key={e.id} style={{ marginRight: 12 }}>
+            {String(e.metadata?.sender ?? "Participant")} {e.content}
+          </span>)}
+        </div>
+      )}
       {/* ── REACTIONS ────────────────────────────────────────────────────────── */}
       {reactionsOpen && (
         <div style={{ position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)", display: "flex", gap: "0.5rem", padding: "0.5rem 0.75rem", background: "#1e293b", borderRadius: "9999px", border: "1px solid #334155", zIndex: 100 }}>
           {REACTIONS.map(r => (
-            <button key={r} onClick={() => { toast(r); setReactionsOpen(false); }} style={{ fontSize: "1.3rem", background: "none", border: "none", cursor: "pointer" }}>{r}</button>
+            <button key={r} disabled={signalBusy} onClick={() => {
+              if (isOnlineMeeting) void writeLiveSignal("reaction", r);
+              else { toast(r); setReactionsOpen(false); }
+            }} style={{ fontSize: "1.3rem", background: "none", border: "none", cursor: signalBusy ? "wait" : "pointer" }}>{r}</button>
           ))}
           <button onClick={() => setReactionsOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}><X size={14} /></button>
         </div>
