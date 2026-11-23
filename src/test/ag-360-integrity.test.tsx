@@ -58,7 +58,7 @@ describe("AG-360 Agenda UI ↔ SQL workflow integrity", () => {
     expect(modal).toContain("EDITABLE_STATUSES.has(savedParent.approval_status)");
     expect(modal).toContain("await linkReg.add(");
     expect(modal).toContain("await linkReg.remove(");
-    expect(modal).toContain("await convayAuth.applyBatch([");
+    expect(modal).toContain("await convayAuth.applyAgendaBatch([");
     expect(modal).toContain("await convayAuth.applyBatch(operations)");
   });
 
