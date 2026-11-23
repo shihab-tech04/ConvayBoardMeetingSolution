@@ -314,6 +314,27 @@ export const convayAuth = {
     };
   },
 
+  /** Read immutable unit changes and assignment events from authorized SQL. */
+  async orgUnitHistory(unitId: string): Promise<Array<{
+    id: string; event_id: string; entity_type: string; entity_id: string;
+    action: string; actor: string; actor_role: string; timestamp: string;
+    ip_address: string; details: string; approval_status: string;
+  }>> {
+    if (!unitId || unitId.length > 180) throw new Error("Valid organization unit required");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_org_unit_history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_unit_id: unitId, p_limit: 100 }),
+    });
+    const records = await res.json();
+    if (!Array.isArray(records) || records.some(row =>
+      typeof row.id !== "string" || row.entity_id !== unitId ||
+      typeof row.action !== "string" || typeof row.timestamp !== "string")) {
+      throw new Error("Invalid organization audit readback");
+    }
+    return records;
+  },
+
   /** Server-authorized, audit-stamped Super Admin override (no client-selected actor). */
   async forceStartMeeting(meetingId: string): Promise<{ meetingId: string; sessionId: string; status: string; alreadyStarted: boolean; startedAt?: string }> {
     const id = meetingId.trim();

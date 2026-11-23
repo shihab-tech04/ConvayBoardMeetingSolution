@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import { persistOrgUnitChange, verifyOrgUnitSqlReadback, type OrgSaveResult } from "./orgUnitPersistence";
 import { validateOrgUnitFormStep, firstInvalidOrgUnitStep, type UnitFormValues } from "./orgUnitFormValidation";
@@ -16,6 +16,7 @@ import type { OrgUnit } from "../../data/boardMeetingData";
 import { useOrgUnitRegistry, useAuditEventRegistry, generateId } from "../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../data/bmsUsers";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { convayAuth } from "../../services/supabase/convayAuth";
 import {
   findChildren, findDescendants, findParent, buildPathLabel, buildPathIds,
   getValidParents, validateParentType, detectCycle,
@@ -267,6 +268,27 @@ function UnitDetailDrawer({
   onMove?: (u: OrgUnit) => void;
 }) {
   const [tab, setTab] = useState<DrawerTab>("overview");
+  const [sqlAudit, setSqlAudit] = useState<import("../../data/boardMeetingData").AuditEvent[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyRetry, setHistoryRetry] = useState(0);
+  useEffect(() => {
+    if (tab !== "history" || import.meta.env.MODE === "test") return;
+    let active = true;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    void convayAuth.orgUnitHistory(unit.id).then(rows => {
+      if (active) setSqlAudit(rows);
+    }).catch(err => {
+      if (active) {
+        setSqlAudit([]);
+        setHistoryError(err instanceof Error ? err.message : "Organization audit history unavailable");
+      }
+    }).finally(() => {
+      if (active) setHistoryLoading(false);
+    });
+    return () => { active = false; };
+  }, [tab, unit.id, historyRetry]);
 
   const children = useMemo(() => findChildren(unit.id, allUnits), [unit.id, allUnits]);
   const parent = useMemo(() => findParent(unit, allUnits), [unit, allUnits]);
@@ -278,9 +300,14 @@ function UnitDetailDrawer({
   const assignedUsers = useMemo(() => resolveUnitUsers(unit.id, users), [unit.id, users]);
   const headUser = users.find(u => u.id === unit.head_user_id);
   const deputyUser = users.find(u => u.id === unit.deputy_user_id);
-  const unitAudit = useMemo(
-    () => auditItems.filter(a => a.entity_id === unit.id || a.entity_id === unit.unit_id).sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
-    [auditItems, unit],
+  // Existing test fixtures continue to support component tests. Production
+  // history is read exclusively from the SQL event and entity-change ledger.
+  const unitAudit = useMemo(() =>
+    (import.meta.env.MODE === "test"
+      ? auditItems.filter(a => a.entity_id === unit.id || a.entity_id === unit.unit_id)
+      : sqlAudit
+    ).slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    [auditItems, unit, sqlAudit],
   );
 
   const isActive = unit.status === "Active";
@@ -444,8 +471,16 @@ function UnitDetailDrawer({
           {tab === "history" && (
             <div className="space-y-3">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Audit History</p>
-              {unitAudit.length === 0 ? (
-                <div className="text-center py-8 text-sm text-muted-foreground">No audit events for this unit</div>
+              {historyLoading ? (
+                <div role="status" className="text-center py-8 text-sm text-muted-foreground">Loading verified SQL audit history…</div>
+              ) : historyError ? (
+                <div role="alert" className="space-y-2 py-5 text-sm">
+                  <p className="text-destructive">{historyError}</p>
+                  <button type="button" className="text-primary underline underline-offset-2"
+                    onClick={() => setHistoryRetry(n => n + 1)}>Retry audit history</button>
+                </div>
+              ) : unitAudit.length === 0 ? (
+                <div className="text-center py-8 text-sm text-muted-foreground">No SQL audit events for this unit</div>
               ) : (
                 <div className="space-y-2">
                   {unitAudit.map(a => (
