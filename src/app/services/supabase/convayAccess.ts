@@ -39,7 +39,7 @@ export interface AccessSnapshot {
   permissions: AccessPermission[];
   user_assignments: AccessAssignment[];
   /** Fresh, server-authorized company-admin scopes only; never client-supplied. */
-  company_admin_tenant_ids: string[];
+  company_admin_tenant_ids?: string[];
 }
 const empty: AccessSnapshot = {
   loaded: false, error: null, is_super_admin: false, effective_permissions: [],
@@ -201,7 +201,7 @@ export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   if (state.is_super_admin) return true;
   const normalizedPath = "/" + path.replace(/^\/+|\/+$/g, "");
   if (/^\/company-management(?:\/|$)/.test(normalizedPath))
-    return state.company_admin_tenant_ids.length > 0;
+    return (state.company_admin_tenant_ids?.length ?? 0) > 0;
   if (/^\/subscribers(?:\/|$)/.test(normalizedPath)) return state.is_super_admin;
   if (/^\/(?:administration\/roles-permissions(?:\/|$)|administration\/integrations(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(normalizedPath)) return false;
   const required = permissionForPath(path);
