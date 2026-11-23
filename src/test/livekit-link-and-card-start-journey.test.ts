@@ -61,10 +61,11 @@ describe("LM/HM: every meeting card uses real LiveKit, not fake deterministic ro
   it("keeps invitees in the waiting lobby until a host creates the SQL live session", () => {
     const workspace = readFileSync("src/app/pages/meetings/LiveMeetingWorkspace.tsx", "utf8");
     const prejoin = readFileSync("src/app/components/meetings/MeetingPreJoinPanel.tsx", "utf8");
-    expect(workspace).toContain("activeJoinSessions.length === 0");
+    expect(workspace).toContain("canonicalRoomEntry.mayAttemptStart");
+    expect(workspace).toContain("joinBlockedReason = !isOnlineMeeting ? undefined : canonicalRoomEntry.reason");
     expect(workspace).toContain("joinBlockedReason={joinBlockedReason}");
     expect(workspace).toContain("if (joinBlockedReason) { toast.info(joinBlockedReason); return; }");
-    expect(workspace).toContain("refreshLiveSessions?.()");
+    expect(workspace).toContain("Promise.all([refreshMeetings?.(), refreshLiveSessions?.()])");
     expect(prejoin).toContain('disabled={Boolean(joinBlockedReason)}');
     expect(prejoin).toContain('role="status"');
   });
