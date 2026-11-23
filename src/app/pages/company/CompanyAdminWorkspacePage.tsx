@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { Button } from "../../components/buttons/Button";
 import { AppTextField } from "../../components/forms/AppTextField";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
+import { MeetingTemplateMarketplace } from "../subscribers/MeetingTemplateMarketplace";
 import { useAccessSnapshot } from "../../services/supabase/convayAccess";
 import {
   listCompanies, readCompany, enrollVerifiedCompanyMember, revokeCompanyMember,
@@ -39,6 +40,7 @@ export function CompanyAdminWorkspacePage(){
   const [email,setEmail]=useState("");
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
+  const [templateEditorOpen,setTemplateEditorOpen]=useState(false);
 
   useEffect(()=>{
     let active=true;
@@ -185,6 +187,24 @@ export function CompanyAdminWorkspacePage(){
         </p>)}
       </section>
     </div>}
+    {canUse&&profile&&profile.company.id===selectedId&&
+      <section style={{...surface,marginTop:16}} aria-label="Company meeting type administration">
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+          <div>
+            <h2 style={{fontSize:17,fontWeight:650}}>Meeting types and templates</h2>
+            <p style={note}>Create and publish versioned meeting steps for your company; existing meetings remain unchanged.</p>
+          </div>
+          <Button variant="secondary" size="sm" disabled={working||loading}
+            onClick={()=>setTemplateEditorOpen(value=>!value)}>
+            {templateEditorOpen?"Close template editor":"Manage meeting templates"}
+          </Button>
+        </div>
+        {templateEditorOpen&&
+          <div style={{marginTop:18}}>
+            <MeetingTemplateMarketplace key={profile.company.id}
+              companyOnly initialCompanyId={profile.company.id}/>
+          </div>}
+      </section>}
     {confirmation&&<SConfirmModal
       title={confirmation.action==="assign"?"Add company member?":"Revoke company membership?"}
       message={confirmation.action==="assign"
