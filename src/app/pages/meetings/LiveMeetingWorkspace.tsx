@@ -851,10 +851,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [agendaSidebarTab, setAgendaSidebarTab] = useState<"comments" | "motions" | "voting">("comments");
   const [agendaDetailTab, setAgendaDetailTab] = useState<"info" | "activities" | "docs" | "comments" | "voting">("info");
   const [panelOpen, setPanelOpen] = useState(() =>
-    typeof window === "undefined" || !window.matchMedia("(max-width: 767px)").matches
+    typeof window === "undefined" || typeof window.matchMedia !== "function" || !window.matchMedia("(max-width: 767px)").matches
   );
   // Preserve the user's manual panel choice until the viewport crosses the mobile boundary.
   useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
     const query = window.matchMedia("(max-width: 767px)");
     const onViewportChange = (event: MediaQueryListEvent) => setPanelOpen(!event.matches);
     query.addEventListener("change", onViewportChange);
@@ -863,7 +864,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   useEffect(() => {
     if (!panelOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && window.matchMedia("(max-width: 767px)").matches) {
+      if (event.key === "Escape" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches) {
         setPanelOpen(false);
       }
     };
