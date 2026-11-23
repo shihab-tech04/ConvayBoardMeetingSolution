@@ -1943,7 +1943,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           <div style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
             {isOnlineMeeting && canonicalRoomEntry.canJoin && (
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
-                <LiveMeetingMedia meetingId={meetingId}
+                <LiveMeetingMedia meetingId={meetingId} layout={viewMode === "grid" ? "gallery" : "speaker"}
                   micOn={canPublishMedia && myMicOn} camOn={canPublishMedia && myCamOn}
                   sharing={canPublishMedia && shareRequested}
                   onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={confirmed => {
