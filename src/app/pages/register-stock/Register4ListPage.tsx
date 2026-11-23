@@ -80,9 +80,12 @@ function computeCascadeStatus(
 ): string {
   const descendants = getDescendants(parentId, allItems);
   const active = descendants.filter(d => (overrides.get(d.id) ?? d.approval_status) !== "Archived");
-  if (active.length === 0) return "Approved";
+  // A child review must never silently approve its parent. Parent approval
+  // requires a separate, explicit approver action and audit event.
+  const alreadyApproved = allItems.find(a => a.id === parentId)?.approval_status === "Approved";
+  if (active.length === 0) return alreadyApproved ? "Approved" : "Pending Approval";
   const allApproved = active.every(d => (overrides.get(d.id) ?? d.approval_status) === "Approved");
-  if (allApproved) return "Approved";
+  if (allApproved) return alreadyApproved ? "Approved" : "Pending Approval";
   const anyApproved = active.some(d => (overrides.get(d.id) ?? d.approval_status) === "Approved");
   return anyApproved ? "Partially Approved" : "Pending Approval";
 }
@@ -276,7 +279,7 @@ export function Register4ListPage() {
       submit:           "agd_submit",
       approve:          "agd_approve",
       reject:           "agd_approve",
-      request_revision: "agd_approve",
+      request_revision: "agd_review",
       reopen:           "agd_approve",
       archive:          "agd_approve",
       view_history:     "agd_view",
@@ -285,6 +288,7 @@ export function Register4ListPage() {
     };
     const permId = permMap[action];
     if (permId && myPermissions.includes(permId)) return true;
+    if (action === "request_revision" && myPermissions.includes("agd_approve")) return true;
     // Super Admin / Board Secretary fallback (same as resolveAgendaActions)
     return myRole === "Super Admin";
   }
@@ -373,9 +377,9 @@ export function Register4ListPage() {
     if (!item) return;
     // Retain the established owner-submit path, but resolve ownership by stable BMS ID.
     // All persisted updates remain subject to authoritative server/RLS permission checks.
-    const permitted = action === "submit"
-      ? (hasPermission("submit") || isAgendaOwnedBy(item.owner_user_id, currentOwnerUserId))
-      : hasPermission(action);
+    // SQL requires agd_submit even for the record owner; do not offer an
+    // action the server will inevitably deny.
+    const permitted = hasPermission(action);
     if (!permitted) {
       toast.error(`You don't have permission to ${action.replace(/_/g, " ")} agendas.`);
       return;
@@ -421,7 +425,7 @@ export function Register4ListPage() {
     setSubmitSaving(true);
     try {
       if (action === "submit") {
-        const permitted = hasPermission("submit") || isAgendaOwnedBy(item.owner_user_id, currentOwnerUserId);
+        const permitted = hasPermission("submit");
         await submitAgendaWithHistory(
           item, registry, { name: currentUser.name, role: currentUser.designation },
           note, permitted,
@@ -456,7 +460,10 @@ export function Register4ListPage() {
           expected_revision: requireAgendaRevision(agendaId),
           payload: makePatch(item, next, previous, action) });
         const snapshot = registry.items.map(a => a.id === agendaId ? { ...a, approval_status: next } : a);
-        cascadeStatusUp(agendaId, next, snapshot, (parentId, newStatus, oldStatus) => {
+        // A standalone reviewer may request revisions without gaining
+        // approver authority to update parent status/history. Parent readiness
+        // is still checked against every child in meeting selection and SQL.
+        if (action !== "request_revision" || hasPermission("approve")) cascadeStatusUp(agendaId, next, snapshot, (parentId, newStatus, oldStatus) => {
           const parent = registry.items.find(a => a.id === parentId);
           if (!parent) throw new Error("The agenda hierarchy changed. Refresh before reviewing.");
           ops.push({ entity_key: "bms.agenda", action: "update", record_id: parentId,
