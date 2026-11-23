@@ -9,7 +9,7 @@ const meetingPage = readFileSync("src/app/pages/return-register/OnlineReturnRegi
 const quorumPanel = readFileSync("src/app/components/forms/QuorumAndAccessPanel.tsx", "utf8");
 const meetingFields = readFileSync("src/app/pages/boardMeetingFormFields.ts", "utf8");
 
-describe("MT-04 Create Meeting setup, options, recovery and fail-closed scheduling", () => {
+describe("MT-04 Create Meeting setup, options, recovery and safe scheduling", () => {
   const bodies = [
     { id: "gb-active", body_name: "Board A", status: "Active" },
     { id: "gb-inactive", body_name: "Board B", status: "Inactive" },
@@ -43,14 +43,15 @@ describe("MT-04 Create Meeting setup, options, recovery and fail-closed scheduli
     expect(meetingPage).toContain("formSteps:       MEETING_FORM_STEPS");
     expect(meetingPage).toContain("onSaveDraft: async");
     expect(meetingPage).toContain('lastStepSubmitLabel: "Schedule Meeting"');
-    expect(meetingPage).toContain('blockers.push("No active quorum rule found for the selected Board / Committee")');
+    expect(meetingPage).not.toContain('blockers.push("No active quorum rule found for the selected Board / Committee")');
     expect(meetingPage).toContain("activeMeetingGovernanceOptions(govRegistry.items)");
     expect(meetingPage).toContain("validateCreateStep: (step, values)");
     expect(meetingPage).toContain("Mark at least one participant as required.");
     expect(meetingPage).toContain("validateOptionalMeetingAgendas(selected, agendaRegistry.items)[0]");
     expect(meetingPage).toContain("validateOptionalMeetingAgendas(agendaEntriesParsed, agendaRegistry.items)");
     expect(meetingPage).not.toContain("At least one approved agenda must be selected");
-    expect(meetingPage).toContain("An active, verified quorum rule is required");
+    expect(meetingPage).not.toContain("An active, verified quorum rule is required");
+    expect(meetingPage).toContain('blockers.push("At least one quorum-eligible participant is required")');
   });
   it("shows actionable authenticated registry setup without discarding wizard state", () => {
     expect(meetingPage).toContain("No active Board / Committee is configured");
@@ -58,6 +59,7 @@ describe("MT-04 Create Meeting setup, options, recovery and fail-closed scheduli
     expect(meetingPage).toContain("governance-org/governance-bodies");
     expect(meetingPage).toContain("Refresh Board / Committee list");
     expect(quorumPanel).toContain("No active quorum rule is configured");
+    expect(quorumPanel).toContain("You can continue and schedule this meeting without a quorum rule");
     expect(quorumPanel).toContain("administration/meeting-configuration/quorum-rules");
     expect(quorumPanel).not.toContain("Set quorum rules in the form below");
   });
