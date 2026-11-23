@@ -28,7 +28,7 @@ describe("LM-19 provider-authoritative screen-sharing UI", () => {
 
   it("separates user's share request from provider-confirmed publishing", () => {
     expect(workspace).toContain("const [shareRequested, setShareRequested] = useState(false)");
-    expect(workspace).toContain("sharing={shareRequested}");
+    expect(workspace).toContain("sharing={canPublishMedia && shareRequested}");
     expect(workspace).toContain("setIsSharing(confirmed)");
     expect(workspace).toContain('shareRequested ? "Cancel Share"');
   });
