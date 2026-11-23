@@ -29,8 +29,7 @@ import { KpiRow } from "../../components/cards/KpiRow";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { collectAgendaRegisterDescendants, collectAgendaRegisterAncestors } from "./agendaRegisterDescendants";
 import { buildAgendaPreviewOutline } from "./agendaPreviewOutline";
-import { isAgendaOwnedBy, resolveAgendaOwnerUserId } from "./agendaOwnerIdentity";
-import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
+ import { submitAgendaWithHistory } from "./submitAgendaWithHistory";
 import { sanitizeAgendaHtml } from "../../utils/sanitizeAgendaHtml";
 import { convayAuth } from "../../services/supabase/convayAuth";
 
@@ -254,8 +253,7 @@ export function Register4ListPage() {
   );
 
   // Ownership must use stable account identifiers, never a non-unique display name.
-  const currentOwnerUserId = resolveAgendaOwnerUserId(bmsUserReg.items, currentUser);
-
+ 
   function resolveUserName(userId: string): string {
     if (!userId) return "";
     return bmsUserReg.items.find(u => u.id === userId)?.name ?? userId;
@@ -1065,9 +1063,8 @@ export function Register4ListPage() {
   const drawerFooterActions: ReactNode = (() => {
     if (!drawerItem) return null;
     const status   = drawerItem.approval_status ?? "Draft";
-    const isOwner  = isAgendaOwnedBy(drawerItem.owner_user_id, currentOwnerUserId);
-    const canEdit  = (isOwner || hasPermission("edit")) && ["Draft", "Revision Requested", "Reopened"].includes(status);
-    const canSubmit = SUBMITTABLE_STATUSES.has(status) && (isOwner || hasPermission("submit"));
+    const canEdit  = hasPermission("edit") && ["Draft", "Revision Requested", "Reopened"].includes(status);
+    const canSubmit = SUBMITTABLE_STATUSES.has(status) && hasPermission("submit");
 
     if (drawerChildId) {
       return (
@@ -1113,11 +1110,10 @@ export function Register4ListPage() {
   const drawerOverflowActions = (() => {
     if (!drawerItem) return undefined;
     const status   = drawerItem.approval_status ?? "Draft";
-    const isOwner  = isAgendaOwnedBy(drawerItem.owner_user_id, currentOwnerUserId);
     const items: Array<{ label: string; onClick: () => void; danger?: boolean }> = [];
     const id = drawerChildId ?? drawerItem.id;
 
-    if (SUBMITTABLE_STATUSES.has(status) && (isOwner || hasPermission("submit")))
+    if (SUBMITTABLE_STATUSES.has(status) && hasPermission("submit"))
       items.push({ label: "Submit for Approval", onClick: () => openApprovalDialog(id, "submit") });
     if (APPROVAL_QUEUE_STATUSES.has(status) && hasPermission("approve"))
       items.push({ label: "Approve", onClick: () => openApprovalDialog(id, "approve") });
