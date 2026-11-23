@@ -407,77 +407,86 @@ export function Register4ListPage() {
     setApprovalDialog({ action, agendaId, note: "", reason: "", impact: "", errors: {} });
   }
 
-  function executeApprovalAction() {
-    if (!approvalDialog) return;
+  async function executeApprovalAction() {
+    if (!approvalDialog || submitSaving || submitInFlight.current) return;
     const { action, agendaId, note, reason, impact } = approvalDialog;
     const errs: Record<string, string> = {};
-    if (action === "reject"           && !reason.trim()) errs.reason = "Rejection reason is required.";
-    if (action === "request_revision" && !note.trim())   errs.note   = "Revision note is required.";
-    if (Object.keys(errs).length > 0) { setApprovalDialog(d => d ? { ...d, errors: errs } : null); return; }
+    if (action === "reject" && !reason.trim()) errs.reason = "Rejection reason is required.";
+    if (action === "request_revision" && !note.trim()) errs.note = "Revision note is required.";
+    if (Object.keys(errs).length) { setApprovalDialog(d => d ? { ...d, errors: errs } : null); return; }
 
     const item = registry.items.find(a => a.id === agendaId);
-    if (!item) return;
-    if (action === "submit") {
-      if (submitInFlight.current) return;
-      submitInFlight.current = true;
-      setSubmitSaving(true);
-      // History and status are written together and only acknowledged after SQL accepts.
-      const permitted = hasPermission("submit") || isAgendaOwnedBy(item.owner_user_id, currentOwnerUserId);
-      void submitAgendaWithHistory(
-        item, registry, { name: currentUser.name, role: currentUser.designation },
-        note, permitted,
-      ).then(async () => {
-        // Audit is a separate server write: never report it successful before acknowledgement.
-        const existingIds = auditReg.items.map(e => e.id);
-        let auditSaved = false;
-        try {
-          auditSaved = (await auditReg.add({
-            id: generateId("AUD", existingIds),
-            event_id: generateId("EVT", auditReg.items.map(e => e.event_id)),
-            entity_type: "Agenda", entity_id: agendaId, action: "submit",
-            actor: currentUser.name, actor_role: currentUser.designation,
-            timestamp: new Date().toISOString(), ip_address: "",
-            details: `Agenda submitted by ${currentUser.name}${note.trim() ? `: ${note.trim()}` : ""}`,
-            approval_status: "Logged",
-          } as never)) === true;
-        } catch { /* An audit failure cannot undo an already-acknowledged agenda update. */ }
-        if (auditSaved) toast.success("Submitted for approval.");
-        else toast.warning("Agenda submitted, but audit logging could not be verified.");
-        setApprovalDialog(null);
-      }).catch(error => {
-        toast.error(error instanceof Error ? error.message : "Unable to submit agenda.");
-      }).finally(() => {
-        submitInFlight.current = false;
-        setSubmitSaving(false);
-      });
+    if (!item) { toast.error("Agenda no longer exists. Refresh and retry."); return; }
+    // Parent approval must never silently bypass child review.
+    if (action === "approve" && getDescendants(agendaId, registry.items)
+      .some(d => d.approval_status !== "Approved" && d.approval_status !== "Archived")) {
+      toast.error("Approve every active child agenda before approving its parent.");
       return;
     }
-    const prevStatus = item.approval_status ?? "Draft";
 
-    const newStatus: string = {
-      submit: "Pending Approval", approve: "Approved", reject: "Rejected",
-      request_revision: "Revision Requested", reopen: "Reopened",
-    }[action];
-
-    const snapshot = registry.items.map(a => a.id === agendaId ? { ...a, approval_status: newStatus } : a);
-    registry.update(agendaId, { approval_status: newStatus } as never);
-    pushRichHistory(agendaId, prevStatus, newStatus, action, note.trim() || undefined,
-      (reason.trim() + (impact.trim() ? ` | Impact: ${impact.trim()}` : "")) || undefined);
-    pushAudit(agendaId, action, `${action} by ${currentUser.name}: ${note || reason || "(no note)"}`);
-
-    // The submit branch returns above; only approval/review transitions reach this point.
-    cascadeStatusUp(agendaId, newStatus, snapshot, (pid, cascNew, cascPrev) => {
-      registry.update(pid, { approval_status: cascNew } as never);
-      pushRichHistory(pid, cascPrev, cascNew, "auto_cascade", undefined, `Auto-updated from descendant ${action}`);
-      pushAudit(pid, "auto_cascade", `Status recalculated to ${cascNew} after descendant ${action}`);
-    });
-
-    const messages: Record<ApprovalDialogAction, string> = {
-      submit: "Submitted for approval.", approve: "Approved successfully.",
-      reject: "Rejected.", request_revision: "Revision requested.", reopen: "Agenda reopened.",
-    };
-    toast.success(messages[action]);
-    setApprovalDialog(null);
+    submitInFlight.current = true;
+    setSubmitSaving(true);
+    try {
+      if (action === "submit") {
+        const permitted = hasPermission("submit") || isAgendaOwnedBy(item.owner_user_id, currentOwnerUserId);
+        await submitAgendaWithHistory(
+          item, registry, { name: currentUser.name, role: currentUser.designation },
+          note, permitted,
+        );
+      } else {
+        if (!hasPermission(action)) throw new Error("You do not have permission to review this agenda.");
+        const previous = item.approval_status ?? "Draft";
+        const next = {
+          approve: "Approved", reject: "Rejected",
+          request_revision: "Revision Requested", reopen: "Reopened",
+        }[action];
+        if (!next) throw new Error("Invalid agenda transition");
+        const at = new Date().toISOString();
+        const actionReason = reason.trim() + (impact.trim() ? ` | Impact: ${impact.trim()}` : "");
+        // Build ALL child + ancestor changes first. The existing SQL batch RPC
+        // processes them in one transaction and rolls all back on any denial.
+        const ops: Array<{
+          entity_key: string; action: "update"; record_id: string;
+          payload: Record<string, unknown>;
+        }> = [];
+        const makePatch = (row: AgendaSubmission, newStatus: string, oldStatus: string, kind: string) => ({
+          approval_status: newStatus,
+          meeting_readiness: newStatus === "Approved" ? "Meeting Ready" : "In Review",
+          approval_history: [...(row.approval_history ?? []), {
+            status: newStatus, prev_status: oldStatus, action: kind,
+            by: currentUser.name, actor_role: currentUser.designation, at,
+            note: note.trim(), reason: actionReason,
+          }],
+          updated_at: at,
+        });
+        ops.push({ entity_key: "bms.agenda", action: "update", record_id: agendaId,
+          payload: makePatch(item, next, previous, action) });
+        const snapshot = registry.items.map(a => a.id === agendaId ? { ...a, approval_status: next } : a);
+        cascadeStatusUp(agendaId, next, snapshot, (parentId, newStatus, oldStatus) => {
+          const parent = registry.items.find(a => a.id === parentId);
+          if (!parent) throw new Error("The agenda hierarchy changed. Refresh before reviewing.");
+          ops.push({ entity_key: "bms.agenda", action: "update", record_id: parentId,
+            payload: makePatch(parent, newStatus, oldStatus, "auto_cascade") });
+        });
+        // No optimistic local state, no misleading success, no multiple partial writes.
+        await convayAuth.applyBatch(ops);
+      }
+      await registry.refresh?.();
+      toast.success({
+        submit: "Submitted for approval.",
+        approve: "Agenda approved.",
+        reject: "Agenda rejected.",
+        request_revision: "Revision requested.",
+        reopen: "Agenda reopened.",
+      }[action]);
+      setApprovalDialog(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Agenda update was not confirmed by SQL.");
+      await registry.refresh?.().catch(() => undefined);
+    } finally {
+      submitInFlight.current = false;
+      setSubmitSaving(false);
+    }
   }
 
   function archiveAgenda(id: string) {
