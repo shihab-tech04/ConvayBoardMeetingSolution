@@ -140,8 +140,8 @@ BEGIN
       '{approval_status}',to_jsonb('In Progress'::text),true)
     WHERE m.entity_key='bms.meetings' AND m.record_id=saved.record_id;
 
-  INSERT INTO public.convay_entity_records(entity_key,record_id,payload)
-  VALUES ('bms.liveSessions',next_session_id,
+  INSERT INTO public.convay_entity_records(entity_key,record_id,tenant_id,payload)
+  VALUES ('bms.liveSessions',next_session_id,saved.tenant_id,
      pg_catalog.jsonb_build_object(
        'id',next_session_id,'meeting_id',mid,'session_status','active',
        'reopen_started_at',reopened_at,'reopen_started_by',actor::text,
