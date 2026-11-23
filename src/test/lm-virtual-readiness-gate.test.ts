@@ -15,11 +15,11 @@ describe("LM readiness regression: real virtual start and physical readiness", (
     expect(workspace).toContain("applyVerifiedAttendance(saved)");
   });
   it("routes Virtual and Hybrid hosts to the real verified LiveKit prejoin, not manual in-person attendance", () => {
-    expect(workspace).toContain('if (isOnlineMeeting && (entryAction === "join_meeting" || entryAction === "start_meeting")) return "prejoin"');
+    expect(workspace).toContain('if (isOnlineMeeting) return "prejoin"');
     expect(workspace).toContain('if (isOnlineMeeting && phase === "readiness") setPhase("prejoin")');
     expect(workspace).toContain('entryAction === "start_meeting") return "readiness"');
     expect(workspace).toContain('startLabel={access.is_super_admin ? "Force Start Now" : "Start Meeting Now"}');
-    expect(workspace).toContain('access.loaded && canControlMeeting && ctrlStatus === "not-started"');
+    expect(workspace).toContain('access.loaded && canControlMeeting && canonicalRoomEntry.mayAttemptStart');
     expect(workspace).toContain("await convayAuth.forceStartMeeting(meetingId)");
     expect(prejoin).toContain("startLabel");
     expect(prejoin).toContain('disabled={Boolean(joinBlockedReason)}');
