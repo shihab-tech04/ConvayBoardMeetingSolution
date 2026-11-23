@@ -7,6 +7,8 @@ const sql = readFileSync("supabase/migrations/20261124025000_convay_agenda_role_
 describe("AG-364 separate Agenda author, reviewer, approver and parent signoff", () => {
   it("never silently marks a parent approved when the final child is approved", () => {
     expect(agenda).toContain('if (allApproved) return alreadyApproved ? "Approved" : "Pending Approval";');
+    expect(agenda).toContain('return parentStatus;');
+    expect(agenda).toContain('["Draft", "Incomplete", "Reopened", "Revision Requested", "Rejected"].includes(parentStatus)');
     expect(agenda).toContain('const alreadyApproved = allItems.find(a => a.id === parentId)?.approval_status === "Approved";');
     expect(sql).toContain("Agenda approval requires an explicit approver decision");
     expect(sql).toContain("Submit an agenda for review before approval");
