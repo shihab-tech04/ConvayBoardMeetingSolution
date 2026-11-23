@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convayAuth } from "../../services/supabase/convayAuth";
 import { confirmedLocalScreenShare } from "./regularMeetingScreenShareState";
+import { focusedLiveKitIdentity } from "./liveMeetingLayout";
 
 type Sdk = { Room: new (options: Record<string, unknown>) => any; RoomEvent: Record<string, string> };
 declare global { interface Window { LivekitClient?: Sdk } }
@@ -36,6 +37,7 @@ interface Props {
   onParticipants?: (participants: Array<{ identity: string; name: string; isLocal: boolean }>) => void;
   initialMicDeviceId?: string;
   initialCameraDeviceId?: string;
+  layout?: "speaker" | "gallery";
 }
 
 function savedMeetingAdmission(meetingId: string) {
@@ -45,9 +47,8 @@ function savedMeetingAdmission(meetingId: string) {
   });
 }
 
-function MemberTile({ member, local, refresh }: { member: any; local: boolean; refresh: number }) {
+function MemberTile({ member, local, refresh, compact = false }: { member: any; local: boolean; refresh: number; compact?: boolean }) {
   const video = useRef<HTMLDivElement>(null);
-  const audio = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const attached: Array<{ publication: any; element: HTMLMediaElement }> = [];
     const attach = (publication: any, target: HTMLDivElement | null) => {
@@ -68,7 +69,6 @@ function MemberTile({ member, local, refresh }: { member: any; local: boolean; r
     const videoPubs = [...member.videoTrackPublications.values()] as any[];
     attach(videoPubs.find(p => p.source === "screen_share" && p.track) ??
       videoPubs.find(p => p.source === "camera" && p.track), video.current);
-    if (!local) for (const p of member.audioTrackPublications.values()) attach(p, audio.current);
     return () => {
       for (const { publication, element } of attached) {
         publication.track?.detach(element);
@@ -79,19 +79,45 @@ function MemberTile({ member, local, refresh }: { member: any; local: boolean; r
 
   const name = String(member.name || member.identity || "Participant");
   const camera = member.isCameraEnabled || member.isScreenShareEnabled;
-  return <article aria-label={name + " connected"} style={{ minHeight: 160, background: "#111827", borderRadius: 10, position: "relative", overflow: "hidden", border: "1px solid #334155" }}>
+  return <article aria-label={name + " connected"} style={{ minHeight: compact ? 96 : 160, height: "100%", background: "#111827", borderRadius: 10, position: "relative", overflow: "hidden", border: "1px solid #334155" }}>
     <div ref={video} style={{ position: "absolute", inset: 0 }} />
     {!camera && <span style={{ position: "absolute", top: "45%", width: "100%", textAlign: "center", color: "#cbd5e1" }}>Camera off</span>}
-    <div ref={audio} style={{ display: "none" }} />
     <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "#020617dd", color: "#fff", padding: "0.35rem 0.6rem", fontSize: 12 }}>
       {name}{local ? " (You)" : ""} · {member.isMicrophoneEnabled ? "Mic on" : "Muted"}
     </div>
   </article>;
 }
 
+/** Remote sound stays mounted when the stage switches Speaker/Gallery or focus.
+ * Never create a second audio element for a focused/thumbnail duplicate. */
+function RemoteAudioTracks({ member, refresh }: { member: any; refresh: number }) {
+  const target = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const attached: Array<{ track: any; element: HTMLMediaElement }> = [];
+    for (const publication of member.audioTrackPublications.values() as Iterable<any>) {
+      if (!publication?.track || !target.current) continue;
+      const track = publication.track;
+      const element = track.attach() as HTMLMediaElement;
+      element.autoplay = true;
+      target.current.appendChild(element);
+      attached.push({ track, element });
+      void element.play().catch(() => {
+        // LiveKit emits AudioPlaybackStatusChanged; the user can unlock it.
+      });
+    }
+    return () => {
+      for (const { track, element } of attached) {
+        track.detach(element);
+        element.remove();
+      }
+    };
+  }, [member, refresh]);
+  return <div aria-hidden="true" ref={target} style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }} />;
+}
+
 export function LiveMeetingMedia({
   meetingId, micOn, camOn, sharing, onMicChange, onCamChange, onSharingChange,
-  onPresence, requestAdmission, onParticipants, initialMicDeviceId, initialCameraDeviceId,
+  onPresence, requestAdmission, onParticipants, initialMicDeviceId, initialCameraDeviceId, layout = "gallery",
 }: Props) {
   const [room, setRoom] = useState<any | null>(null);
   const [status, setStatus] = useState("Connecting");
@@ -103,6 +129,7 @@ export function LiveMeetingMedia({
   // the LiveKit room connects. This is separate from the user's microphone.
   const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false);
   const [audioUnlockBusy, setAudioUnlockBusy] = useState(false);
+  const [activeSpeakerIdentity, setActiveSpeakerIdentity] = useState<string | null>(null);
   // Serialize provider publish/unpublish commands across rapid share toggles.
   const shareOperations = useRef<Promise<void>>(Promise.resolve());
   const callbacks = useRef({ onPresence, onMicChange, onCamChange, onSharingChange, requestAdmission, onParticipants });
@@ -115,6 +142,7 @@ export function LiveMeetingMedia({
     setStatus("Connecting");
     setError("");
     setAudioPlaybackBlocked(false);
+    setActiveSpeakerIdentity(null);
     const render = () => {
       setRefresh(n => n + 1);
       const members = nextRoom ? [nextRoom.localParticipant, ...nextRoom.remoteParticipants.values()] : [];
@@ -160,6 +188,11 @@ export function LiveMeetingMedia({
         }
         if (ended) return;
         nextRoom = new sdk.Room({ adaptiveStream: true, dynacast: true });
+        if (sdk.RoomEvent.ActiveSpeakersChanged) {
+          nextRoom.on(sdk.RoomEvent.ActiveSpeakersChanged, (speakers: Array<{ identity?: string }>) => {
+            if (!ended) setActiveSpeakerIdentity(speakers[0]?.identity ?? null);
+          });
+        }
         if (sdk.RoomEvent.AudioPlaybackStatusChanged) {
           nextRoom.on(sdk.RoomEvent.AudioPlaybackStatusChanged, () => {
             if (!ended) setAudioPlaybackBlocked(nextRoom?.canPlaybackAudio === false);
@@ -192,6 +225,7 @@ export function LiveMeetingMedia({
           if (ended) return;
           setStatus("Disconnected");
           setAudioPlaybackBlocked(false);
+          setActiveSpeakerIdentity(null);
           // Publishing ends when the provider disconnects, regardless of UI intent.
           callbacks.current.onSharingChange(false);
           if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom?.localParticipant?.identity); }
@@ -279,6 +313,17 @@ export function LiveMeetingMedia({
   }, [room]);
 
   const members = room ? [room.localParticipant, ...room.remoteParticipants.values()] : [];
+  const focusedIdentity = focusedLiveKitIdentity(
+    members.map((member: any) => ({
+      identity: member.identity,
+      isLocal: member === room?.localParticipant,
+      isCameraEnabled: member.isCameraEnabled,
+      isScreenShareEnabled: member.isScreenShareEnabled,
+    })),
+    activeSpeakerIdentity,
+  );
+  const focusedMember = members.find((member: any) => member.identity === focusedIdentity) ?? members[0];
+  const otherMembers = members.filter((member: any) => member !== focusedMember);
   async function enableIncomingAudio() {
     if (!room || status !== "Connected" || audioUnlockBusy) return;
     setAudioUnlockBusy(true);
@@ -320,8 +365,22 @@ export function LiveMeetingMedia({
       </div>
     )}
     {error && <p role="alert" style={{ color: "#fca5a5" }}>{error}</p>}
-    {status === "Connected" && <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", alignContent: "start" }}>
-      {members.map((member: any) => <MemberTile key={member.identity} member={member} local={room.localParticipant === member} refresh={refresh} />)}
-    </div>}
+    {room && members.filter((member: any) => member !== room.localParticipant).map((member: any) =>
+      <RemoteAudioTracks key={member.identity} member={member} refresh={refresh} />)}
+    {status === "Connected" && (layout === "speaker" && focusedMember
+      ? <div role="region" aria-label="Live speaker layout" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 8, overflow: "hidden" }}>
+          <div style={{ flex: 1, minHeight: 160 }}>
+            <MemberTile key={focusedMember.identity} member={focusedMember} local={room.localParticipant === focusedMember} refresh={refresh} />
+          </div>
+          {otherMembers.length > 0 && <div style={{ display: "flex", gap: 8, flex: "none", height: 112, overflowX: "auto", paddingBottom: 4 }}>
+            {otherMembers.map((member: any) => <div key={member.identity} style={{ width: 170, minWidth: 145, height: "100%" }}>
+              <MemberTile member={member} local={room.localParticipant === member} refresh={refresh} compact />
+            </div>)}
+          </div>}
+        </div>
+      : <div role="region" aria-label="Live gallery layout" style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", alignContent: "start" }}>
+          {members.map((member: any) => <MemberTile key={member.identity} member={member} local={room.localParticipant === member} refresh={refresh} />)}
+        </div>
+    )}
   </section>;
 }
