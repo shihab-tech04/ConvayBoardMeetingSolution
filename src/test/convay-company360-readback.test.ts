@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   assertCompanyDirectory,assertCompanyProfile,assertProvisioningReadback,
+  type CompanyProfile,
 } from "../app/services/saas/companyDirectory";
 
 const id="11111111-1111-4111-8111-111111111111";
@@ -12,10 +13,10 @@ const company={
   id,display_name:"Acme Board Company",lifecycle_state:"provisioning",
   created_at:"2026-11-23T00:00:00Z",updated_at:"2026-11-23T00:00:00Z",
   active_member_count:1,published_template_count:0,
-};
+} as const;
 const event={id:12,action:"create",actor_id:user,target_user_id:null,
   occurred_at:"2026-11-23T00:00:00Z",request_id:req};
-const raw=()=>({
+const raw=(): CompanyProfile=>({
   company,members:[{
     user_id:user,membership_role:"tenant_admin",membership_state:"active",
     revision:1,changed_at:"2026-11-23T00:00:00Z",revoked_at:null,
