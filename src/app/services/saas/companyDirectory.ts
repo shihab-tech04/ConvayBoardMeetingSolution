@@ -66,8 +66,8 @@ export function assertCompanyDirectory(raw: unknown): CompanyDirectory {
     if (!obj(item) || !validUuid(item.id) || ids.has(item.id)
       || typeof item.display_name !== "string" || item.display_name.trim().length < 3
       || !["provisioning","active","suspended","offboarded"].includes(String(item.lifecycle_state))
-      || !Number.isSafeInteger(item.active_member_count) || item.active_member_count < 0
-      || !Number.isSafeInteger(item.published_template_count) || item.published_template_count < 0) {
+      || typeof item.active_member_count !== "number" || !Number.isSafeInteger(item.active_member_count) || item.active_member_count < 0
+      || typeof item.published_template_count !== "number" || !Number.isSafeInteger(item.published_template_count) || item.published_template_count < 0) {
       throw new Error("Invalid or duplicated company in SQL directory");
     }
     ids.add(item.id);
