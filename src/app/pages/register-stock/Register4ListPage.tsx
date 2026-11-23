@@ -286,6 +286,7 @@ export function Register4ListPage() {
       request_revision: "agd_review",
       reopen:           "agd_approve",
       archive:          "agd_approve",
+      restore:          "agd_approve",
       view_history:     "agd_view",
       create:           "agd_submit",
       edit:             "agd_submit",
@@ -521,6 +522,12 @@ export function Register4ListPage() {
               payload: {
                 approval_status: "Archived", archived_at: at,
                 archived_by: currentUser.name, meeting_readiness: "Archived",
+                approval_history: [...(row.approval_history ?? []), {
+                  status: "Archived", prev_status: row.approval_status ?? "Draft",
+                  action: "archive", by: currentUser.name,
+                  actor_role: currentUser.designation, at,
+                  note: "Archived with hierarchy", reason: "",
+                }],
               },
             })));
             await registry.refresh?.();
@@ -528,6 +535,49 @@ export function Register4ListPage() {
             toast.success(`Archived ${members.length} agenda item(s).`);
           } catch (error) {
             toast.error(error instanceof Error ? error.message : "Archive was not saved.");
+            await registry.refresh?.().catch(() => undefined);
+          }
+        })();
+      },
+    });
+  }
+
+  function restoreAgenda(id: string) {
+    const item = registry.items.find(a => a.id === id);
+    if (!item || item.approval_status !== "Archived" || !hasPermission("restore")) {
+      toast.error("Only an authorized approver may restore an archived agenda.");
+      return;
+    }
+    const members = [item, ...getDescendants(id, registry.items)]
+      .filter(row => row.approval_status === "Archived");
+    setConfirmDialog({
+      title: "Restore Agenda",
+      message: `Restore "${item.agenda_title}" and ${members.length - 1} archived descendant(s)? Restored agendas return to Draft and must be submitted and approved again. Existing approval history is preserved.`,
+      confirmLabel: "Restore",
+      danger: false,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        void (async () => {
+          try {
+            const at = new Date().toISOString();
+            await convayAuth.applyAgendaBatch(members.map(row => ({
+              entity_key: "bms.agenda" as const, action: "update" as const,
+              record_id: row.id, expected_revision: requireAgendaRevision(row.id),
+              payload: {
+                approval_status: "Draft", archived_at: null, archived_by: null,
+                meeting_readiness: "In Review",
+                approval_history: [...(row.approval_history ?? []), {
+                  status: "Draft", prev_status: "Archived", action: "restore",
+                  by: currentUser.name, actor_role: currentUser.designation, at,
+                  note: "Restored for fresh review", reason: "",
+                }],
+              },
+            })));
+            await registry.refresh?.();
+            closeDrawer();
+            toast.success(`Restored ${members.length} agenda item(s) as Draft.`);
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Restore was not saved.");
             await registry.refresh?.().catch(() => undefined);
           }
         })();
@@ -1130,7 +1180,9 @@ export function Register4ListPage() {
     if (status === "Approved" && hasPermission("reopen"))
       items.push({ label: "Reopen", onClick: () => openApprovalDialog(id, "reopen") });
     if (!drawerChildId) {
-      if (hasPermission("archive"))
+      if (status === "Archived" && hasPermission("restore"))
+        items.push({ label: "Restore", onClick: () => restoreAgenda(drawerItem.id) });
+      else if (hasPermission("archive"))
         items.push({ label: "Archive", onClick: () => archiveAgenda(drawerItem.id), danger: true });
     }
 
