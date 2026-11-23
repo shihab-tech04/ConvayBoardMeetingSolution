@@ -1562,6 +1562,9 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 }
               }}
               onNext={(values) => {
+                const merged = { ...stepValues, ...values };
+                const error = cfg.validateCreateStep?.(entryStep, merged);
+                if (error) { toast.error(error); return; }
                 setStepValues(prev => ({ ...prev, ...values }));
                 setEntryStep(s => s + 1);
               }}

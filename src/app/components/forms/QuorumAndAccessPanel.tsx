@@ -23,6 +23,7 @@ export interface QuorumAndAccessPanelProps {
   governanceBodies: GovernanceBody[];
   quorumRules: QuorumRule[];
   allDocuments: BoardDocument[];
+  onRefreshQuorumRules?: () => Promise<unknown> | void;
 }
 
 // ── Convay link generator ─────────────────────────────────────────────────────
@@ -93,7 +94,7 @@ const STATUS_CONFIG: Record<QuorumStatus, { label: string; icon: React.ElementTy
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies, quorumRules, allDocuments }: QuorumAndAccessPanelProps) {
+export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies, quorumRules, allDocuments, onRefreshQuorumRules }: QuorumAndAccessPanelProps) {
 
   // ── Participant data from Step 1 ─────────────────────────────────────────
   const allLinks  = useMemo(() => parseLinks(values.participant_links_json), [values.participant_links_json]);
@@ -282,8 +283,22 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
           )}
 
           {status === "not_configured" && (
-            <div className="text-[10px] text-[var(--muted-foreground)] italic">
-              Set quorum rules in the form below to see projected status.
+            <div role="alert" className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-3 space-y-2">
+              <p className="text-xs font-semibold text-[var(--foreground)]">No active quorum rule is configured for this Board / Committee</p>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                A verified governance quorum policy is required before scheduling. You can still save this meeting as a draft; scheduling will remain unavailable until an authorized administrator configures the rule.
+              </p>
+              <div className="flex flex-wrap gap-3 text-xs font-semibold text-[var(--primary)]">
+                <a href={`${import.meta.env.BASE_URL}administration/meeting-configuration/quorum-rules`}
+                   target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+                  View Quorum Rules
+                </a>
+                {onRefreshQuorumRules && <button type="button"
+                  onClick={() => { void Promise.resolve(onRefreshQuorumRules()).catch(() => {}); }}
+                  className="underline underline-offset-2">
+                  Refresh quorum status
+                </button>}
+              </div>
             </div>
           )}
         </div>
