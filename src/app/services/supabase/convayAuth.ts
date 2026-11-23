@@ -490,7 +490,7 @@ export const convayAuth = {
     action: "list" | "create" | "update" | "delete",
     record?: T,
     version?: number,
-  ): Promise<{ records: Array<{ payload: T; revision: number }>; revision?: number }> {
+  ): Promise<{ records: Array<{ payload: T; revision: number; updated_at?: string }>; revision?: number }> {
     const session = await validSession();
     if (!session) throw new Error("Your session has expired. Sign in again.");
     const endpoint = new URL(SUPABASE_URL + "/rest/v1/convay_entity_records");
@@ -502,18 +502,18 @@ export const convayAuth = {
     };
     endpoint.searchParams.set("entity_key", "eq." + entity);
     if (action === "list") {
-      const rows: Array<{ payload: T; revision: number }> = [];
+      const rows: Array<{ payload: T; revision: number; updated_at?: string }> = [];
       // Use explicit pages rather than silently dropping records at the PostgREST max_rows limit.
       let page = 0;
       while (page < 100) {
         const url = new URL(endpoint);
-        url.searchParams.set("select", "payload,revision");
+        url.searchParams.set("select", entity === "bms.agenda" ? "payload,revision,updated_at" : "payload,revision");
         url.searchParams.set("order", "updated_at.desc");
         url.searchParams.set("limit", "1000");
         url.searchParams.set("offset", String(page * 1000));
         const res = await fetch(url.toString(), { headers, cache: "no-store" });
         if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to load " + entity));
-        const batch = await res.json() as Array<{ payload: T; revision: number }>;
+        const batch = await res.json() as Array<{ payload: T; revision: number; updated_at?: string }>;
         if (!Array.isArray(batch)) throw new Error("Invalid record response");
         rows.push(...batch);
         if (batch.length < 1000) break;
