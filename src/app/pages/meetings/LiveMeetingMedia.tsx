@@ -346,7 +346,7 @@ export function LiveMeetingMedia({
     try { await room.switchActiveDevice(kind, deviceId); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Device selection failed"); }
   }
-  return <section aria-label="Connected meeting participants" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, gap: 8, overflowY: "auto" }}>
+  return <section className="convay-live-media" aria-label="Connected meeting participants" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, gap: 8, overflowY: "auto" }}>
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, fontSize: 12, color: "#cbd5e1" }}>
       <span role="status">{status}</span><span>{status === "Connected" ? members.length : 0} online</span>
       {room && <>
@@ -378,7 +378,7 @@ export function LiveMeetingMedia({
             </div>)}
           </div>}
         </div>
-      : <div role="region" aria-label="Live gallery layout" style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", alignContent: "start" }}>
+      : <div className="convay-live-media-gallery" role="region" aria-label="Live gallery layout" style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", alignContent: "start" }}>
           {members.map((member: any) => <MemberTile key={member.identity} member={member} local={room.localParticipant === member} refresh={refresh} />)}
         </div>
     )}
