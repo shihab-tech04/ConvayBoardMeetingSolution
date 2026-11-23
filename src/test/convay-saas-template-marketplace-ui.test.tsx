@@ -69,6 +69,22 @@ beforeEach(()=>{
 });
 
 describe("SQL-backed dynamic meeting templates UI",()=>{
+  it("keeps a Company Super Admin on their own tenant and never offers global draft creation",async()=>{
+    state.companies=[{id:ids.company,display_name:"Client Alpha",lifecycle_state:"provisioning"}];
+    state.save.mockResolvedValue({...empty(),tenant_id:ids.company,
+      title:"Alpha Committee Meeting",template_key:"alpha_committee"});
+    render(<MeetingTemplateMarketplace companyOnly initialCompanyId={ids.company}/>);
+    await screen.findByText("No templates saved for this owner.");
+    const owner=screen.getByLabelText("Template owner") as HTMLSelectElement;
+    expect(owner.value).toBe(ids.company);
+    expect(within(owner).queryByRole("option",{name:"Convay starter marketplace"})).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Meeting type name"),{target:{value:"Alpha Committee Meeting"}});
+    fireEvent.change(screen.getByLabelText("Template key"),{target:{value:"alpha_committee"}});
+    fireEvent.click(screen.getByRole("button",{name:"Save draft"}));
+    await waitFor(()=>expect(state.save).toHaveBeenCalledOnce());
+    expect(state.save.mock.calls[0][1].tenant_id).toBe(ids.company);
+    expect(state.save.mock.calls[0][0]).toBe("create");
+  });
   it("shows truthful empty SQL state and keeps activation disabled",async()=>{
     render(<MeetingTemplateMarketplace/>);
     expect(await screen.findByText("No templates saved for this owner.")).toBeInTheDocument();
