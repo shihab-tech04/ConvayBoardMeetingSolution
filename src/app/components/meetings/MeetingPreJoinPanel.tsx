@@ -21,6 +21,7 @@ export interface MeetingPreJoinPanelProps {
     start_time?: string;
     mode?: string;
     venue?: string;
+    approval_status?: string;
   };
   initialRole: PreJoinRole;
   /** Media publish allowance mirrors the trusted issuer's saved meeting role. */
@@ -152,6 +153,8 @@ export function MeetingPreJoinPanel({
                  :                      Building2;
 
   const devicesAlreadyOff = !micOn && !camOn;
+  const meetingClosed = new Set(["cancelled", "canceled", "rejected", "completed", "ended", "archived", "awaiting minutes", "minutes approved"])
+    .has(String(meeting?.approval_status ?? "").trim().toLowerCase());
 
   return (
     <div className="meeting-prejoin">
@@ -269,9 +272,9 @@ export function MeetingPreJoinPanel({
             <div className="meeting-prejoin__card-content">
 
               {/* Ready indicator */}
-              <div className="meeting-prejoin__context">
+              <div className={`meeting-prejoin__context${meetingClosed ? " meeting-prejoin__context--closed" : ""}`}>
                 <span className="meeting-prejoin__ready-dot" aria-hidden="true" />
-                {joinBlockedReason ? "Waiting for LiveKit meeting" : "Ready to join"}
+                {meetingClosed ? "Meeting ended" : joinBlockedReason ? "Waiting for LiveKit meeting" : "Ready to join"}
               </div>
 
               {/* Title + governance body */}
