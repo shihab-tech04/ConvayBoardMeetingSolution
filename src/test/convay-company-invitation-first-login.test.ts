@@ -68,7 +68,7 @@ describe("TEN-ONB-03: pending company invitation to verified SQL membership",()=
     await expect(queuePendingCompanyInvitation(tenant,"bad-email","member",requestId))
       .rejects.toThrow("pending Convay invitation");
     request.mockResolvedValueOnce(ok({tenant_id:member,invites:[invitation()]}));
-    await expect(listPendingCompanyInvitations(tenant)).rejects.toThrow("scope");
+    await expect(listPendingCompanyInvitations(tenant)).rejects.toThrow("authorized company");
   });
   it("denies HTTP authorization failure without showing a false enrollment",async()=>{
     request.mockResolvedValueOnce(ok({message:"Platform Super Admin required"},403));
