@@ -72,27 +72,6 @@ function parseRepeatableGroup(
   return rows;
 }
 
-// ─── Quorum forecast helper ────────────────────────────────────────────────────
-function calcQuorumForecast(
-  meetingId: string,
-  committee: string,
-  participants: { meeting_id: string }[],
-  rsvpRecords: { meeting_id: string; response: string }[],
-  partGroups: { governance_body: string; group_type: string; member_count: string; quorum_rule: string }[],
-): string {
-  const count = participants.filter(p => p.meeting_id === meetingId).length;
-  if (count === 0) return "No participants";
-  const accepted = rsvpRecords.filter(r => r.meeting_id === meetingId && r.response === "Accepted").length;
-  const group = partGroups.find(g => g.governance_body === committee && g.group_type === "Voting Members");
-  const quorumRule = group?.quorum_rule ?? "50%";
-  const totalMembers = parseInt(String(group?.member_count ?? count), 10) || count;
-  const pct = parseFloat(quorumRule) / 100 || 0.5;
-  const required = Math.ceil(totalMembers * pct);
-  if (accepted >= required) return `Met (${accepted}/${required})`;
-  if (accepted + (count - accepted) >= required) return `At Risk (${accepted}/${required})`;
-  return `Not Met (${accepted}/${required})`;
-}
-
 export function OnlineReturnRegisterPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -592,28 +571,17 @@ export function OnlineReturnRegisterPage() {
           ? `${documentRegistry.items.filter(d => d.related_meeting === mid).length} documents`
           : "—");
 
-    // Quorum rule for this meeting's governance body
-    const committeeKey = m.committee ?? "";
-    const bodyForRule = govRegistry.items.find(
-      b => b.id === committeeKey || b.body_id === committeeKey || b.body_name === committeeKey,
-    );
-    const quorumRule = quorumRuleRegistry.items.find(r =>
-      (bodyForRule && (r.governance_body_id === bodyForRule.id || r.governance_body_id === bodyForRule.body_id))
-      || r.governance_body_id === committeeKey
-      || r.governance_body_name === committeeKey
-    );
-
     // Quorum forecast (shared calculation)
     const quorumCalc = calculateMeetingQuorum({
+      meetingId: mid,
       boardCommitteeId: m.committee ?? "",
       boardCommitteeName: m.committee ?? "",
       participantLinks: canonicalLinks,
       governanceBodies: govRegistry.items,
       quorumRules: quorumRuleRegistry.items,
     });
-    const quorumForecast = canonicalLinks.length > 0
-      ? quorumStatusLabel(quorumCalc)
-      : calcQuorumForecast(mid, m.committee ?? "", participantRegistry.items, rsvpRegistry.items, partGroupRegistry.items);
+    const quorumRule = quorumCalc.selectedRule;
+    const quorumForecast = quorumStatusLabel(quorumCalc);
 
     // Readiness score
     const checks = [
@@ -716,7 +684,7 @@ export function OnlineReturnRegisterPage() {
       document_count:      String(canonicalDocLinks.length || documentRegistry.items.filter(d => d.related_meeting === mid).length),
       document_list:       docList,
       board_pack_status:   boardPack ? `${boardPack.pack_title} (${boardPack.version} — ${boardPack.approval_status})` : "Not created",
-      quorum_rule_summary: quorumRule ? `${quorumRule.quorum_type} — min ${quorumRule.minimum_members} members${quorumRule.quorum_percent ? `, ${quorumRule.quorum_percent}%` : ""}` : "Not configured",
+      quorum_rule_summary: quorumRule ? `${quorumRule.rule_type ?? "Quorum"} — min ${quorumCalc.requiredCount} members${quorumCalc.requiredPercent > 0 ? `, ${quorumCalc.requiredPercent}%` : ""}` : quorumCalc.reasons.join("; "),
       activity_summary:    activitySummary,
     };
   });
