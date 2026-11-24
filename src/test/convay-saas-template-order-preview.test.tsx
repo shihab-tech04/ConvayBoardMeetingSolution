@@ -54,9 +54,9 @@ describe("SQL meeting template step/field ordering and preview",()=>{
     fireEvent.click(screen.getByRole("button",{name:"Add step"}));
     fireEvent.change(screen.getByLabelText("Step 2 title"),{target:{value:"Participant approval"}});
     fireEvent.click(screen.getByRole("button",{name:"Move step 2 up"}));
-    fireEvent.click(screen.getAllByRole("button",{name:"Add field"})[0]);
-    fireEvent.change(screen.getAllByLabelText("Field label")[0],{target:{value:"Approver"}});
-    fireEvent.click(screen.getByRole("button",{name:"Move field 2 in step 1 up"}));
+    fireEvent.click(screen.getAllByRole("button",{name:"Add field"})[1]);
+    fireEvent.change(screen.getAllByLabelText("Field label")[1],{target:{value:"Approver"}});
+    fireEvent.click(screen.getByRole("button",{name:"Move field 2 in step 2 up"}));
     fireEvent.change(screen.getByLabelText("Meeting type name"),{target:{value:"Board meeting"}});
     fireEvent.change(screen.getByLabelText("Template key"),{target:{value:"board_meeting"}});
     fireEvent.click(screen.getByRole("button",{name:"Save draft"}));
@@ -65,7 +65,7 @@ describe("SQL meeting template step/field ordering and preview",()=>{
     expect(action).toBe("create");
     expect(data.definition.steps.map((x:{title:string})=>x.title)).toEqual(["Participant approval","Meeting information"]);
     expect(data.definition.steps[0].fields).toEqual([]);
-    expect(data.definition.steps[1].fields.map((f:{label:string})=>f.label)).toEqual(["Meeting title","Approver"]);
+    expect(data.definition.steps[1].fields.map((f:{label:string})=>f.label)).toEqual(["Approver","Meeting title"]);
     expect(data.tenant_id).toBeNull();
   });
   it("previews ordered steps without issuing SQL meeting creation or publishing commands",async()=>{
