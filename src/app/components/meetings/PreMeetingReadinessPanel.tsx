@@ -28,7 +28,7 @@ import {
 } from "../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../data/bmsUsers";
 import { calculateMeetingQuorum, quorumStatusLabel } from "../../utils/quorumCalculation";
-import { readReadinessAttendance, readinessAttendancePatch, PRESENT_STATES, type ReadinessAttendance } from "../../pages/return-register/readinessAttendance";
+import { readReadinessAttendance, readinessAttendancePatch, PRESENT_STATES, READINESS_STATES, type ReadinessAttendance } from "../../pages/return-register/readinessAttendance";
 import { PrimaryButton } from "../buttons/PrimaryButton";
 import { SecondaryButton } from "../buttons/SecondaryButton";
 
@@ -449,7 +449,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
                       onChange={e => setAttendanceStatus(link.user_id, e.target.value as ReadinessAttendance)}
                       style={{ fontSize: "0.72rem", padding: "0.2rem 0.3rem", borderRadius: 4, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", cursor: "pointer" }}
                     >
-                      {(["Not Joined", "Present", "Temporarily Away", "Excused", "Recused"] as ReadinessAttendance[]).map(o => <option key={o} value={o}>{o}</option>)}
+                      {READINESS_STATES.map(o => <option key={o} value={o}>{o}</option>)}
                     </select>
                   </div>
                 );
@@ -479,7 +479,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
                       onClick={() => toggleAttendance(link.user_id)}
                       style={{ padding: "0.2rem 0.5rem", borderRadius: 4, background: isPresent ? "#14532d" : "var(--muted)", color: isPresent ? "#22c55e" : "var(--muted-foreground)", border: "none", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600 }}
                     >
-                      {isPresent ? "Present" : "Not Joined"}
+                      {status}
                     </button>
                   </div>
                 );
