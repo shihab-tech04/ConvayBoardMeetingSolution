@@ -2,7 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { AccessToken, RoomServiceClient } from "npm:livekit-server-sdk@2.19.2";
 import { checkOnlineAdmission, checkOnlineRoomCapacity, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
 import { canPublishOnlineMeeting } from "./publisherGrant.ts";
-import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, type SqlEntity } from "./tenantScope.ts";
+import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, meetingLookupParams, uniqueSavedMeeting, checkAttendancePersistenceScope, type SavedMeetingRow, type SqlEntity } from "./tenantScope.ts";
 
 /**
  * Server-side LiveKit admission. The browser never holds an API secret.
@@ -47,23 +47,19 @@ async function entityRows<T>(entity: string, meetingId: string, jwt: string): Pr
     "/rest/v1/convay_entity_records?" + query.toString(), jwt
   );
 }
-async function savedMeeting(meetingId: string, jwt: string): Promise<SqlEntity<OnlineMeeting> | null> {
-  // Check the canonical record ID, then a meeting_id field for older records.
-  const direct = new URLSearchParams({
-    select: "tenant_id,payload", entity_key: "eq.bms.meetings",
-    record_id: "eq." + meetingId, limit: "2",
-  });
-  const rows = await jsonRequest<RecordRow<OnlineMeeting>[]>(
-    "/rest/v1/convay_entity_records?" + direct.toString(), jwt
-  );
-  // Never guess between same-ID meetings from multiple companies.
-  if (rows.length > 1) throw new Error("Ambiguous meeting identity");
-  const meeting = rows[0];
-  if (meeting && (meeting.payload?.meeting_id === meetingId || meeting.payload?.id === meetingId)) return meeting;
-  const byBusinessId = await entityRows<OnlineMeeting>("bms.meetings", meetingId, jwt);
-  const matches = byBusinessId.filter(item => item.payload?.meeting_id === meetingId);
-  if (matches.length > 1) throw new Error("Ambiguous meeting identity");
-  return matches[0] ?? null;
+async function savedMeeting(meetingId: string, jwt: string): Promise<SavedMeetingRow | null> {
+  const lookup = async (id: string) => uniqueSavedMeeting(await jsonRequest<SavedMeetingRow[]>(
+    "/rest/v1/convay_entity_records?" + meetingLookupParams(id).toString(), jwt), id);
+  const row = await lookup(meetingId);
+  if (!row) return null;
+  const canonical = row.payload.meeting_id ?? row.payload.id!;
+  if (canonical !== meetingId) {
+    const canonicalRow = await lookup(canonical);
+    if (!canonicalRow || canonicalRow.record_id !== row.record_id || canonicalRow.tenant_id !== row.tenant_id) {
+      throw new Error("Ambiguous meeting identity");
+    }
+  }
+  return row;
 }
 Deno.serve(async req => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: headers(req) });
@@ -107,6 +103,8 @@ Deno.serve(async req => {
     // columns as a second boundary before granting any provider token.
     const scope = checkLiveKitTenantScope(meeting, [...links, ...sessions]);
     if (!scope.allowed) return response(req, scope.status, { error: scope.error });
+    const persistence = checkAttendancePersistenceScope(meeting);
+    if (!persistence.allowed) return response(req, persistence.status, { error: persistence.error });
     // SQL attendance requires exactly one active or paused session.
     // Do not issue provider credentials for contradictory live-session records.
     const activeSessions = sessions.filter(item => item.payload?.session_status === "active" || item.payload?.session_status === "paused");
