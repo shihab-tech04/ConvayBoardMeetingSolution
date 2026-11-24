@@ -115,7 +115,7 @@ grant all on public.convay_quick_meetings, public.convay_quick_meeting_sessions,
 -- migration is not yet applied to production; PL/pgSQL resolves the later
 -- tenant foundation at execution, after the full schema is installed.
 create function public.convay_quick_host_scope(p_owner_id uuid)
-returns jsonb language plpgsql security definer set search_path = '' as $
+returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
   v_count integer;
   v_tenant uuid;
@@ -152,12 +152,12 @@ begin
     return jsonb_build_object('allowed',false,'tenant_id',null);
   end if;
   return jsonb_build_object('allowed',true,'tenant_id',v_tenant);
-end $;
+end $$;
 revoke all on function public.convay_quick_host_scope(uuid) from public,anon,authenticated;
 grant execute on function public.convay_quick_host_scope(uuid) to service_role;
 
 create function public.convay_quick_meeting_scope_valid(p_meeting_id uuid)
-returns boolean language plpgsql security definer set search_path = '' as $
+returns boolean language plpgsql security definer set search_path = '' as $$
 declare v_meeting public.convay_quick_meetings%rowtype; v_scope jsonb;
 begin
   select * into v_meeting from public.convay_quick_meetings where id=p_meeting_id;
@@ -165,14 +165,14 @@ begin
   v_scope:=public.convay_quick_host_scope(v_meeting.owner_id);
   return coalesce((v_scope->>'allowed')::boolean,false)
     and (v_scope->>'tenant_id')::uuid is not distinct from v_meeting.tenant_id;
-end $;
+end $$;
 revoke all on function public.convay_quick_meeting_scope_valid(uuid) from public,anon,authenticated;
 grant execute on function public.convay_quick_meeting_scope_valid(uuid) to service_role;
 
 -- Enforce immutable ownership even on service-role REST patches. The host
 -- scope is checked again in the same transaction that inserts the room row.
 create function public.convay_quick_meeting_owner_guard()
-returns trigger language plpgsql security invoker set search_path='' as $
+returns trigger language plpgsql security invoker set search_path='' as $$
 declare v_scope jsonb;
 begin
   if tg_op='UPDATE' then
@@ -187,7 +187,7 @@ begin
     raise exception 'Quick Meeting host scope denied' using errcode='42501';
   end if;
   return new;
-end $;
+end $$;
 revoke all on function public.convay_quick_meeting_owner_guard() from public,anon,authenticated;
 grant execute on function public.convay_quick_meeting_owner_guard() to service_role;
 create trigger convay_quick_meeting_owner_scope_guard
