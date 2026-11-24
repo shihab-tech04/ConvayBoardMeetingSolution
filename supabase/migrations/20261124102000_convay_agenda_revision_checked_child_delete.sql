@@ -30,7 +30,7 @@ BEGIN
   IF p_child_id IS NULL OR length(btrim(p_child_id)) NOT BETWEEN 1 AND 180
       OR p_expected_revision IS NULL OR p_expected_revision < 1
       OR jsonb_typeof(p_link_revisions) IS DISTINCT FROM 'array'
-      OR jsonb_array_length(p_link_revisions) > 500 THEN
+      OR jsonb_array_length(p_link_revisions) > 499 THEN
     RAISE EXCEPTION 'Invalid Agenda deletion intent' USING ERRCODE='22023';
   END IF;
   -- The invoker must see the child under RLS. Lock it while checking revision.
@@ -93,7 +93,7 @@ BEGIN
     IF NOT FOUND OR v_link.revision IS DISTINCT FROM v_expected
        OR v_link.tenant_id IS DISTINCT FROM v_child.tenant_id
        OR v_link.payload->>'agenda_id' NOT IN
-          (v_child.record_id,v_child.payload->>'agenda_id') THEN
+          (v_child.record_id,coalesce(v_child.payload->>'agenda_id',v_child.record_id)) THEN
       RAISE EXCEPTION 'Agenda document links changed. Refresh and retry.'
         USING ERRCODE='40001';
     END IF;
