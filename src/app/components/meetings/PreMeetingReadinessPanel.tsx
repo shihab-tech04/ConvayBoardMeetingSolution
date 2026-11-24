@@ -162,15 +162,16 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
   const requiredPresent = requiredLinks.filter(l => PRESENT_STATES.includes(attendanceMap[l.user_id] ?? "Not Joined")).length;
   const requiredMissing = requiredLinks.filter(l => !PRESENT_STATES.includes(attendanceMap[l.user_id] ?? "Not Joined"));
 
-  // ── Quorum using shared engine (present quorum members only) ──────────────
-  const presentQuorumLinks = quorumLinks
+  // ── Quorum using shared engine (all assigned members; attendance is separate) ──
+  const presentUserIds = new Set(myLinks
     .filter(l => PRESENT_STATES.includes(attendanceMap[l.user_id] ?? "Not Joined"))
-    .map(l => ({ ...l, quorum_eligible: true }));
+    .map(l => l.user_id));
 
   const quorumResult = calculateMeetingQuorum({
     boardCommitteeId: meeting?.committee ?? "",
     boardCommitteeName: meeting?.committee ?? "",
-    participantLinks: presentQuorumLinks,
+    participantLinks: myLinks,
+    presentUserIds,
     governanceBodies: govBodies,
     quorumRules,
   });
