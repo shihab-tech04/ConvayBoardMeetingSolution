@@ -15,6 +15,8 @@ export interface StagedCompanyDraftSummary {
   template_revision: number;
   status: "Staged Draft";
   created_at: string;
+  updated_at: string;
+  edit_revision: number;
 }
 export interface StagedCompanyDraft {
   draft_id: string;
@@ -24,6 +26,8 @@ export interface StagedCompanyDraft {
   definition: MeetingTemplateVersion["definition"];
   values: Record<string, unknown>;
   created_at: string;
+  updated_at: string;
+  edit_revision: number;
   status: "Staged Draft";
 }
 export interface StagedCompanyDraftReceipt {
@@ -44,9 +48,10 @@ function canon(value:unknown):string {
   if (object(value)) return "{"+Object.keys(value).sort().map(k=>JSON.stringify(k)+":"+canon(value[k])).join(",")+"}";
   return JSON.stringify(value)??"null";
 }
-async function draftRpc(action:"list"|"read"|"create",tenantId:string,payload:Record<string,unknown>) {
+async function draftRpc(action:"list"|"read"|"create"|"update"|"discard",tenantId:string,payload:Record<string,unknown>) {
   if (!UUID.test(tenantId)) throw new Error("A valid company is required");
-  const response=await convayAuth.authenticatedRequest("/rest/v1/rpc/convay_company_meeting_drafts",{
+  const rpc=action==="create"?"convay_company_meeting_drafts":"convay_company_draft_lifecycle";
+  const response=await convayAuth.authenticatedRequest("/rest/v1/rpc/"+rpc,{
     method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({p_action:action,p_tenant_id:tenantId,p_payload:payload}),
   });
@@ -69,7 +74,9 @@ export async function listStagedCompanyDrafts(tenantId:string):Promise<StagedCom
       || !/^DRAFT-[A-F0-9]{20}$/.test(row.draft_id)
       || row.status!=="Staged Draft"
       || typeof row.title!=="string" || !UUID.test(String(row.template_id))
-      || !Number.isSafeInteger(row.template_revision)||Number(row.template_revision)<1)) {
+      || !Number.isSafeInteger(row.template_revision)||Number(row.template_revision)<1
+      || !Number.isSafeInteger(row.edit_revision)||Number(row.edit_revision)<1
+      || typeof row.updated_at!=="string")) {
     throw new Error("Company draft directory SQL readback invalid");
   }
   return data.drafts as StagedCompanyDraftSummary[];
@@ -83,7 +90,9 @@ export async function readStagedCompanyDraft(tenantId:string,draftId:string):Pro
     || !UUID.test(String(draft.template_id))
     || !Number.isSafeInteger(draft.template_revision)
     || !object(draft.definition)||!Array.isArray(draft.definition.steps)
-    || !object(draft.values)) {
+    || !object(draft.values)
+    || !Number.isSafeInteger(draft.edit_revision)||Number(draft.edit_revision)<1
+    || typeof draft.updated_at!=="string") {
     throw new Error("Company meeting draft SQL readback invalid");
   }
   return draft as unknown as StagedCompanyDraft;
@@ -124,4 +133,79 @@ export async function saveStagedCompanyDraft(
     throw new Error("Published template SQL snapshot mismatch");
   }
   return {receipt:response as unknown as StagedCompanyDraftReceipt,draft};
+}
+
+
+export interface StagedCompanyDraftTransitionReceipt {
+  tenant_id:string;
+  draft_id:string;
+  template_id:string;
+  template_revision:number;
+  request_id:string;
+  action:"update"|"discard";
+  edit_revision:number;
+  status:"Staged Draft"|"Discarded";
+  audit_event_id:number;
+  meeting_activation_enabled:false;
+}
+const draftIdValid=(id:string)=>/^DRAFT-[A-F0-9]{20}$/.test(id);
+function assertDraftTransitionReceipt(
+  data:Record<string,unknown>,action:"update"|"discard",tenantId:string,
+  previous:Pick<StagedCompanyDraft,"draft_id"|"template_id"|"template_revision"|"edit_revision">,
+  requestId:string,
+):StagedCompanyDraftTransitionReceipt {
+  if(data.tenant_id!==tenantId || data.draft_id!==previous.draft_id
+     || data.template_id!==previous.template_id || data.template_revision!==previous.template_revision
+     || data.request_id!==requestId || data.action!==action
+     || data.edit_revision!==(action==="update"?previous.edit_revision+1:previous.edit_revision)
+     || data.status!==(action==="update"?"Staged Draft":"Discarded")
+     || data.meeting_activation_enabled!==false
+     || !Number.isSafeInteger(data.audit_event_id) || Number(data.audit_event_id)<1) {
+    throw new Error("Company draft lifecycle was not verified by authoritative SQL");
+  }
+  return data as unknown as StagedCompanyDraftTransitionReceipt;
+}
+export async function updateStagedCompanyDraft(
+  tenantId:string,previous:StagedCompanyDraft,title:string,values:Record<string,unknown>,
+  requestId:string,
+):Promise<{receipt:StagedCompanyDraftTransitionReceipt;draft:StagedCompanyDraft}> {
+  if(!UUID.test(tenantId)||!UUID.test(requestId)||!draftIdValid(previous.draft_id)
+    || !UUID.test(previous.template_id)||!Number.isSafeInteger(previous.template_revision)
+    || !Number.isSafeInteger(previous.edit_revision)||previous.edit_revision<1
+    || !object(previous.definition)||!object(values)
+    || title.trim().length<3||title.trim().length>160){
+    throw new Error("A verified company draft, title, and new request ID are required");
+  }
+  const response=await draftRpc("update",tenantId,{
+    draft_id:previous.draft_id,expected_revision:previous.edit_revision,request_id:requestId,
+    meeting_title:title.trim(),values,
+  });
+  const receipt=assertDraftTransitionReceipt(response,"update",tenantId,previous,requestId);
+  const draft=await readStagedCompanyDraft(tenantId,previous.draft_id);
+  if(draft.edit_revision!==previous.edit_revision+1
+     || draft.title!==title.trim()
+     || draft.template_id!==previous.template_id
+     || draft.template_revision!==previous.template_revision
+     || canon(draft.definition)!==canon(previous.definition)
+     || canon(draft.values)!==canon(values)) {
+    throw new Error("Revised company draft did not match SQL versioned readback");
+  }
+  return {receipt,draft};
+}
+export async function discardStagedCompanyDraft(
+  tenantId:string,previous:StagedCompanyDraft,requestId:string,
+):Promise<StagedCompanyDraftTransitionReceipt> {
+  if(!UUID.test(tenantId)||!UUID.test(requestId)||!draftIdValid(previous.draft_id)
+    || !Number.isSafeInteger(previous.edit_revision)||previous.edit_revision<1) {
+    throw new Error("A verified company draft and request ID are required");
+  }
+  const response=await draftRpc("discard",tenantId,{
+    draft_id:previous.draft_id,expected_revision:previous.edit_revision,request_id:requestId,
+  });
+  const receipt=assertDraftTransitionReceipt(response,"discard",tenantId,previous,requestId);
+  const remaining=await listStagedCompanyDrafts(tenantId);
+  if(remaining.some(row=>row.draft_id===previous.draft_id)){
+    throw new Error("Discarded draft still appears in SQL; refresh before retrying");
+  }
+  return receipt;
 }
