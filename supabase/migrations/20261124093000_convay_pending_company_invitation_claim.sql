@@ -45,7 +45,7 @@ BEGIN
    RAISE EXCEPTION 'Platform Super Admin required for company invitations'
      USING ERRCODE='42501';
  END IF;
- IF p_tenant_id IS NULL OR p_action NOT IN ('list','queue','cancel') THEN
+ IF p_tenant_id IS NULL OR coalesce(p_action,'') NOT IN ('list','queue','cancel') THEN
    RAISE EXCEPTION 'Valid company and invitation action required'
      USING ERRCODE='22023';
  END IF;
@@ -75,7 +75,7 @@ BEGIN
  END IF;
  IF p_action='queue' AND
    (v_tenant.lifecycle_state<>'provisioning'
-    OR p_member_role NOT IN ('member','tenant_admin')) THEN
+    OR coalesce(p_member_role,'') NOT IN ('member','tenant_admin')) THEN
    RAISE EXCEPTION 'A provisioning company and approved role are required'
      USING ERRCODE='42501';
  END IF;
@@ -84,7 +84,6 @@ BEGIN
  WHERE lower(pg_catalog.btrim(u.email))=v_email
    AND lower(pg_catalog.btrim(a.email))=v_email
    AND u.account_status='inactive' AND u.account_role='user'
-   AND a.email_confirmed_at IS NULL
    AND a.raw_app_meta_data->>'convay_invitation_status'='pending'
    AND EXISTS(SELECT 1 FROM public.convay_user_roles ur
      JOIN public.convay_roles r ON r.id=ur.role_id
