@@ -16,6 +16,7 @@ import type {
   GovernanceBody, QuorumRule,
 } from "../../data/boardMeetingData";
 import type { BmsUser } from "../../data/bmsUsers";
+import { calculateMeetingQuorum } from "../../utils/quorumCalculation";
 import { meetingAccessBlockers } from "../../pages/return-register/meetingAccess";
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "../../pages/return-register/meetingAgendaSelection";
 
@@ -251,19 +252,21 @@ export function MeetingReviewPanel({
 
   // ── Quorum stats ───────────────────────────────────────────────────────────
   const quorumStats = useMemo(() => {
-    const committeeVal = v(values, "committee");
-    const body = findBody(committeeVal, governanceBodies);
-    const govRule = body
-      ? (quorumRules.find(r => (r.governance_body_id === body.id || r.governance_body_id === body.body_id) && r.status === "Active") ?? null)
-      : null;
-    const effective = govRule ? parseInt(govRule.minimum_members, 10) || 0 : 0;
-    const effectivePct = govRule ? parseFloat(govRule.quorum_percent) || 0 : 0;
-    const eligible = participantStats.quorum;
-    const configured = effective > 0 || effectivePct > 0 || !!govRule;
-    const met = configured && eligible >= effective && (effectivePct === 0 || (eligible / Math.max(participantStats.total, 1)) * 100 >= effectivePct);
-    const ruleSource = govRule ? `Governance rule (${govRule.quorum_percent}% min)` : "Not configured";
-    return { eligible, required: effective, requiredPct: effectivePct, configured, met, ruleSource };
-  }, [values, governanceBodies, quorumRules, participantStats]);
+    const result = calculateMeetingQuorum({
+      boardCommitteeId: v(values, "committee"),
+      meetingId: v(values, "_draft_meeting_id") || v(values, "meeting_id"),
+      draftLinks: participants,
+      governanceBodies,
+      quorumRules,
+    });
+    const rule = result.selectedRule;
+    const ruleSource = rule
+      ? `${rule.meeting_id ? "Meeting" : "Governance"} rule (${result.requiredPercent}% min)`
+      : result.status === "not_configured" ? "Not configured" : result.reasons.join("; ");
+    const eligible = rule ? result.eligibleCount : new Set(participants.filter(p => p.quorum_eligible && p.user_id).map(p => p.user_id)).size;
+    return { eligible, required: result.requiredCount, requiredPct: result.requiredPercent,
+      configured: result.status !== "not_configured", met: result.status === "expected", ruleSource };
+  }, [values, governanceBodies, quorumRules, participants]);
 
   // ── Scheduling blockers ────────────────────────────────────────────────────
   const blockers = useMemo((): Blocker[] => {
