@@ -76,23 +76,15 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
 
   const committeeValue = String(values.committee ?? "");
 
-  // Governance-body default rule (source of truth — manual quorum fields removed from form)
-  const govRule = useMemo(() => {
-    const body = governanceBodies.find(
-      b => b.id === committeeValue || b.body_id === committeeValue || b.body_name === committeeValue,
-    );
-    if (!body) return null;
-    return quorumRules.find(r =>
-      (r.governance_body_id === body.id || r.governance_body_id === body.body_id) && r.status === "Active",
-    ) ?? null;
-  }, [governanceBodies, committeeValue, quorumRules]);
-
+  const policyMeetingId = String(values._draft_meeting_id ?? values.meeting_id ?? "").trim();
   const projection = useMemo(() => calculateMeetingQuorum({
     boardCommitteeId: committeeValue,
+    meetingId: policyMeetingId,
     draftLinks: allLinks,
     governanceBodies,
     quorumRules,
-  }), [committeeValue, allLinks, governanceBodies, quorumRules]);
+  }), [committeeValue, policyMeetingId, allLinks, governanceBodies, quorumRules]);
+  const govRule = projection.selectedRule;
   const effectiveRequired = projection.requiredCount;
   const effectivePct = projection.requiredPercent;
   const status: QuorumStatus = projection.status === "expected" ? "met"
@@ -223,10 +215,13 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
           {/* Governance rule source */}
           {govRule && (
             <div className="text-[10px] text-[var(--muted-foreground)] italic">
-              Using governance rule: {govRule.body_name} — {govRule.quorum_percent}% minimum
+              Using {govRule.meeting_id ? "meeting" : "governance"} rule: {govRule.body_name} — {effectivePct}% minimum
             </div>
           )}
 
+          {!govRule && status === "not_met" && (
+            <div role="status" className="text-[11px] text-[var(--muted-foreground)]">{projection.reasons.join("; ")}</div>
+          )}
           {/* Missing required roles */}
           {missingRoles.length > 0 && (
             <div className="flex flex-col gap-0.5">
