@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 
 const state=vi.hoisted(()=>({
@@ -93,7 +93,8 @@ describe("TEN-MTG-02 complete staged draft recovery",()=>{
   expect(state.discard).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button",{name:"Discard draft"}));
   await screen.findByRole("dialog",{name:"Discard staged company draft?"});
-  fireEvent.click(screen.getByRole("button",{name:"Discard draft",exact:true}));
+  fireEvent.click(within(screen.getByRole("dialog",{name:"Discard staged company draft?"}))
+    .getByRole("button",{name:"Discard draft"}));
   await waitFor(()=>expect(state.discard).toHaveBeenCalledOnce());
   expect(state.discard).toHaveBeenCalledWith(tenant,draft,expect.any(String));
  });
