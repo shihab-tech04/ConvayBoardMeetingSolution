@@ -355,6 +355,20 @@ Deno.serve(async (req: Request) => {
         : "Account status could not be reconciled between Auth and SQL. Verify both records before retrying." });
     }
 
+    // A claimed tenant membership is protected by a restrictive Auth FK.
+    // Check this private server-only SQL contract BEFORE deleting profile/roles;
+    // otherwise a subsequent Auth deletion failure would orphan the account.
+    const { data: deletionReadiness, error: readinessError } = await admin.rpc(
+      "convay_user_deletion_readiness", { p_user_id: body.user_id },
+    );
+    if (readinessError || !deletionReadiness || deletionReadiness.user_id !== body.user_id
+        || typeof deletionReadiness.can_delete !== "boolean"
+        || !Number.isSafeInteger(deletionReadiness.company_membership_count)) {
+      return response(503, { error: "Unable to verify company records; user deletion was not started." });
+    }
+    if (!deletionReadiness.can_delete) {
+      return response(409, { error: "This account has company membership history. Preserve the account and complete audited company offboarding before deletion." });
+    }
     // Remove both profile and identity, preserving the independent audit trail.
     const { error: profileDeleteError } = await admin.from("user_profiles")
       .delete().eq("user_id", body.user_id);
