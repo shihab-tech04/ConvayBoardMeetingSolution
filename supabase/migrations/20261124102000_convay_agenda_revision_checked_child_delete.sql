@@ -92,7 +92,7 @@ BEGIN
       FOR UPDATE;
     IF NOT FOUND OR v_link.revision IS DISTINCT FROM v_expected
        OR v_link.tenant_id IS DISTINCT FROM v_child.tenant_id
-       OR v_link.payload->>'agenda_id' NOT IN
+       OR coalesce(v_link.payload->>'agenda_id','') NOT IN
           (v_child.record_id,coalesce(v_child.payload->>'agenda_id',v_child.record_id)) THEN
       RAISE EXCEPTION 'Agenda document links changed. Refresh and retry.'
         USING ERRCODE='40001';
