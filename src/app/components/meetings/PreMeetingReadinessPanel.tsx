@@ -168,6 +168,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
     .map(l => l.user_id));
 
   const quorumResult = calculateMeetingQuorum({
+    meetingId,
     boardCommitteeId: meeting?.committee ?? "",
     boardCommitteeName: meeting?.committee ?? "",
     participantLinks: myLinks,
