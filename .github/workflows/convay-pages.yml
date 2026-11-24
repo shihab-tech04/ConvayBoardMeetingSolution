@@ -161,6 +161,44 @@ jobs:
                 }
                 console.log("RELOAD PASS", page.url());
               }
+              // Convay UX-LG-01: actual release browser, not a screenshot crop.
+              // Protect the approved desktop split while validating narrow sign-in.
+              for (const width of [320, 375, 768, 1366]) {
+                await page.setViewportSize({ width, height: 812 });
+                await page.goto(base, { waitUntil: "networkidle", timeout: 60000 });
+                await page.locator("#login-user-id").waitFor({ state: "visible" });
+                await page.locator("#login-password").waitFor({ state: "visible" });
+                const metrics = await page.evaluate(() => {
+                  const visual = document.querySelector(".lp-visual");
+                  const auth = document.querySelector(".lp-auth");
+                  const email = document.querySelector("#login-user-id");
+                  const password = document.querySelector("#login-password");
+                  const rect = el => el ? el.getBoundingClientRect() : null;
+                  return {
+                    innerWidth: window.innerWidth,
+                    pageWidth: document.documentElement.scrollWidth,
+                    visibleVisual: !!visual && getComputedStyle(visual).display !== "none",
+                    auth: rect(auth), email: rect(email), password: rect(password),
+                  };
+                });
+                if (metrics.innerWidth !== width) {
+                  throw new Error("Browser viewport was not actually applied: " + JSON.stringify(metrics));
+                }
+                if (metrics.pageWidth > width + 1) {
+                  throw new Error("Login horizontal overflow at " + width + ": " + JSON.stringify(metrics));
+                }
+                if (metrics.visibleVisual !== (width >= 1024)) {
+                  throw new Error("Login visual breakpoint mismatch at " + width + ": " + JSON.stringify(metrics));
+                }
+                for (const key of ["auth", "email", "password"]) {
+                  const rect = metrics[key];
+                  if (!rect || rect.width <= 0 || rect.left < -1 || rect.right > width + 1) {
+                    throw new Error("Login control clipped at " + width + " (" + key + "): " + JSON.stringify(metrics));
+                  }
+                }
+                if (errors.length) throw new Error("Responsive browser errors: " + errors.join("; "));
+                console.log("RESPONSIVE LOGIN PASS", width, "px", JSON.stringify(metrics));
+              }
             } finally {
               await browser.close();
             }
