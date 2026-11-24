@@ -38,6 +38,8 @@ import {
   type DocumentUploadCheckpoint, type AuthoredDocumentCheckpoint,
 } from "./documentUploadPersistence";
 import { useSearchParams } from "react-router";
+import { readAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
+import { finalizeOwnSuperAdminContent } from "../../services/supabase/convaySuperAdminAutoApproval";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -365,11 +367,17 @@ export function DocumentComposerModal({
           approval_status: "Draft", snapshot_type: "manual", is_named: true,
         }),
       });
-      // The SQL entity_changes trigger audits persisted metadata/version writes.
-      // bms.audit is intentionally read-only: never claim a client-inserted event.
+      // Only after content + metadata + version have each been acknowledged
+      // may the server automatically approve this Super Admin's own document.
+      const access = readAccessSnapshot().loaded
+        ? readAccessSnapshot() : await reloadAccessSnapshot();
+      if (!access.loaded || access.error) throw new Error("Document permissions could not be verified.");
+      if (access.is_super_admin) await finalizeOwnSuperAdminContent("document",confirmedId);
+      // SQL entity_changes audits the durable writes; never forge a client log.
       pendingAuthored.current = null;
-      toast.success(kind === "template"
-        ? `"${form.doc_name.trim()}" created from template.`
+      toast.success(access.is_super_admin
+        ? `"${form.doc_name.trim()}" created and automatically approved.`
+        : kind === "template" ? `"${form.doc_name.trim()}" created from template.`
         : `"${form.doc_name.trim()}" created.`);
       try {
         await onCreated?.(confirmedId);
@@ -463,11 +471,18 @@ export function DocumentComposerModal({
           snapshot_type: "manual", is_named: true,
         }),
       });
-      // SQL writes are automatically tracked by the authoritative entity_changes
-      // trigger. The bms.audit registry is read-only; never fabricate an audit
-      // event with a fire-and-forget client insertion.
+      // File, private Storage pointer and document version must all be durable
+      // before a Super Admin can automatically approve the created document.
+      const access = readAccessSnapshot().loaded
+        ? readAccessSnapshot() : await reloadAccessSnapshot();
+      if (!access.loaded || access.error) throw new Error("Document permissions could not be verified.");
+      if (access.is_super_admin) await finalizeOwnSuperAdminContent("document",confirmedId);
+      // SQL writes are tracked by authoritative entity_changes, not client
+      // fire-and-forget audit events.
       pendingUpload.current = null;
-      toast.success(`"${form.doc_name.trim()}" uploaded.`);
+      toast.success(access.is_super_admin
+        ? `"${form.doc_name.trim()}" uploaded and automatically approved.`
+        : `"${form.doc_name.trim()}" uploaded.`);
       try {
         await onCreated?.(confirmedId);
       } catch {
