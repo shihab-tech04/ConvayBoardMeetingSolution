@@ -32,6 +32,7 @@ import { buildAgendaPreviewOutline } from "./agendaPreviewOutline";
 import { sanitizeAgendaHtml } from "../../utils/sanitizeAgendaHtml";
 import { agendaPurposeMatches } from "./agendaPurposeFilter";
 import { convayAuth } from "../../services/supabase/convayAuth";
+import { finalizeOwnSuperAdminContent } from "../../services/supabase/convaySuperAdminAutoApproval";
 
 // ── Duration helpers ──────────────────────────────────────────────────────────
 
@@ -420,10 +421,17 @@ export function Register4ListPage() {
     try {
       if (action === "submit") {
         const permitted = hasPermission("submit");
-        await submitAgendaWithHistory(
-          item, registry, { name: currentUser.name, role: currentUser.designation },
-          note, permitted,
-        );
+        if (!permitted) throw new Error("You do not have permission to submit agendas.");
+        if (access.loaded && access.is_super_admin) {
+          // Reuse the exact verified root-author SQL path for existing Draft
+          // agenda trees; the server confirms actor ownership of every child.
+          await finalizeOwnSuperAdminContent("agenda",item.parent_agenda_id||item.id);
+        } else {
+          await submitAgendaWithHistory(
+            item, registry, { name: currentUser.name, role: currentUser.designation },
+            note, permitted,
+          );
+        }
       } else {
         if (!hasPermission(action)) throw new Error("You do not have permission to review this agenda.");
         const previous = item.approval_status ?? "Draft";
@@ -469,7 +477,9 @@ export function Register4ListPage() {
       }
       await registry.refresh?.();
       toast.success({
-        submit: "Submitted for approval.",
+        submit: access.loaded && access.is_super_admin
+          ? "Super Admin agenda and its children automatically approved."
+          : "Submitted for approval.",
         approve: "Agenda approved.",
         reject: "Agenda rejected.",
         request_revision: "Revision requested.",
