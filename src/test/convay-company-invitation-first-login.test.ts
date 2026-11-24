@@ -104,4 +104,19 @@ describe("TEN-ONB-03: pending company invitation to verified SQL membership",()=
     expect(ui).toContain("queuePendingCompanyInvitation");
     expect(ui).toContain("listPendingCompanyInvitations");
   });
+  it("keeps deletion and prior roles safe when a user has company membership history",()=>{
+    const cleanup=readFileSync("supabase/migrations/20261124094000_convay_pending_company_invites_user_cleanup.sql","utf8");
+    expect(cleanup).toContain("ON DELETE CASCADE");
+    expect(cleanup).toContain("convay_user_deletion_readiness");
+    expect(cleanup).toContain("FROM convay_private.tenant_memberships");
+    expect(cleanup).toContain("TO service_role");
+    expect(cleanup).toContain("FROM PUBLIC,anon,authenticated");
+    const edge=readFileSync("supabase/functions/convay-users/index.ts","utf8");
+    const guard=edge.indexOf('"convay_user_deletion_readiness"');
+    const deletion=edge.indexOf('admin.from("user_profiles")\n      .delete().eq("user_id", body.user_id)');
+    expect(guard).toBeGreaterThan(0);
+    expect(deletion).toBeGreaterThan(guard);
+    expect(edge).toContain("if (!deletionReadiness.can_delete)");
+    expect(edge).toContain("user deletion was not started");
+  });
 });
