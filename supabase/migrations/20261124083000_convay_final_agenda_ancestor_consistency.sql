@@ -20,6 +20,13 @@ BEGIN
   IF NOT FOUND THEN RETURN NULL; END IF; -- removed again by this transaction
 
   v_status := COALESCE(v_current.payload->>'approval_status','Draft');
+  -- Approved and Meeting Ready are one authoritative state contract, not
+  -- independent client-authored labels. A direct SQL approval must set both.
+  IF v_status='Approved'
+     AND COALESCE(v_current.payload->>'meeting_readiness','') <> 'Meeting Ready' THEN
+    RAISE EXCEPTION 'Approved agenda must have Meeting Ready status'
+      USING ERRCODE='23514';
+  END IF;
   IF v_status IN ('Approved','Archived')
      OR NULLIF(BTRIM(COALESCE(v_current.payload->>'archived_at','')),'') IS NOT NULL
   THEN RETURN NULL; END IF;
