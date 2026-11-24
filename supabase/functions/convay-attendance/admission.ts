@@ -22,8 +22,10 @@ export interface OnlineLink {
   participant_type?: string;
 }
 export interface OnlineSession {
+  id?: string;
   meeting_id?: string;
   session_status?: string;
+  reopen_started_at?: string;
 }
 export interface AdmissionContext {
   meeting: OnlineMeeting;
