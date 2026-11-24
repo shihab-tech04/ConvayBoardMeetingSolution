@@ -211,7 +211,10 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
   if (!meeting?.secretary)      blockers.push("Secretary not assigned");
   // Agenda-free meetings can start. Attendance and leadership safety checks remain.
   if (invalidAttendanceRequirement) blockers.push("Correct invalid attendance requirements in the participant roster before starting.");
-  if (requiredMissing.length > 0) blockers.push(`Required participants not present: ${requiredMissing.map(l => resolveUser(l.user_id)?.name ?? l.user_id).join(", ")}`);
+  const missingLeadership = requiredMissing.filter(l => ["Chairperson", "Meeting Secretary", "Secretary", "Organizer"].includes(l.participant_type));
+  const missingMandatoryParticipants = requiredMissing.filter(l => !missingLeadership.includes(l));
+  if (missingLeadership.length > 0) blockers.push(`Required leadership not present: ${missingLeadership.map(l => resolveUser(l.user_id)?.name ?? l.user_id).join(", ")}`);
+  if (missingMandatoryParticipants.length > 0) blockers.push(`Required participants not present: ${missingMandatoryParticipants.map(l => resolveUser(l.user_id)?.name ?? l.user_id).join(", ")}`);
 
   const warnings: string[] = [];
   if (quorumResult.status === "not_expected" || quorumResult.status === "not_configured") {
