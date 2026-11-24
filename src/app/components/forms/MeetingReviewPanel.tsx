@@ -17,6 +17,7 @@ import type {
 } from "../../data/boardMeetingData";
 import type { BmsUser } from "../../data/bmsUsers";
 import { calculateMeetingQuorum } from "../../utils/quorumCalculation";
+import { readAttendanceRequirement, hasInvalidAttendanceRequirement } from "../../pages/return-register/attendanceRequirement";
 import { meetingAccessBlockers } from "../../pages/return-register/meetingAccess";
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "../../pages/return-register/meetingAgendaSelection";
 
@@ -171,13 +172,15 @@ export function MeetingReviewPanel({
 
   // ── Participant stats ──────────────────────────────────────────────────────
   const participantStats = useMemo(() => {
-    const required = participants.filter(p => p.is_required).length;
+    const required = participants.filter(p => readAttendanceRequirement(p) === "Mandatory").length;
+    const optional = participants.filter(p => readAttendanceRequirement(p) === "Optional").length;
+    const invited = participants.filter(p => readAttendanceRequirement(p) === "By Invitation").length;
     const voting   = participants.filter(p => p.voting_eligible).length;
     const quorum   = participants.filter(p => p.quorum_eligible).length;
     const presenters = participants.filter(p => p.participant_type === "Presenter").length;
     const hasChair = participants.some(p => p.participant_type === "Chairperson");
     const hasSecretary = participants.some(p => p.participant_type === "Meeting Secretary");
-    return { total: participants.length, required, optional: participants.length - required, voting, quorum, presenters, hasChair, hasSecretary };
+    return { total: participants.length, required, optional, invited, invalidAttendance: hasInvalidAttendanceRequirement(participants), voting, quorum, presenters, hasChair, hasSecretary };
   }, [participants]);
 
   // ── Agenda stats ───────────────────────────────────────────────────────────
@@ -304,6 +307,7 @@ export function MeetingReviewPanel({
     if (v(values, "organizer") && isInactiveUser(v(values, "organizer")))
       out.push({ label: "Organizer must be an active user", step: 0 });
 
+    if (participantStats.invalidAttendance) out.push({ label: "Correct invalid attendance requirements", step: 1 });
     if (participantStats.total === 0)
       out.push({ label: "At least one participant is required",                  step: 1 });
     if (participantStats.required === 0)
@@ -418,6 +422,7 @@ export function MeetingReviewPanel({
               <Row label="Total"           value={String(participantStats.total)} />
               <Row label="Required"        value={String(participantStats.required)} />
               <Row label="Optional"        value={String(participantStats.optional)} />
+              <Row label="By Invitation"   value={String(participantStats.invited)} />
               <Row label="Voting Eligible" value={String(participantStats.voting)} />
               <Row label="Quorum Eligible" value={String(participantStats.quorum)} />
               {participantStats.presenters > 0 && <Row label="Presenters" value={String(participantStats.presenters)} />}

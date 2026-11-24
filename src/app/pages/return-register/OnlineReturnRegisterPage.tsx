@@ -14,6 +14,7 @@ import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDel
 import { DRAFT_DELETION_UNAVAILABLE_REASON, guardMeetingDrawerAction } from "./meetingDeletionReleaseGate";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
 import { validateLeadershipRoster } from "./leadershipRoster";
+import { attendanceRequirementLabel, readAttendanceRequirement, hasInvalidAttendanceRequirement, type AttendanceRequirement } from "./attendanceRequirement";
 import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
@@ -533,7 +534,7 @@ export function OnlineReturnRegisterPage() {
       ? quorumLinks.map(l => {
           const user = bmsUserRegistry.items.find(u => u.id === l.user_id);
           const name = user?.name ?? l.user_id;
-          const tags = [l.participant_type, l.is_required ? "Required" : "Optional", l.voting_eligible ? "Voting" : ""].filter(Boolean).join(" · ");
+          const tags = [l.participant_type, attendanceRequirementLabel(l), l.voting_eligible ? "Voting" : ""].filter(Boolean).join(" · ");
           return `${name} (${tags})`;
         }).join("\n")
       : "—";
@@ -626,6 +627,7 @@ export function OnlineReturnRegisterPage() {
         member_category: (l.member_category ?? "general") as "quorum" | "general",
         participant_type: l.participant_type as DraftParticipantLink["participant_type"],
         is_required: l.is_required,
+        attendance_requirement: l.attendance_requirement as AttendanceRequirement | undefined,
         voting_eligible: l.voting_eligible,
         quorum_eligible: l.quorum_eligible,
         selection_sources: sources,
@@ -797,6 +799,7 @@ export function OnlineReturnRegisterPage() {
           return "Add at least one participant before continuing. You can save a draft instead.";
         const leadershipError = validateLeadershipRoster(participants, resolveMeetingLeadership(values, bmsUserRegistry.items))[0];
         if (leadershipError) return leadershipError;
+        if (hasInvalidAttendanceRequirement(participants)) return "Correct invalid attendance requirements before continuing.";
         if (!participants.some(p => p.is_required)) return "Mark at least one participant as required.";
         if (!participants.some(p => p.quorum_eligible)) return "Mark at least one participant as quorum-eligible.";
       }
@@ -979,6 +982,7 @@ export function OnlineReturnRegisterPage() {
         try { return JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
         catch { return []; }
       })();
+      if (!Array.isArray(draftLinks) || hasInvalidAttendanceRequirement(draftLinks)) throw new Error("Correct invalid attendance requirements before saving the draft.");
       const seenDraft = new Set<string>();
       draftLinks.forEach((link, idx) => {
         if (!link.user_id || seenDraft.has(link.user_id)) return;
@@ -995,6 +999,7 @@ export function OnlineReturnRegisterPage() {
           quorum_eligible: link.quorum_eligible,
           voting_eligible: link.voting_eligible,
           is_required: link.is_required,
+          attendance_requirement: readAttendanceRequirement(link),
           invitation_status: "pending",
           created_at: now,
         } as never });
@@ -1098,6 +1103,7 @@ export function OnlineReturnRegisterPage() {
         const quorumEligible = draftLinksRaw.filter(l => l.quorum_eligible).length;
         const requiredParticipants = draftLinksRaw.filter(l => l.is_required).length;
         blockers.push(...validateLeadershipRoster(draftLinksRaw, leadership));
+        if (hasInvalidAttendanceRequirement(draftLinksRaw)) blockers.push("Correct invalid attendance requirements");
         if (draftLinksRaw.length === 0)  blockers.push("At least one participant is required");
         if (requiredParticipants === 0)  blockers.push("At least one required participant must be assigned");
         if (quorumEligible === 0)        blockers.push("At least one quorum-eligible participant is required");
@@ -1181,6 +1187,7 @@ export function OnlineReturnRegisterPage() {
           quorum_eligible: link.quorum_eligible,
           voting_eligible: link.voting_eligible,
           is_required: link.is_required,
+          attendance_requirement: readAttendanceRequirement(link),
           invitation_status: "pending",
           created_at: now,
         } as never });
@@ -1193,7 +1200,7 @@ export function OnlineReturnRegisterPage() {
           name: link.user_name, designation: link.user_designation,
           organization: link.org_path || committee,
           role: link.participant_type,
-          attendance_requirement: link.is_required ? "Mandatory" : "Optional",
+          attendance_requirement: readAttendanceRequirement(link),
           email: "", phone: "",
           rsvp_status: "Pending", attendance_status: "Not Yet",
           joined_at: "", left_at: "", proxy_for: "",
