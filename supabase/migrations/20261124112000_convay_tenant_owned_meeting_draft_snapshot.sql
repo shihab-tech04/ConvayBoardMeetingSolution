@@ -61,11 +61,22 @@ DECLARE
   v_field_count integer := 0;
 BEGIN
   IF v_actor IS NULL OR p_tenant_id IS NULL
-    OR p_action NOT IN ('list','read','create')
-    OR NOT convay_private.tenant_admin_authorized(p_tenant_id)
-    OR NOT EXISTS (SELECT 1 FROM convay_private.tenants t
-      WHERE t.id=p_tenant_id AND t.lifecycle_state IN ('provisioning','active')) THEN
-    RAISE EXCEPTION 'Authorized active or provisioning company administrator required'
+     OR p_action NOT IN ('list','read','create') THEN
+    RAISE EXCEPTION 'Verified company administration required' USING ERRCODE='42501';
+  END IF;
+  -- No implicit platform root bypass: every actor needs their own active,
+  -- currently verified administrator membership in the exact company.
+  SELECT m.membership_role INTO v_tenant_role
+  FROM convay_private.tenant_memberships m
+  JOIN convay_private.tenants t ON t.id=m.tenant_id
+  JOIN public.user_profiles p ON p.user_id=m.user_id
+  WHERE m.tenant_id=p_tenant_id AND m.user_id=v_actor
+    AND m.membership_role='tenant_admin'
+    AND m.membership_state='active' AND m.revoked_at IS NULL
+    AND t.lifecycle_state IN ('provisioning','active')
+    AND p.account_status='active';
+  IF v_tenant_role IS DISTINCT FROM 'tenant_admin' THEN
+    RAISE EXCEPTION 'Active company Super Admin membership required'
       USING ERRCODE='42501';
   END IF;
   IF p_action='list' THEN
