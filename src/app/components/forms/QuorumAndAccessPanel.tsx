@@ -6,6 +6,7 @@
  * Read-only: does not write any values back.
  */
 import React, { useMemo, useEffect } from "react";
+import { calculateMeetingQuorum } from "../../utils/quorumCalculation";
 import { liveMeetingUrl } from "../../utils/liveMeetingLink";
 import {
   ShieldCheck, AlertTriangle, CheckCircle2, XCircle,
@@ -48,18 +49,6 @@ function parseAdditionalDocs(json: EntryFormValue): AdditionalDocEntry[] {
   catch { return []; }
 }
 
-function quorumStatus(eligible: number, total: number, required: number, requiredPct: number): QuorumStatus {
-  if (required === 0 && requiredPct === 0) return "not_configured";
-  const meetsFixed = required > 0 ? eligible >= required : true;
-  const meetsPct   = requiredPct > 0 && total > 0 ? (eligible / total * 100) >= requiredPct : true;
-  if (meetsFixed && meetsPct) return "met";
-  // At risk: within 1 member / 5% of threshold
-  const closeFixed = required > 0 ? eligible >= required - 1 : true;
-  const closePct   = requiredPct > 0 && total > 0 ? (eligible / total * 100) >= requiredPct - 5 : true;
-  if (closeFixed && closePct) return "at_risk";
-  return "not_met";
-}
-
 // Simplified access rule: Observers/Invitees don't see Strictly Confidential docs
 function hasAccess(role: string, confidentiality: string): boolean {
   if (confidentiality === "Strictly Confidential") {
@@ -83,7 +72,7 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
 
   // ── Participant data from Step 1 ─────────────────────────────────────────
   const allLinks  = useMemo(() => parseLinks(values.participant_links_json), [values.participant_links_json]);
-  const quorumEligible = useMemo(() => allLinks.filter(l => l.quorum_eligible), [allLinks]);
+  const quorumEligible = useMemo(() => Array.from(new Set(allLinks.filter(l => l.quorum_eligible && l.user_id).map(l => l.user_id))), [allLinks]);
 
   const committeeValue = String(values.committee ?? "");
 
@@ -98,13 +87,16 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
     ) ?? null;
   }, [governanceBodies, committeeValue, quorumRules]);
 
-  const effectiveRequired = govRule ? parseInt(govRule.minimum_members, 10) || 0 : 0;
-  const effectivePct      = govRule ? parseFloat(govRule.quorum_percent) || 0 : 0;
-
-  const status = useMemo(
-    () => quorumStatus(quorumEligible.length, allLinks.length, effectiveRequired, effectivePct),
-    [quorumEligible.length, allLinks.length, effectiveRequired, effectivePct],
-  );
+  const projection = useMemo(() => calculateMeetingQuorum({
+    boardCommitteeId: committeeValue,
+    draftLinks: allLinks,
+    governanceBodies,
+    quorumRules,
+  }), [committeeValue, allLinks, governanceBodies, quorumRules]);
+  const effectiveRequired = projection.requiredCount;
+  const effectivePct = projection.requiredPercent;
+  const status: QuorumStatus = projection.status === "expected" ? "met"
+    : projection.status === "not_expected" ? "not_met" : projection.status;
 
   const sc = STATUS_CONFIG[status];
   const Icon = sc.icon;
@@ -124,20 +116,8 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVirtual, savedLiveUrl]);
 
-  // Required roles come from the governance rule (not manual form fields)
-  const requiredRoles: string[] = useMemo(() => {
-    if (!govRule) return [];
-    const rv = (govRule as {required_roles?: string | string[]}).required_roles;
-    if (!rv) return [];
-    if (Array.isArray(rv)) return rv as string[];
-    if (typeof rv === "string" && rv) return rv.split(",").map(s => s.trim()).filter(Boolean);
-    return [];
-  }, [govRule]);
-
-  const missingRoles = useMemo(
-    () => requiredRoles.filter(role => !allLinks.some(l => l.participant_type === role)),
-    [requiredRoles, allLinks],
-  );
+  // Required roles and status are derived from the same forecast.
+  const missingRoles = projection.missingRoles;
 
   // ── Document access check ─────────────────────────────────────────────────
   const selectedAgendaIds = useMemo(
