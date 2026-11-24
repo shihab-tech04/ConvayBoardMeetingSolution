@@ -113,11 +113,16 @@ export async function templateAction<T>(action: string, payload: Record<string, 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ p_action: action, p_payload: payload }),
   });
-  const body = await result.json();
+  const body: unknown = await result.json().catch(() => null);
   if (!result.ok) {
-    throw new Error(typeof body?.message === "string" ? body.message : "Meeting template SQL request failed");
+    // PostgREST can return a JSON error, an HTML gateway response, or no body.
+    // Do not replace the original authorization failure with a JSON parse error.
+    const error = body && typeof body === "object" && !Array.isArray(body)
+      && "message" in body && typeof body.message === "string"
+      ? body.message : "Meeting template SQL request failed. Refresh and retry.";
+    throw new Error(error);
   }
-  if (typeof body !== "object" || body === null) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Meeting template SQL response is invalid");
   }
   return body as T;
