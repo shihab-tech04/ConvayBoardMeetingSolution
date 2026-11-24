@@ -418,6 +418,41 @@ export const convayAuth = {
     return updated;
   },
 
+  /** Delete an editable Agenda child and exactly its currently linked documents.
+   * A mismatch in ANY record revision rejects the entire SQL transaction. */
+  async deleteAgendaChild(
+    childId: string, expectedRevision: number,
+    links: Array<{ recordId: string; expectedRevision: number }>,
+  ): Promise<number> {
+    const id = childId.trim();
+    const validRevision = (value: number) => Number.isSafeInteger(value) && value > 0;
+    const linkIds = links.map(link => link.recordId.trim());
+    if (!id || id.length > 180 || !validRevision(expectedRevision) ||
+      links.length > 499 || new Set(linkIds).size !== linkIds.length ||
+      links.some(link => !link.recordId.trim() || !validRevision(link.expectedRevision))) {
+      throw new Error("Agenda child or document revisions are stale. Refresh before removing.");
+    }
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_delete_agenda_child", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_child_id: id,
+        p_expected_revision: expectedRevision,
+        p_link_revisions: links.map(link => ({
+          record_id: link.recordId.trim(),
+          expected_revision: link.expectedRevision,
+        })),
+      }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res),
+      "Agenda child or document links changed. Refresh before removing."));
+    const deleted = await res.json() as number;
+    if (deleted !== links.length + 1) {
+      throw new Error("Agenda child removal was not completely confirmed by SQL.");
+    }
+    return deleted;
+  },
+
   /**
    * Approve a pending meeting through the permission-checked SQL operation.
    * The database verifies mtg_approve and performs only this lifecycle change.
