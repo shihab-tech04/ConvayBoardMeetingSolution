@@ -59,7 +59,7 @@ describe("AG-360 Agenda UI ↔ SQL workflow integrity", () => {
     expect(modal).toContain("await linkReg.add(");
     expect(modal).toContain("await linkReg.remove(");
     expect(modal).toContain("await convayAuth.applyAgendaBatch([");
-    expect(modal).toContain("await convayAuth.applyBatch(operations)");
+    expect(modal).toContain("await convayAuth.deleteAgendaChild(id, childRevision!,");
   });
 
   it("exposes the actual SQL updated_at for Agenda rows without changing other registry projections", () => {
