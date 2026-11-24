@@ -13,8 +13,7 @@ import {
   type AgendaSubmission,
 } from "../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../data/bmsUsers";
-import { useUserRegistry } from "../../hooks/useUserRegistry";
-import { useRoleRegistry } from "../../hooks/useRoleRegistry";
+import { useAccessSnapshot, hasAccess } from "../../services/supabase/convayAccess";
 import { AgendaFormModal } from "../../components/agenda/AgendaFormModal";
 import { Button } from "../../components/buttons/Button";
 import { StatusBadge } from "../../components/badges/StatusBadge";
@@ -123,6 +122,8 @@ const APPROVAL_QUEUE_STATUSES = new Set([
   "Ready for Review", "Revision Requested", "Partially Approved", "Rejected", "Reopened",
 ]);
 const SUBMITTABLE_STATUSES    = new Set(["Draft", "Incomplete", "Reopened", "Revision Requested"]);
+const REVIEW_DECISION_STATUSES = new Set(["Pending Approval", "Pending Review", "Ready for Review", "Partially Approved"]);
+const REOPENABLE_STATUSES = new Set(["Approved", "Rejected"]);
 const TEMP_REVIEW_STATUSES    = new Set([
   "Pending Approval", "Pending Review", "Pending",
   "Revision Requested", "Approved", "Rejected",
@@ -203,8 +204,7 @@ export function Register4ListPage() {
   const registry    = useAgendaRegistry();
   const linkReg     = useAgendaDocumentLinkRegistry();
   const bmsUserReg  = useBmsUserRegistry();
-  const { users: systemUsers } = useUserRegistry();
-  const { roles }   = useRoleRegistry();
+  const access = useAccessSnapshot();
   const currentUser = useCurrentUser();
 
   // ── View state ────────────────────────────────────────────────────────────
@@ -267,18 +267,9 @@ export function Register4ListPage() {
   }
 
   // ── Centralized permission check (replaces designation string-matching) ───
-  const { myRole, myPermissions } = useMemo(() => {
-    const sysUser = systemUsers.find(
-      u => u.name === currentUser.name || u.employeeId === currentUser.employeeId,
-    );
-    const roleName = sysUser?.role ?? "";
-    const role = roles.find(r => r.name === roleName);
-    return {
-      myRole: roleName,
-      myPermissions: (role?.permissions ?? []) as string[],
-    };
-  }, [systemUsers, roles, currentUser.name, currentUser.employeeId]);
-
+  // Read the authenticated server's own effective permission codes. Display
+  // names and employee IDs are not identity or authorization evidence.
+  // SQL/RLS still enforces every write independently of the UI.
   function hasPermission(action: string): boolean {
     const permMap: Record<string, string> = {
       submit:           "agd_submit",
@@ -293,10 +284,7 @@ export function Register4ListPage() {
       edit:             "agd_submit",
     };
     const permId = permMap[action];
-    if (permId && myPermissions.includes(permId)) return true;
-    if (action === "request_revision" && myPermissions.includes("agd_approve")) return true;
-    // Super Admin / Board Secretary fallback (same as resolveAgendaActions)
-    return myRole === "Super Admin";
+    return !!permId && hasAccess(permId, access);
   }
 
   // ── Doc count helper ──────────────────────────────────────────────────────
@@ -397,14 +385,14 @@ export function Register4ListPage() {
     if (action === "approve" && item.approval_status === "Approved") {
       toast.info("This agenda is already approved."); return;
     }
-    if (action === "approve" && (item.approval_status === "Draft" || item.approval_status === "Archived")) {
-      toast.error("Submit the agenda before approving."); return;
+    if (action === "approve" && !REVIEW_DECISION_STATUSES.has(item.approval_status ?? "")) {
+      toast.error("Submit the agenda for review before approving."); return;
     }
-    if (action === "reopen" && item.approval_status !== "Approved") {
-      toast.info("Only Approved agendas can be reopened."); return;
+    if (action === "reopen" && !REOPENABLE_STATUSES.has(item.approval_status ?? "")) {
+      toast.info("Only Approved or Rejected agendas can be reopened."); return;
     }
-    if ((action === "reject" || action === "request_revision") && item.approval_status === "Draft") {
-      toast.info("Agenda must be submitted first."); return;
+    if ((action === "reject" || action === "request_revision") && !REVIEW_DECISION_STATUSES.has(item.approval_status ?? "")) {
+      toast.info("Submit the agenda for review before making a decision."); return;
     }
 
     setApprovalDialog({ action, agendaId, note: "", reason: "", impact: "", errors: {} });
@@ -1173,13 +1161,13 @@ export function Register4ListPage() {
 
     if (SUBMITTABLE_STATUSES.has(status) && hasPermission("submit"))
       items.push({ label: "Submit for Approval", onClick: () => openApprovalDialog(id, "submit") });
-    if (APPROVAL_QUEUE_STATUSES.has(status) && hasPermission("approve"))
+    if (REVIEW_DECISION_STATUSES.has(status) && hasPermission("approve"))
       items.push({ label: "Approve", onClick: () => openApprovalDialog(id, "approve") });
-    if (APPROVAL_QUEUE_STATUSES.has(status) && hasPermission("request_revision"))
+    if (REVIEW_DECISION_STATUSES.has(status) && hasPermission("request_revision"))
       items.push({ label: "Request Revision", onClick: () => openApprovalDialog(id, "request_revision") });
-    if (APPROVAL_QUEUE_STATUSES.has(status) && hasPermission("reject"))
+    if (REVIEW_DECISION_STATUSES.has(status) && hasPermission("reject"))
       items.push({ label: "Reject", onClick: () => openApprovalDialog(id, "reject"), danger: true });
-    if (status === "Approved" && hasPermission("reopen"))
+    if (REOPENABLE_STATUSES.has(status) && hasPermission("reopen"))
       items.push({ label: "Reopen", onClick: () => openApprovalDialog(id, "reopen") });
     if (!drawerChildId) {
       if (status === "Archived" && hasPermission("restore"))
