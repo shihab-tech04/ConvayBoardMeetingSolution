@@ -1,4 +1,4 @@
-import { isAgendaMeetingReady } from "../../pages/return-register/meetingAgendaSelection";
+import { hasUnapprovedActiveAgendaDescendant, isAgendaMeetingReady } from "../../pages/return-register/meetingAgendaSelection";
 /**
  * AgendaDocumentStep — Step 2 custom renderer.
  *
@@ -85,10 +85,8 @@ function agendaReadinessLabel(agenda: AgendaSubmission, allAgendas: AgendaSubmis
   if (status !== "Approved") {
     return { label: status, color: "amber", schedulingBlocked: true };
   }
-  // Approved: check children
-  const children = allAgendas.filter(a => a.parent_agenda_id === aid && !a.archived_at);
-  const hasBlockingChild = children.some(c => c.approval_status !== "Approved");
-  if (hasBlockingChild) {
+  // Mirror SQL's recursive requirement for children AND grandchildren.
+  if (hasUnapprovedActiveAgendaDescendant(agenda, allAgendas)) {
     return { label: "Partially Approved", color: "amber", schedulingBlocked: true };
   }
   // Match the same policy used by Meeting Review and save validation.

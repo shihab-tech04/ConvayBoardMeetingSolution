@@ -18,10 +18,43 @@ export function parseOptionalMeetingAgendas(raw: unknown): SelectedAgendaEntry[]
   }
 }
 
-/** Single readiness policy shared by picker, review and authoritative save validation.
- * Existing approved agendas may predate the optional readiness marker; a
- * missing marker is derived from approval plus all active child approvals.
- * An explicit non-ready marker always blocks scheduling. */
+/** Mirrors the SQL recursive meeting-link guard: even a third-level agenda
+ * must be approved if it has no archived_at. Traverse archived ancestors as
+ * SQL does, while ignoring repeated records/cycles defensively. Accept both
+ * canonical record ID and agenda_id references from older persisted drafts. */
+export function hasUnapprovedActiveAgendaDescendant(
+  agenda: AgendaSubmission,
+  allAgendas: readonly AgendaSubmission[],
+): boolean {
+  const byParent = new Map<string, AgendaSubmission[]>();
+  for (const item of allAgendas) {
+    if (!item.parent_agenda_id) continue;
+    const children = byParent.get(item.parent_agenda_id) ?? [];
+    children.push(item);
+    byParent.set(item.parent_agenda_id, children);
+  }
+  const visited = new Set<string>();
+  const pending: string[] = [agenda.id, agenda.agenda_id].filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
+  while (pending.length) {
+    const parentId = pending.shift()!;
+    for (const child of byParent.get(parentId) ?? []) {
+      const childId = child.id || child.agenda_id;
+      if (!childId || visited.has(childId) || childId === agenda.id) continue;
+      visited.add(childId);
+      if (!child.archived_at && child.approval_status !== "Approved") return true;
+      if (child.id) pending.push(child.id);
+      if (child.agenda_id && child.agenda_id !== child.id) pending.push(child.agenda_id);
+    }
+  }
+  return false;
+}
+
+/** Shared by picker, review, and save. The SQL meeting-link guard checks
+ * every child and grandchild; a direct-child-only UI check is insufficient.
+ * Approved legacy records without a readiness field remain permitted only
+ * if all active descendants are approved. Explicit non-ready still blocks. */
 export function isAgendaMeetingReady(
   agenda: AgendaSubmission,
   allAgendas: readonly AgendaSubmission[],
@@ -29,10 +62,7 @@ export function isAgendaMeetingReady(
   if (agenda.archived_at || agenda.parent_agenda_id != null || agenda.approval_status !== "Approved") return false;
   const readiness = (agenda as { meeting_readiness?: string }).meeting_readiness;
   if (readiness && readiness !== "Meeting Ready") return false;
-  const id = agenda.agenda_id ?? agenda.id;
-  return allAgendas
-    .filter(item => item.parent_agenda_id === id && !item.archived_at)
-    .every(item => item.approval_status === "Approved");
+  return !hasUnapprovedActiveAgendaDescendant(agenda, allAgendas);
 }
 
 /** Empty selection is valid; a stale, draft, archived or non-ready selection isn't. */
