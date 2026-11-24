@@ -16,6 +16,7 @@ import type { EntryFormValue } from "./EntryForm";
 import { buildPathLabel, resolveUnitUsers } from "../../utils/orgHierarchy";
 import { resolveMeetingLeadership } from "../../pages/return-register/meetingLeadership";
 import { leadershipRosterRoles, type LeaderParticipantRole } from "../../pages/return-register/leadershipRoster";
+import { ATTENDANCE_REQUIREMENT_VALUES, attendanceRequirementPatch, readAttendanceRequirement, type AttendanceRequirement } from "../../pages/return-register/attendanceRequirement";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ export interface DraftParticipantLink {
   member_category: MemberCategory;
   participant_type: MeetingRole;
   is_required: boolean;
+  attendance_requirement?: AttendanceRequirement;
   voting_eligible: boolean;
   quorum_eligible: boolean;
   selection_sources: Array<{
@@ -116,7 +118,7 @@ function buildDraft(
     org_path: userOrgPath(user, orgUnits),
     member_category: category,
     participant_type: role,
-    is_required: isRequired,
+    ...attendanceRequirementPatch(isRequired ? "Mandatory" : "Optional"),
     voting_eligible: voting,
     quorum_eligible: quorum,
     selection_sources: [source],
@@ -342,6 +344,16 @@ function SelectedCard({ link, onChange, onRemove, leaderRoles }: SelectedCardPro
               <option value="general">General</option>
             </select>
           </div>
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] text-[var(--muted-foreground)] w-16 shrink-0" htmlFor={`attendance-${link.id}`}>Attendance</label>
+            <select id={`attendance-${link.id}`} aria-label={`Attendance requirement for ${link.user_name}`}
+              value={readAttendanceRequirement(link) ?? ""} disabled={protectedLeader}
+              onChange={e => onChange({ ...link, ...attendanceRequirementPatch(e.target.value as AttendanceRequirement) })}
+              className="text-xs border border-[var(--border)] rounded px-1.5 py-0.5 bg-[var(--background)] text-[var(--foreground)] flex-1">
+              {readAttendanceRequirement(link) === null && <option value="" disabled>Choose attendance requirement</option>}
+              {ATTENDANCE_REQUIREMENT_VALUES.map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             {(["is_required", "voting_eligible", "quorum_eligible"] as const).map(flag => (
               <label key={flag} className="flex items-center gap-1.5 cursor-pointer">
@@ -349,7 +361,9 @@ function SelectedCard({ link, onChange, onRemove, leaderRoles }: SelectedCardPro
                   type="checkbox"
                   checked={!!link[flag] || (flag === "is_required" && protectedLeader)}
                   disabled={flag === "is_required" && protectedLeader}
-                  onChange={e => onChange({ ...link, [flag]: e.target.checked })}
+                  onChange={e => onChange(flag === "is_required"
+                    ? { ...link, ...attendanceRequirementPatch(e.target.checked ? "Mandatory" : "Optional") }
+                    : { ...link, [flag]: e.target.checked })}
                 />
                 <span className="text-[10px] text-[var(--muted-foreground)] capitalize">
                   {flag === "is_required" ? "Required" : flag === "voting_eligible" ? "Voting" : "Quorum"}
@@ -515,7 +529,7 @@ export function ParticipantSelectorStep({
   const protectLink = (link: DraftParticipantLink): DraftParticipantLink => {
     const roles = protectedRoles.get(link.user_id);
     if (!roles?.length) return link;
-    return { ...link, is_required: true, participant_type: roles.some(role => role === link.participant_type) ? link.participant_type : roles[0] };
+    return { ...link, ...attendanceRequirementPatch("Mandatory"), participant_type: roles.some(role => role === link.participant_type) ? link.participant_type : roles[0] };
   };
   const initialised = useRef(false);
   const [links, setLinks] = useState<DraftParticipantLink[]>(() => {
@@ -537,7 +551,7 @@ export function ParticipantSelectorStep({
         user = bmsUsers.find(u => u.name === name && isActive(u));
       }
       if (!user) continue;
-      const alreadyIn = stored.some(l => l.user_id === user!.id);
+      const alreadyIn = [...stored, ...autoLeaders].some(l => l.user_id === user!.id);
       if (alreadyIn) continue;
       // Determine member_category from quorum membership
       const isMember = quorumMemberships.some(m => m.user_id === user!.id);
