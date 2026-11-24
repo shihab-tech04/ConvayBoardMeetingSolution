@@ -19,7 +19,10 @@ describe("TEN-MTG-01 immutable SQL-backed company meeting drafts",()=>{
   });
   it("authorizes the company and pins only its published immutable template revision",()=>{
     expect(sql).toContain("auth.uid()");
-    expect(sql).toContain("convay_private.tenant_admin_authorized(p_tenant_id)");
+    expect(sql).toContain("m.tenant_id=p_tenant_id AND m.user_id=v_actor");
+    expect(sql).toContain("m.membership_role='tenant_admin'");
+    expect(sql).toContain("m.membership_state='active' AND m.revoked_at IS NULL");
+    expect(sql).toContain("p.account_status='active'");
     expect(sql).toContain("t.lifecycle_state IN ('provisioning','active')");
     expect(sql).toContain("c.tenant_id=p_tenant_id");
     expect(sql).toContain("c.published_revision=v_revision");
