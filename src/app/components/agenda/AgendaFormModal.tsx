@@ -34,6 +34,7 @@ import { UnifiedDocumentViewer } from "../documents/UnifiedDocumentViewer";
 import { DocumentComposerModal } from "../documents/DocumentComposerModal";
 import { agendaReference, validateCompleteAgenda } from "./agendaCreationFields";
 import { saveAgendaChildWithAck } from "./agendaChildPersistence";
+import { requireAgendaDocumentLinkAck } from "./agendaDocumentLinkConfirmation";
 import { convayAuth } from "../../services/supabase/convayAuth";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -573,8 +574,9 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Document link helpers ─────────────────────────────────────────────────
 
-  async function linkDoc(docId: string, childAgendaId: string) {
-    if (documentLinkBusy || linkReg.items.some(l => l.agenda_id === childAgendaId && l.document_id === docId)) return;
+  async function linkDoc(docId: string, childAgendaId: string, reportError = true): Promise<boolean> {
+    if (linkReg.items.some(l => l.agenda_id === childAgendaId && l.document_id === docId)) return true;
+    if (documentLinkBusy) return false;
     const existing = linkReg.items.filter(l => l.agenda_id === childAgendaId);
     const lid = generateId("ADL", linkReg.items.map(l => l.id));
     setDocumentLinkBusy(true);
@@ -587,9 +589,11 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
       if (saved !== true) throw new Error("Document link was not saved in SQL.");
       await linkReg.refresh?.();
       toast.success("Document linked.");
+      return true;
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Unable to link document.");
+      if (reportError) toast.error(error instanceof Error ? error.message : "Unable to link document.");
       await linkReg.refresh?.().catch(() => undefined);
+      return false;
     } finally { setDocumentLinkBusy(false); }
   }
 
@@ -1419,10 +1423,16 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
       initialSource="upload"
       sourceModule="agenda"
       initialAgendaId={cf.id ?? null}
-      onCreated={docId => {
-        const cid = cf.id ?? pendingChildIdRef.current;
-        if (cid) linkDoc(docId, cid);
-        setUploaderOpen(false);
+      onCreated={async docId => {
+        try {
+          const cid = cf.id ?? pendingChildIdRef.current;
+          await requireAgendaDocumentLinkAck(docId, cid, (documentId, agendaId) =>
+            linkDoc(documentId, agendaId, false));
+        } finally {
+          // A successfully saved document stays in the library even if linking
+          // fails; closing the composer exposes the existing retry picker.
+          setUploaderOpen(false);
+        }
       }}
     />
 
