@@ -4,6 +4,7 @@ import { Button } from "../../components/buttons/Button";
 import { AppTextField } from "../../components/forms/AppTextField";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import { MeetingTemplateMarketplace } from "../subscribers/MeetingTemplateMarketplace";
+import { CompanyMeetingDraftWizard } from "./CompanyMeetingDraftWizard";
 import { useAccessSnapshot } from "../../services/supabase/convayAccess";
 import {
   listCompanies, readCompany, enrollVerifiedCompanyMember, revokeCompanyMember,
@@ -41,6 +42,7 @@ export function CompanyAdminWorkspacePage(){
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
   const [templateEditorOpen,setTemplateEditorOpen]=useState(false);
+  const [stagedDraftEditorOpen,setStagedDraftEditorOpen]=useState(false);
 
   useEffect(()=>{
     let active=true;
@@ -204,6 +206,22 @@ export function CompanyAdminWorkspacePage(){
             <MeetingTemplateMarketplace key={profile.company.id}
               companyOnly initialCompanyId={profile.company.id}/>
           </div>}
+      </section>}
+    {canUse&&profile&&profile.company.id===selectedId&&
+      <section style={{marginTop:16}} aria-label="Company template-based draft workflow">
+        <div style={{...surface,display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+          <div>
+            <h2 style={{fontSize:17,fontWeight:650}}>Company meeting draft setup</h2>
+            <p style={note}>Save template-versioned SQL drafts without scheduling a meeting or activating LiveKit.</p>
+          </div>
+          <Button variant="secondary" size="sm" disabled={working||loading}
+            onClick={()=>setStagedDraftEditorOpen(value=>!value)}>
+            {stagedDraftEditorOpen?"Close meeting draft setup":"Configure company meeting draft"}
+          </Button>
+        </div>
+        {stagedDraftEditorOpen&&<div style={{marginTop:14}}>
+          <CompanyMeetingDraftWizard key={profile.company.id} tenantId={profile.company.id}/>
+        </div>}
       </section>}
     {confirmation&&<SConfirmModal
       title={confirmation.action==="assign"?"Add company member?":"Revoke company membership?"}
