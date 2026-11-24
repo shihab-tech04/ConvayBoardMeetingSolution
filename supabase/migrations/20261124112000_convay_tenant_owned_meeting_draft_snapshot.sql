@@ -1,6 +1,24 @@
--- TEN-MTG-01: independently secure tenant-owned meeting DRAFT lifecycle.
+-- TEN-MTG-01: independently secure company template draft staging lifecycle.
+-- Deliberately writes NO bms.meetings records: the authoritative tenant-claim
+-- guard must remain active until company SQL/Storage/LiveKit isolation certified.
 -- No scheduling, subscription activation, LiveKit access or legacy migration.
--- Each draft is tied to an immutable SQL-published company template version.
+-- Each staged draft retains an immutable SQL-published template version.
+CREATE TABLE IF NOT EXISTS convay_private.company_meeting_draft_staging (
+  draft_id text PRIMARY KEY,
+  tenant_id uuid NOT NULL REFERENCES convay_private.tenants(id) ON DELETE RESTRICT,
+  template_id uuid NOT NULL REFERENCES convay_private.meeting_template_catalog(id) ON DELETE RESTRICT,
+  template_revision integer NOT NULL CHECK (template_revision>0),
+  title text NOT NULL CHECK (length(btrim(title)) BETWEEN 3 AND 160),
+  definition jsonb NOT NULL,
+  values_json jsonb NOT NULL,
+  created_by uuid NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+ALTER TABLE convay_private.company_meeting_draft_staging ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON convay_private.company_meeting_draft_staging FROM PUBLIC,anon,authenticated;
+CREATE INDEX IF NOT EXISTS convay_company_meeting_draft_tenant_index
+  ON convay_private.company_meeting_draft_staging(tenant_id,created_at DESC);
+
 CREATE TABLE IF NOT EXISTS convay_private.tenant_meeting_draft_receipts (
   tenant_id uuid NOT NULL REFERENCES convay_private.tenants(id) ON DELETE RESTRICT,
   actor_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
@@ -38,55 +56,47 @@ DECLARE
   v_intent jsonb;
   v_receipt jsonb;
   v_existing convay_private.tenant_meeting_draft_receipts%ROWTYPE;
-  v_draft public.convay_entity_records%ROWTYPE;
+  v_draft convay_private.company_meeting_draft_staging%ROWTYPE;
   v_has_field boolean;
   v_field_count integer := 0;
 BEGIN
   IF v_actor IS NULL OR p_tenant_id IS NULL
-     OR p_action NOT IN ('list','read','create')
-     OR NOT convay_private.tenant_member_active(p_tenant_id) THEN
-    RAISE EXCEPTION 'Active company membership required'
-      USING ERRCODE='42501';
-  END IF;
-  SELECT m.membership_role INTO v_tenant_role
-  FROM convay_private.tenant_memberships m
-  WHERE m.tenant_id=p_tenant_id AND m.user_id=v_actor
-    AND m.membership_state='active' AND m.revoked_at IS NULL;
-  IF v_tenant_role IS NULL
-     OR (v_tenant_role<>'tenant_admin'
-         AND NOT convay_private.has_permission('mtg_create')) THEN
-    RAISE EXCEPTION 'Company meeting draft permission denied'
+    OR p_action NOT IN ('list','read','create')
+    OR NOT convay_private.tenant_admin_authorized(p_tenant_id)
+    OR NOT EXISTS (SELECT 1 FROM convay_private.tenants t
+      WHERE t.id=p_tenant_id AND t.lifecycle_state IN ('provisioning','active')) THEN
+    RAISE EXCEPTION 'Authorized active or provisioning company administrator required'
       USING ERRCODE='42501';
   END IF;
   IF p_action='list' THEN
     RETURN pg_catalog.jsonb_build_object('tenant_id',p_tenant_id,'drafts',COALESCE((
       SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
-        'meeting_id',m.record_id,
-        'title',m.payload->>'meeting_title',
-        'template_id',m.payload->>'template_id',
-        'template_revision',(m.payload->>'template_revision')::integer,
-        'status',m.payload->>'approval_status',
-        'created_at',m.payload->>'created_at'
+        'draft_id',m.draft_id,
+        'title',m.title,
+        'template_id',m.template_id,
+        'template_revision',m.template_revision,
+        'status','Staged Draft',
+        'created_at',m.created_at
       ) ORDER BY m.created_at DESC)
       FROM (
-        SELECT * FROM public.convay_entity_records x
-        WHERE x.entity_key='bms.meetings' AND x.tenant_id=p_tenant_id
-          AND x.payload->>'draft_origin'='company_template'
-          AND x.payload->>'approval_status'='Draft'
+        SELECT * FROM convay_private.company_meeting_draft_staging x
+        WHERE x.tenant_id=p_tenant_id
         ORDER BY x.created_at DESC LIMIT 100
       ) m
     ),'[]'::jsonb),'meeting_activation_enabled',false);
   END IF;
   IF p_action='read' THEN
-    v_record_id:=NULLIF(pg_catalog.btrim(p_payload->>'meeting_id'),'');
-    SELECT * INTO v_draft FROM public.convay_entity_records m
-    WHERE m.entity_key='bms.meetings'
-      AND m.record_id=v_record_id AND m.tenant_id=p_tenant_id
-      AND m.payload->>'draft_origin'='company_template'
-      AND m.payload->>'approval_status'='Draft';
-    IF NOT FOUND THEN RAISE EXCEPTION 'Company meeting draft not found' USING ERRCODE='P0002'; END IF;
+    v_record_id:=NULLIF(pg_catalog.btrim(p_payload->>'draft_id'),'');
+    SELECT * INTO v_draft FROM convay_private.company_meeting_draft_staging m
+    WHERE m.draft_id=v_record_id AND m.tenant_id=p_tenant_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Company meeting staging draft not found' USING ERRCODE='P0002'; END IF;
     RETURN pg_catalog.jsonb_build_object('tenant_id',p_tenant_id,
-      'draft',v_draft.payload,'meeting_activation_enabled',false);
+      'draft',pg_catalog.jsonb_build_object(
+        'draft_id',v_draft.draft_id,'title',v_draft.title,
+        'template_id',v_draft.template_id,'template_revision',v_draft.template_revision,
+        'definition',v_draft.definition,'values',v_draft.values_json,
+        'created_at',v_draft.created_at,'status','Staged Draft'),
+      'meeting_activation_enabled',false);
   END IF;
   IF p_payload IS NULL OR pg_catalog.jsonb_typeof(p_payload)<>'object' THEN
     RAISE EXCEPTION 'Meeting draft payload must be an object' USING ERRCODE='22023';
@@ -201,31 +211,23 @@ BEGIN
     END IF;
   END LOOP;
 
-  v_record_id:='MTG-'||pg_catalog.to_char(pg_catalog.now(),'YYYY')
-    ||'-'||pg_catalog.upper(pg_catalog.left(pg_catalog.replace(pg_catalog.gen_random_uuid()::text,'-',''),16));
-  INSERT INTO public.convay_entity_records(entity_key,record_id,tenant_id,payload)
-  VALUES ('bms.meetings',v_record_id,p_tenant_id,
-    pg_catalog.jsonb_build_object(
-      'id',v_record_id,'meeting_id',v_record_id,'meeting_title',v_title,
-      'meeting_type',v_catalog.title,'approval_status','Draft',
-      'readiness','In Preparation','draft_origin','company_template',
-      'template_id',v_template_id,'template_revision',v_revision,
-      'template_snapshot',v_definition,'template_values',v_values,
-      'created_by',v_actor,'created_at',pg_catalog.clock_timestamp(),
-      'updated_at',pg_catalog.clock_timestamp()
-    ));
-  SELECT * INTO v_draft FROM public.convay_entity_records m
-  WHERE m.entity_key='bms.meetings' AND m.record_id=v_record_id
-    AND m.tenant_id=p_tenant_id;
-  IF NOT FOUND OR v_draft.payload->>'template_id' IS DISTINCT FROM v_template_id::text
-    OR (v_draft.payload->>'template_revision')::integer IS DISTINCT FROM v_revision
-    OR v_draft.payload->'template_snapshot' IS DISTINCT FROM v_definition THEN
-    RAISE EXCEPTION 'SQL meeting draft readback mismatch' USING ERRCODE='P0002';
+  v_record_id:='DRAFT-'||pg_catalog.upper(pg_catalog.left(
+    pg_catalog.replace(pg_catalog.gen_random_uuid()::text,'-',''),20));
+  INSERT INTO convay_private.company_meeting_draft_staging(
+    draft_id,tenant_id,template_id,template_revision,title,definition,values_json,created_by)
+  VALUES (v_record_id,p_tenant_id,v_template_id,v_revision,v_title,v_definition,v_values,v_actor);
+  SELECT * INTO v_draft FROM convay_private.company_meeting_draft_staging m
+  WHERE m.draft_id=v_record_id AND m.tenant_id=p_tenant_id;
+  IF NOT FOUND OR v_draft.template_id IS DISTINCT FROM v_template_id
+    OR v_draft.template_revision IS DISTINCT FROM v_revision
+    OR v_draft.definition IS DISTINCT FROM v_definition
+    OR v_draft.values_json IS DISTINCT FROM v_values THEN
+    RAISE EXCEPTION 'SQL staged meeting draft readback mismatch' USING ERRCODE='P0002';
   END IF;
   v_receipt:=pg_catalog.jsonb_build_object(
-    'tenant_id',p_tenant_id,'meeting_id',v_record_id,
+    'tenant_id',p_tenant_id,'draft_id',v_record_id,
     'template_id',v_template_id,'template_revision',v_revision,
-    'request_id',v_request_id,'status','Draft','meeting_activation_enabled',false);
+    'request_id',v_request_id,'status','Staged Draft','meeting_activation_enabled',false);
   INSERT INTO convay_private.tenant_meeting_draft_receipts(
     tenant_id,actor_id,request_id,intent,receipt
   ) VALUES (p_tenant_id,v_actor,v_request_id,v_intent,v_receipt);
