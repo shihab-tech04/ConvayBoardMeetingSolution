@@ -5,6 +5,7 @@ import { AppTextField } from "../../components/forms/AppTextField";
 import { AppSelectField } from "../../components/forms/AppSelectField";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
 import { listCompanies, type CompanyDirectory } from "../../services/saas/companyDirectory";
+import { moveTemplateItem } from "../../services/saas/templateEditorOrdering";
 import {
   listManagedTemplates,readManagedTemplate,saveTemplateVersion,
   validateMeetingTemplateDefinition,
@@ -49,6 +50,9 @@ export function MeetingTemplateMarketplace({
   const [error,setError]=useState("");
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const [confirmPublish,setConfirmPublish]=useState<{template:MeetingTemplateVersion;requestId:string}|null>(null);
+  const [previewOpen,setPreviewOpen]=useState(false);
+  const [previewStep,setPreviewStep]=useState(0);
+  const activePreviewStep=Math.min(previewStep,Math.max(0,draft.definition.steps.length-1));
 
   const updateDraft=(update:(previous:Draft)=>Draft)=>{
     setDraft(update);setRequestId(crypto.randomUUID());setError("");
@@ -61,6 +65,14 @@ export function MeetingTemplateMarketplace({
     updateSteps(draft.definition.steps.map((step,i)=>i===stepIndex
       ? {...step,fields:step.fields.map((field,j)=>j===fieldIndex?{...field,...change}:field)}
       : step));
+  const moveStep=(index:number,direction:-1|1)=>{
+    updateSteps(moveTemplateItem(draft.definition.steps,index,direction));
+  };
+  const moveField=(stepIndex:number,fieldIndex:number,direction:-1|1)=>{
+    const step=draft.definition.steps[stepIndex];
+    if (!step) return;
+    updateStep(stepIndex,{fields:moveTemplateItem(step.fields,fieldIndex,direction)});
+  };
   const addStep=()=>{
     if(draft.definition.steps.length>=20) return;
     updateSteps([...draft.definition.steps,{
@@ -84,7 +96,7 @@ export function MeetingTemplateMarketplace({
   };
   useEffect(()=>{
     let active=true;
-    setError("");setLoading(true);setSelected(null);setSourceId("");setDraft(freshDraft());
+    setError("");setLoading(true);setSelected(null);setSourceId("");setDraft(freshDraft());setPreviewOpen(false);setPreviewStep(0);
     void Promise.all([listManagedTemplates(tenantId),listManagedTemplates(null),listCompanies()])
       .then(([own,global,allCompanies])=>{
         if(!active)return;
@@ -217,11 +229,15 @@ export function MeetingTemplateMarketplace({
         </div>
         {draft.definition.steps.map((step,i)=><section key={step.id}
           style={{borderTop:"1px solid var(--border-color,#dce1e8)",padding:"12px 0"}}>
-          <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <div style={{flex:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <div style={{flex:1,minWidth:190}}>
               <AppTextField id={"saas-step-"+step.id} label={"Step "+(i+1)+" title"} required
                 value={step.title} onChange={title=>updateStep(i,{title})}/>
             </div>
+            <Button size="sm" variant="tertiary" aria-label={"Move step "+(i+1)+" up"}
+              disabled={busy||i===0} onClick={()=>moveStep(i,-1)}>Move up</Button>
+            <Button size="sm" variant="tertiary" aria-label={"Move step "+(i+1)+" down"}
+              disabled={busy||i===draft.definition.steps.length-1} onClick={()=>moveStep(i,1)}>Move down</Button>
             <Button size="sm" variant="tertiary" disabled={busy||draft.definition.steps.length===1}
               onClick={()=>updateSteps(draft.definition.steps.filter((_,j)=>j!==i))}>Remove</Button>
           </div>
@@ -238,6 +254,10 @@ export function MeetingTemplateMarketplace({
               id={"saas-options-"+field.id} label="Options (comma-separated)"
               value={(field.options??[]).join(", ")}
               onChange={value=>updateField(i,j,{options:value.split(",").map(t=>t.trim()).filter(Boolean)})}/>}
+            <Button size="sm" variant="tertiary" aria-label={"Move field "+(j+1)+" in step "+(i+1)+" up"}
+              disabled={busy||j===0} onClick={()=>moveField(i,j,-1)}>Move field up</Button>
+            <Button size="sm" variant="tertiary" aria-label={"Move field "+(j+1)+" in step "+(i+1)+" down"}
+              disabled={busy||j===step.fields.length-1} onClick={()=>moveField(i,j,1)}>Move field down</Button>
             <Button size="sm" variant="tertiary" disabled={busy}
               onClick={()=>updateStep(i,{fields:step.fields.filter((_,k)=>k!==j)})}>Remove field</Button>
           </div>)}
@@ -254,10 +274,46 @@ export function MeetingTemplateMarketplace({
           </Button>}
           {tenantId&&sourceId&&<Button variant="secondary" disabled={busy}
             onClick={()=>void save("copy")}>Copy starter to company</Button>}
+          <Button variant="secondary" disabled={busy} aria-expanded={previewOpen}
+            onClick={()=>{setPreviewStep(0);setPreviewOpen(v=>!v);}}>
+            {previewOpen?"Close wizard preview":"Preview wizard"}
+          </Button>
         </div>
         <p role="status" style={{...note,marginTop:10}}>Publishing a template does not enable a paid tenant, change an existing meeting or grant access to LiveKit.</p>
       </section>
     </div>
+    {previewOpen&&<section aria-label="Meeting wizard configuration preview" style={{...panel,marginTop:18}}>
+      <h3 style={{fontWeight:650,fontSize:18}}>Meeting wizard preview</h3>
+      <p role="status" style={{...note,margin:"6px 0 14px"}}>
+        Configuration preview only: no meeting is created, scheduled or published here.
+        Tenant isolation and the real meeting-wizard runtime are separate release gates.
+      </p>
+      <nav aria-label="Template preview steps" style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
+        {draft.definition.steps.map((step,i)=><Button key={step.id} variant={activePreviewStep===i?"primary":"secondary"}
+          size="sm" aria-current={activePreviewStep===i?"step":undefined} onClick={()=>setPreviewStep(i)}>
+          {i+1}. {step.title}
+        </Button>)}
+      </nav>
+      <h4 style={{fontWeight:650,fontSize:16,marginBottom:10}}>
+        Step {activePreviewStep+1} of {draft.definition.steps.length}: {draft.definition.steps[activePreviewStep]?.title}
+      </h4>
+      {draft.definition.steps[activePreviewStep]?.fields.length===0
+        ? <p style={note}>This step contains no configured fields.</p>
+        : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
+            {draft.definition.steps[activePreviewStep].fields.map(field=><div key={field.id}
+              style={{border:"1px solid var(--border-color,#dce1e8)",borderRadius:10,padding:12}}>
+              <strong>{field.label}{field.required?" *":""}</strong>
+              <p style={note}>{field.type.replace(/_/g," ")} · {field.required?"Required":"Optional"}</p>
+              {field.options?.length ? <p style={note}>Options: {field.options.join(", ")}</p> : null}
+            </div>)}
+          </div>}
+      <div style={{display:"flex",justifyContent:"space-between",gap:12,marginTop:18}}>
+        <Button variant="secondary" disabled={activePreviewStep===0}
+          onClick={()=>setPreviewStep(i=>Math.max(0,i-1))}>Previous preview step</Button>
+        <Button variant="secondary" disabled={activePreviewStep>=draft.definition.steps.length-1}
+          onClick={()=>setPreviewStep(i=>Math.min(draft.definition.steps.length-1,i+1))}>Next preview step</Button>
+      </div>
+    </section>}
     {confirmPublish&&<SConfirmModal
       title="Publish this meeting template version?"
       message={"Publish immutable revision "+confirmPublish.template.current_revision+" of "+confirmPublish.template.title+"? Existing meeting records will not be changed."}
