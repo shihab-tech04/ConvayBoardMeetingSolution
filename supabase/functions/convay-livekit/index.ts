@@ -2,7 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { AccessToken, RoomServiceClient } from "npm:livekit-server-sdk@2.19.2";
 import { checkOnlineAdmission, checkOnlineRoomCapacity, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
 import { canPublishOnlineMeeting } from "./publisherGrant.ts";
-import { checkLiveKitTenantScope, scopedRoomIdentity, type SqlEntity } from "./tenantScope.ts";
+import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, type SqlEntity } from "./tenantScope.ts";
 
 /**
  * Server-side LiveKit admission. The browser never holds an API secret.
@@ -65,10 +65,6 @@ async function savedMeeting(meetingId: string, jwt: string): Promise<SqlEntity<O
   if (matches.length > 1) throw new Error("Ambiguous meeting identity");
   return matches[0] ?? null;
 }
-async function opaqueId(kind: string, value: string): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("convay-livekit-v1:" + kind + ":" + value));
-  return "cv-" + kind + "-" + Array.from(new Uint8Array(hash)).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 40);
-}
 Deno.serve(async req => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: headers(req) });
   if (req.method !== "POST") return response(req, 405, { error: "Method not allowed." });
@@ -102,9 +98,10 @@ Deno.serve(async req => {
     );
     const meeting = await savedMeeting(meetingId, jwt);
     if (!meeting) return response(req, 404, { error: "The saved meeting was not found." });
+    const canonicalMeetingId = meeting.payload.meeting_id ?? meeting.payload.id ?? meetingId;
     const [links, sessions] = await Promise.all([
-      entityRows<OnlineLink>("bms.meetingParticipantLinks", meetingId, jwt),
-      entityRows<OnlineSession>("bms.liveSessions", meetingId, jwt),
+      entityRows<OnlineLink>("bms.meetingParticipantLinks", canonicalMeetingId, jwt),
+      entityRows<OnlineSession>("bms.liveSessions", canonicalMeetingId, jwt),
     ]);
     // SQL RLS first authorizes each row. Compare their authoritative tenant
     // columns as a second boundary before granting any provider token.
@@ -135,10 +132,7 @@ Deno.serve(async req => {
     if (session.reopen_started_at && (!session.id || !/^SES-[A-Za-z0-9_-]+-R[0-9]+$/.test(session.id))) {
       return response(req, 409, { error: "Recovered meeting session identity is invalid." });
     }
-    const legacyRoomIdentity = session.reopen_started_at
-      ? `${meeting.payload.id ?? meetingId}:${session.id}`
-      : (meeting.payload.id ?? meetingId);
-    const room = await opaqueId("room", scopedRoomIdentity(meeting, legacyRoomIdentity));
+    const room = await opaqueId("room", resolveLiveKitRoomIdentity(meeting, session, canonicalMeetingId));
     const roomService = new RoomServiceClient(url.replace(/^wss:/i, "https:"), key, secret);
     let liveRoom = (await roomService.listRooms([room])).find(item => item.name === room) ?? null;
     if (!liveRoom) {

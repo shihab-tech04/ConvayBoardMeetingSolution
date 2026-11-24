@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { checkLiveKitTenantScope, scopedRoomIdentity, type SqlEntity }
+import { checkLiveKitTenantScope, scopedRoomIdentity, resolveLiveKitRoomIdentity, type SqlEntity }
   from "../../supabase/functions/convay-livekit/tenantScope";
 import type { OnlineMeeting, OnlineSession, OnlineLink }
   from "../../supabase/functions/convay-livekit/admission";
@@ -71,7 +71,8 @@ describe("TEN-LK-01 LiveKit tenant and room isolation",()=>{
     expect(helper).not.toMatch(/auth\.jwt\(|user_metadata\s*\]|req\.body/);
     expect(edgeSource).toContain('select: "tenant_id,payload"');
     expect(edgeSource).toContain("checkLiveKitTenantScope(meeting, [...links, ...sessions])");
-    expect(edgeSource).toContain("scopedRoomIdentity(meeting, legacyRoomIdentity)");
+    expect(edgeSource).toContain("resolveLiveKitRoomIdentity(meeting, session, canonicalMeetingId)");
+    expect(helper).toContain("scopedRoomIdentity(meeting, legacyRoomIdentity)");
     expect(edgeSource.indexOf("checkLiveKitTenantScope(meeting"))
       .toBeLessThan(edgeSource.indexOf("const decision = checkOnlineAdmission"));
     expect(edgeSource).toContain("links: links.map(row => row.payload)");
@@ -84,5 +85,28 @@ describe("TEN-LK-01 LiveKit tenant and room isolation",()=>{
     expect(edgeSource).toContain("checkOnlineRoomCapacity(liveRoom, MAX_LIVEKIT_PARTICIPANTS)");
     expect(edgeSource).toContain("session.reopen_started_at");
     expect(edgeSource).toContain('roomAdmin: false, roomCreate: false, roomList: false');
+  });
+});
+
+
+describe("LiveKit token/attendance room parity", () => {
+  it("uses the same shared room resolver in both gateways", () => {
+    const attendance = readFileSync("supabase/functions/convay-attendance/index.ts", "utf8");
+    expect(attendance).toContain('resolveLiveKitRoomIdentity, opaqueId');
+    expect(attendance).toContain('resolveLiveKitRoomIdentity(meeting, session, meetingId)');
+    expect(attendance).toContain('checkLiveKitTenantScope(meetingRow, [...linkRows, ...sessions])');
+    expect(attendance).toContain('confirmedInLiveKit(meetingRow, session, canonicalMeetingId, participantId)');
+    expect(attendance).toContain('select: "tenant_id,payload"');
+    expect(edgeSource).toContain('resolveLiveKitRoomIdentity(meeting, session, canonicalMeetingId)');
+  });
+  it("preserves legacy identities and separates companies and recovered sessions", () => {
+    const initial = {id:"SES-42", session_status:"active"};
+    const reopened = {...initial, id:"SES-42-R1", reopen_started_at:"2026-11-24T00:00:00Z"};
+    expect(resolveLiveKitRoomIdentity(record(null),initial,"alias")).toBe("MTG-42");
+    expect(resolveLiveKitRoomIdentity(record(alpha),initial,"alias")).toBe("tenant:"+alpha+":MTG-42");
+    expect(resolveLiveKitRoomIdentity(record(alpha),reopened,"alias")).toBe("tenant:"+alpha+":MTG-42:SES-42-R1");
+    expect(resolveLiveKitRoomIdentity(record(null),reopened,"alias")).toBe("MTG-42:SES-42-R1");
+    expect(resolveLiveKitRoomIdentity(record(beta),reopened,"alias")).not.toBe(resolveLiveKitRoomIdentity(record(alpha),reopened,"alias"));
+    expect(() => resolveLiveKitRoomIdentity(record(alpha),{...reopened,id:"invalid"},"alias")).toThrow();
   });
 });

@@ -50,3 +50,18 @@ export function scopedRoomIdentity(
   }
   return "tenant:" + meeting.tenant_id.toLowerCase() + ":" + legacyRoomIdentity;
 }
+
+/** Canonical room identity shared by token issuance and attendance verification. */
+export function resolveLiveKitRoomIdentity(meeting: SqlEntity<OnlineMeeting>, session: OnlineSession, meetingId: string): string {
+  if (session.reopen_started_at && (!session.id || !/^SES-[A-Za-z0-9_-]+-R[0-9]+$/.test(session.id))) {
+    throw new Error("Recovered meeting session identity is invalid.");
+  }
+  const id = meeting.payload.id ?? meeting.payload.meeting_id ?? meetingId;
+  const legacyRoomIdentity = session.reopen_started_at ? `${id}:${session.id}` : id;
+  return scopedRoomIdentity(meeting, legacyRoomIdentity);
+}
+
+export async function opaqueId(kind: string, value: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("convay-livekit-v1:" + kind + ":" + value));
+  return "cv-" + kind + "-" + Array.from(new Uint8Array(hash)).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 40);
+}
