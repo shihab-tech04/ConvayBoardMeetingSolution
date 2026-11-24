@@ -14,6 +14,7 @@ import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/c
 import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition, isMinutesLifecycleAction, eligibleMinutesSourceMeetings } from "./minutesSourceIntegrity";
 import type { MinutesLifecycleAction } from "./minutesSourceIntegrity";
 import { buildMinutesHtmlExport } from "./minutesHtmlExport";
+import { finalizeOwnSuperAdminContent } from "../../services/supabase/convaySuperAdminAutoApproval";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
 
@@ -327,6 +328,13 @@ export function MinutesManagementPage() {
         created_at:         new Date().toISOString(),
       });
       if (saved !== true) throw new Error("Minutes were not saved. Refresh the register and retry.");
+      // SQL alone authorizes the root creator and stamps all four review
+      // transitions and immutable approver evidence. Never auto-sign minutes.
+      if (readAccessSnapshot().is_super_admin) {
+        await finalizeOwnSuperAdminContent("minutes",minsId);
+        toast.success("Minutes automatically approved; signing remains a separate action.");
+      }
+      await registry.refresh?.();
       return true;
     },
     async onRowUpdate(id, values) {
