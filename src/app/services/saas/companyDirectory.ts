@@ -218,3 +218,79 @@ export async function revokeCompanyMember(
   });
   return {member,profile};
 }
+
+
+/** TEN-ONB-03: platform-authorized, pending company membership invitations.
+ * These records NEVER activate tenant workspaces or subscription entitlements.
+ */
+export type PendingCompanyInvitation = {
+  tenant_id:string;user_id:string;email:string;
+  membership_role:CompanyMembershipRole;
+  status:"pending"|"claimed"|"cancelled";
+  request_id:string;requested_at:string;expires_at:string;claimed_at:string|null;
+};
+export type CompanyInvitationReceipt = {
+  tenant_id:string;user_id:string;email:string;
+  membership_role:CompanyMembershipRole;
+  status:"pending"|"cancelled";
+  request_id:string;audit_event_id:number;
+  tenant_active:false;meeting_access_activated:false;
+};
+function requireInvitedEmail(email:string) {
+  const clean=email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean) || clean.length>254) {
+    throw new Error("Enter a valid pending Convay invitation email");
+  }
+  return clean;
+}
+export async function listPendingCompanyInvitations(tenantId:string):Promise<PendingCompanyInvitation[]> {
+  if (!validUuid(tenantId)) throw new Error("Invalid company scope");
+  const result=await adminRpc<{tenant_id:string;invites:PendingCompanyInvitation[]}>(
+    "convay_company_invitation",{p_action:"list",p_tenant_id:tenantId,
+      p_email:null,p_member_role:null,p_request_id:null});
+  if (result.tenant_id!==tenantId || !Array.isArray(result.invites)
+    || result.invites.some(invite=>invite.tenant_id!==tenantId
+      || !validUuid(invite.user_id) || !validUuid(invite.request_id)
+      || typeof invite.email!=="string"
+      || !["member","tenant_admin"].includes(invite.membership_role)
+      || !["pending","claimed","cancelled"].includes(invite.status))) {
+    throw new Error("Company invitation SQL directory did not match the authorized company");
+  }
+  return result.invites;
+}
+async function transitionCompanyInvitation(
+  action:"queue"|"cancel",tenantId:string,email:string,
+  role:CompanyMembershipRole|null,requestId:string,
+):Promise<{receipt:CompanyInvitationReceipt;invites:PendingCompanyInvitation[]}> {
+  if (!validUuid(tenantId)||!validUuid(requestId)
+    || (action==="queue" && !["member","tenant_admin"].includes(role??""))) {
+    throw new Error("Valid company, invitation role and request ID are required");
+  }
+  const clean=requireInvitedEmail(email);
+  const receipt=await adminRpc<CompanyInvitationReceipt>("convay_company_invitation",{
+    p_action:action,p_tenant_id:tenantId,p_email:clean,
+    p_member_role:role,p_request_id:requestId,
+  });
+  if (receipt.tenant_id!==tenantId || !validUuid(receipt.user_id)
+    || receipt.email!==clean || receipt.request_id!==requestId
+    || receipt.status!==(action==="queue"?"pending":"cancelled")
+    || receipt.tenant_active!==false || receipt.meeting_access_activated!==false
+    || !Number.isSafeInteger(receipt.audit_event_id) || receipt.audit_event_id<1
+    || (role!==null && receipt.membership_role!==role)) {
+    throw new Error("SQL did not confirm the company invitation transition; refresh before retrying");
+  }
+  const invites=await listPendingCompanyInvitations(tenantId);
+  if (!invites.some(item=>item.user_id===receipt.user_id
+     && item.email.toLowerCase()===clean
+     && item.status===receipt.status
+     && item.membership_role===receipt.membership_role)) {
+    throw new Error("Company invitation was acknowledged but SQL readback is stale; refresh before retrying");
+  }
+  return {receipt,invites};
+}
+export const queuePendingCompanyInvitation=(tenantId:string,email:string,
+  role:CompanyMembershipRole,requestId:string)=>
+  transitionCompanyInvitation("queue",tenantId,email,role,requestId);
+export const cancelPendingCompanyInvitation=(tenantId:string,email:string,
+  requestId:string)=>
+  transitionCompanyInvitation("cancel",tenantId,email,null,requestId);

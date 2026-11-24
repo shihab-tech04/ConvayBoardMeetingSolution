@@ -118,6 +118,17 @@ Deno.serve(async (req: Request) => {
         .update({ account_status: "active", updated_at: new Date().toISOString() })
         .eq("user_id", auth.user.id).select(fields).single();
       if (activationError || !user) return response(500, { error: "Password saved; Convay could not activate the profile. Retry from the invitation link." });
+      // A company assignment is queued only by the Platform Super Admin.
+      // Claim it in the same SQL transaction before finalizing the invitation.
+      // The service role never accepts a tenant/role from the invitee request.
+      const { data: companyClaim, error: companyClaimError } = await admin.rpc(
+        "convay_claim_pending_company_invites", { p_user_id: auth.user.id },
+      );
+      if (companyClaimError || !companyClaim || companyClaim.user_id !== auth.user.id
+          || !Array.isArray(companyClaim.claimed) || companyClaim.tenant_active !== false
+          || companyClaim.meeting_access_activated !== false) {
+        return response(503, { error: "Account activated, but company membership could not be verified. Retry this invitation once; no paid workspace access was granted." });
+      }
       const { error: metadataError } = await admin.auth.admin.updateUserById(auth.user.id, {
         app_metadata: { ...appMetadata, convay_invitation_status: "accepted" },
       });
@@ -344,6 +355,20 @@ Deno.serve(async (req: Request) => {
         : "Account status could not be reconciled between Auth and SQL. Verify both records before retrying." });
     }
 
+    // A claimed tenant membership is protected by a restrictive Auth FK.
+    // Check this private server-only SQL contract BEFORE deleting profile/roles;
+    // otherwise a subsequent Auth deletion failure would orphan the account.
+    const { data: deletionReadiness, error: readinessError } = await admin.rpc(
+      "convay_user_deletion_readiness", { p_user_id: body.user_id },
+    );
+    if (readinessError || !deletionReadiness || deletionReadiness.user_id !== body.user_id
+        || typeof deletionReadiness.can_delete !== "boolean"
+        || !Number.isSafeInteger(deletionReadiness.company_membership_count)) {
+      return response(503, { error: "Unable to verify company records; user deletion was not started." });
+    }
+    if (!deletionReadiness.can_delete) {
+      return response(409, { error: "This account has company membership history. Preserve the account and complete audited company offboarding before deletion." });
+    }
     // Remove both profile and identity, preserving the independent audit trail.
     const { error: profileDeleteError } = await admin.from("user_profiles")
       .delete().eq("user_id", body.user_id);
