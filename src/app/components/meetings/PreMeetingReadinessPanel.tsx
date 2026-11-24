@@ -28,14 +28,13 @@ import {
 } from "../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../data/bmsUsers";
 import { calculateMeetingQuorum, quorumStatusLabel } from "../../utils/quorumCalculation";
+import { readReadinessAttendance, readinessAttendancePatch, PRESENT_STATES, READINESS_STATES, type ReadinessAttendance } from "../../pages/return-register/readinessAttendance";
 import { PrimaryButton } from "../buttons/PrimaryButton";
 import { SecondaryButton } from "../buttons/SecondaryButton";
 
 // ─── Attendance states ────────────────────────────────────────────────────────
 
-type ReadinessAttendance = "Not Joined" | "Present" | "Temporarily Away" | "Left" | "Excused" | "Recused";
-
-const PRESENT_STATES: ReadinessAttendance[] = ["Present", "Temporarily Away"];
+type AttendanceEdit = { status: ReadinessAttendance; baseline: string };
 
 // ─── Section header ───────────────────────────────────────────────────────────
 
@@ -98,15 +97,18 @@ interface PreMeetingReadinessPanelProps {
 }
 
 export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }: PreMeetingReadinessPanelProps) {
-  const { items: meetings }           = useMeetingRegistry();
-  const { items: participantLinks }   = useMeetingParticipantLinkRegistry();
+  const meetingRegistry = useMeetingRegistry();
+  const participantRegistry = useMeetingParticipantLinkRegistry();
+  const { items: meetings } = meetingRegistry;
+  const { items: participantLinks } = participantRegistry;
   const { items: agendaLinks }        = useMeetingAgendaLinkRegistry();
   const { items: agendaDocLinks }     = useAgendaDocumentLinkRegistry();
   const { items: allDocuments }       = useDocumentRegistry();
   const { items: govBodies }          = useGovernanceRegistry();
   const { items: quorumRules }        = useQuorumRuleRegistry();
   const { items: bmsUsers }           = useBmsUserRegistry();
-  const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = useAttendanceRegistry();
+  const attendanceRegistry = useAttendanceRegistry();
+  const { items: attendanceItems, add: addAttendanceRec, update: updateAttendanceRec } = attendanceRegistry;
 
   const meeting = meetings.find(m => m.meeting_id === meetingId);
   const myLinks = participantLinks.filter(l => l.meeting_id === meetingId);
@@ -117,21 +119,35 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
     return bmsUsers.find(u => u.id === userId || u.user_id === userId);
   }, [bmsUsers]);
 
-  // ── Local attendance state ─────────────────────────────────────────────────
-  const [attendanceMap, setAttendanceMap] = useState<Record<string, ReadinessAttendance>>(() => {
-    const init: Record<string, ReadinessAttendance> = {};
-    for (const l of myLinks) {
-      const existing = attendanceItems.find(a => a.meeting_id === meetingId && a.participant_id === l.user_id);
-      if (existing) {
-        const mapped: ReadinessAttendance =
-          existing.check_in_time ? "Present" : "Not Joined";
-        init[l.user_id] = mapped;
-      } else {
-        init[l.user_id] = "Not Joined";
-      }
-    }
-    return init;
-  });
+  // SQL registry reads can arrive after mount. Keep unsaved selections separate
+  // from the current persisted state; never infer presence from check-in alone.
+  const reopened = Boolean((meeting as { reopened_at?: unknown } | undefined)?.reopened_at);
+  const persisted = readReadinessAttendance(meetingId, myLinks, attendanceItems, { reopened });
+  const hasSessionAttendance = attendanceItems.some(row => row.meeting_id === meetingId && myLinks.some(link => link.user_id === row.participant_id) && Boolean((row as typeof row & { live_session_id?: unknown }).live_session_id || (row as typeof row & { session_id?: unknown }).session_id));
+  const sourceRows = [meetingRegistry, participantRegistry, attendanceRegistry];
+  const sourceLoading = sourceRows.some(source => source.loading === true);
+  const sourceFailure = sourceRows.map(source => source.error).find(Boolean);
+  const sourceError = sourceLoading ? "Loading authoritative readiness records…"
+    : sourceFailure ? "Readiness records could not be loaded. Refresh and retry."
+    : !meeting ? "Saved meeting unavailable. Refresh and retry."
+    : reopened || hasSessionAttendance ? "Session-scoped attendance must be confirmed in the live workspace."
+    : persisted.conflicts.length ? persisted.conflicts.join("; ") : "";
+  const [editScope, setEditScope] = useState<{ meetingId: string; values: Record<string, AttendanceEdit> }>({ meetingId, values: {} });
+  const edits = editScope.meetingId === meetingId ? editScope.values : {};
+  const attendanceMap: Record<string, ReadinessAttendance> = Object.fromEntries(
+    Object.entries(persisted.values).map(([userId, value]) => [userId, edits[userId]?.status ?? value]));
+  const baselineFor = (userId: string) => JSON.stringify(attendanceItems
+    .filter(row => row.meeting_id === meetingId && row.participant_id === userId)
+    .map(row => [row.id, attendanceRegistry.getRevision?.(row.id), row]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+  const changeAttendance = (userId: string, status: ReadinessAttendance) => {
+    if (sourceError || !Object.prototype.hasOwnProperty.call(persisted.values, userId)) return;
+    setEditScope(prev => {
+      const values = { ...(prev.meetingId === meetingId ? prev.values : {}) };
+      if (status === persisted.values[userId]) delete values[userId];
+      else values[userId] = { status, baseline: values[userId]?.baseline ?? baselineFor(userId) };
+      return { meetingId, values };
+    });
+  };
 
   const [overrideReason, setOverrideReason] = useState("");
   const [showOverride, setShowOverride] = useState(false);
@@ -209,20 +225,20 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
     attendanceEditVersion.current += 1;
     const current = attendanceMap[userId] ?? "Not Joined";
     const next: ReadinessAttendance = PRESENT_STATES.includes(current) ? "Not Joined" : "Present";
-    setAttendanceMap(prev => ({ ...prev, [userId]: next }));
+    changeAttendance(userId, next);
   };
 
   const setAttendanceStatus = (userId: string, status: ReadinessAttendance) => {
     if (attendanceSaveInFlight.current || startRequested.current) return;
     attendanceEditVersion.current += 1;
-    setAttendanceMap(prev => ({ ...prev, [userId]: status }));
+    changeAttendance(userId, status);
   };
 
   // ── Save attendance to registry ───────────────────────────────────────────
   // This UI guard awaits real SQL-backed registry ACKs. It does not replace
   // the WS0-owned atomic, actor-scoped attendance/quorum backend command.
   const saveAttendance = useCallback(async (): Promise<boolean> => {
-    if (attendanceSaveInFlight.current) return false;
+    if (attendanceSaveInFlight.current || sourceError) return false;
     attendanceSaveInFlight.current = true;
     setSavingAttendance(true);
     setAttendanceError("");
@@ -230,26 +246,38 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
     const editVersion = attendanceEditVersion.current;
     try {
       const now = new Date().toISOString();
-      for (const [userId, status] of Object.entries(requested)) {
+      const written: Array<{ id: string; userId: string; status: ReadinessAttendance }> = [];
+      // Validate all local edits before touching SQL; a refresh must not turn
+      // an outdated user selection into a write against the latest revision.
+      for (const [userId, edit] of Object.entries(edits)) {
+        if (!Object.prototype.hasOwnProperty.call(persisted.values, userId)) throw new Error("Participant assignment changed. Refresh and retry.");
+        if (persisted.values[userId] !== edit.status && baselineFor(userId) !== edit.baseline) {
+          throw new Error("Attendance changed in SQL. Review the current status and select it again before saving.");
+        }
+      }
+      for (const [userId, edit] of Object.entries(edits)) {
+        const status = edit.status;
+        if (persisted.values[userId] === status) continue; // Already saved/read back.
         const link = myLinks.find(l => l.user_id === userId);
         const user = resolveUser(userId);
         const existing = attendanceItems.find(a => a.meeting_id === meetingId && a.participant_id === userId);
-        const checkIn = PRESENT_STATES.includes(status) ? now : "";
+        const patch = readinessAttendancePatch(existing, status, now);
         let accepted: boolean | Promise<boolean> = true;
+        let recordId: string;
         if (existing) {
-          accepted = updateAttendanceRec(existing.id, { check_in_time: checkIn || existing.check_in_time } as never);
-        } else if (PRESENT_STATES.includes(status)) {
-          const aid = `ATT-${meetingId}-${userId}`;
+          recordId = existing.id;
+          accepted = updateAttendanceRec(recordId, patch as never);
+        } else {
+          recordId = `ATT-${meetingId}-${userId}`;
           accepted = addAttendanceRec({
-            id: aid, attendance_id: aid,
+            id: recordId, attendance_id: recordId,
             meeting_id: meetingId,
             meeting_title: meeting?.meeting_title ?? "",
             participant_id: userId,
             participant_name: user?.name ?? userId,
             designation: user?.designation ?? "",
             role: link?.participant_type ?? "Member",
-            check_in_time: checkIn,
-            check_out_time: "",
+            ...patch,
             attendance_mode: "In-Person",
             quorum_eligible: link?.quorum_eligible ? "Yes" : "No",
             signed: "No",
@@ -257,8 +285,19 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
             created_at: now,
           } as never);
         }
-        if (await accepted !== true) {
-          throw new Error("Attendance could not be saved. Review the records and retry.");
+        if (await accepted !== true) throw new Error("Attendance could not be saved. Review the records and retry.");
+        written.push({ id: recordId, userId, status });
+      }
+      // The production registry implements fresh SQL readback; test doubles
+      // without a reader can only establish the prior ACK contract.
+      if (typeof attendanceRegistry.refresh === "function" && typeof attendanceRegistry.getById === "function") {
+        await attendanceRegistry.refresh();
+        for (const write of written) {
+          const row = attendanceRegistry.getById(write.id);
+          const read = readReadinessAttendance(meetingId, myLinks, row ? [row] : []);
+          if (!row || read.conflicts.length || read.values[write.userId] !== write.status) {
+            throw new Error("Attendance SQL readback did not match the selection. Refresh and retry.");
+          }
         }
       }
       // A selection changed while the write was pending. It must not be used
@@ -266,6 +305,9 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
       if (attendanceEditVersion.current !== editVersion ||
           JSON.stringify(latestAttendance.current) !== JSON.stringify(requested)) {
         throw new Error("Attendance changed during saving. Save again before starting.");
+      }
+      if (stillMounted.current && typeof attendanceRegistry.refresh === "function" && typeof attendanceRegistry.getById === "function") {
+        setEditScope({ meetingId, values: {} });
       }
       return stillMounted.current;
     } catch (cause) {
@@ -277,10 +319,10 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
       attendanceSaveInFlight.current = false;
       if (stillMounted.current) setSavingAttendance(false);
     }
-  }, [attendanceMap, myLinks, meetingId, meeting, resolveUser, attendanceItems, addAttendanceRec, updateAttendanceRec]);
+  }, [attendanceMap, myLinks, meetingId, meeting, resolveUser, attendanceItems, addAttendanceRec, updateAttendanceRec, sourceError, edits, persisted.values, baselineFor, attendanceRegistry]);
 
   const startAfterAttendanceSave = async () => {
-    if (attendanceSaveInFlight.current || startRequested.current) return;
+    if (attendanceSaveInFlight.current || startRequested.current || sourceError) return;
     // The same readiness blockers apply to every start attempt, not just to
     // the disabled state of the button.
     if (hasCriticalBlocker && (!showOverride || !overrideReason.trim())) return;
@@ -407,7 +449,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
                       onChange={e => setAttendanceStatus(link.user_id, e.target.value as ReadinessAttendance)}
                       style={{ fontSize: "0.72rem", padding: "0.2rem 0.3rem", borderRadius: 4, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", cursor: "pointer" }}
                     >
-                      {(["Not Joined", "Present", "Temporarily Away", "Excused", "Recused"] as ReadinessAttendance[]).map(o => <option key={o} value={o}>{o}</option>)}
+                      {READINESS_STATES.map(o => <option key={o} value={o}>{o}</option>)}
                     </select>
                   </div>
                 );
@@ -437,7 +479,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
                       onClick={() => toggleAttendance(link.user_id)}
                       style={{ padding: "0.2rem 0.5rem", borderRadius: 4, background: isPresent ? "#14532d" : "var(--muted)", color: isPresent ? "#22c55e" : "var(--muted-foreground)", border: "none", cursor: "pointer", fontSize: "0.68rem", fontWeight: 600 }}
                     >
-                      {isPresent ? "Present" : "Not Joined"}
+                      {status}
                     </button>
                   </div>
                 );
@@ -531,13 +573,16 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
       <footer className="pre-meeting-readiness__footer">
         <SecondaryButton onClick={onClose} disabled={savingAttendance || startingMeeting}>Close</SecondaryButton>
         <div className="pre-meeting-readiness__footer-actions">
-          {attendanceError && <span role="alert" style={{ fontSize: "0.72rem", color: "#ef4444", maxWidth: 320 }}>{attendanceError}</span>}
-          <SecondaryButton onClick={() => { void saveAttendance(); }} disabled={savingAttendance || startingMeeting}>
+          {(attendanceError || sourceError) && <span role="alert" style={{ fontSize: "0.72rem", color: "#ef4444", maxWidth: 320 }}>{attendanceError || sourceError}</span>}
+          <SecondaryButton onClick={() => {
+            if (sourceError) { void Promise.all(sourceRows.map(source => source.refresh?.())).catch(() => setAttendanceError("Readiness refresh failed. Retry.")); return; }
+            void saveAttendance();
+          }} disabled={savingAttendance || startingMeeting || sourceLoading}>
             {savingAttendance ? "Saving…" : "Save Attendance"}
           </SecondaryButton>
           <PrimaryButton
             onClick={() => { void startAfterAttendanceSave(); }}
-            disabled={savingAttendance || startingMeeting || (hasCriticalBlocker && (!showOverride || !overrideReason.trim()))}
+            disabled={savingAttendance || startingMeeting || Boolean(sourceError) || (hasCriticalBlocker && (!showOverride || !overrideReason.trim()))}
             title={hasCriticalBlocker && !showOverride ? "Resolve blockers or provide an override reason" : undefined}
           >
             {savingAttendance ? "Saving attendance…" : startingMeeting ? "Starting meeting…" : "Start Meeting"}
