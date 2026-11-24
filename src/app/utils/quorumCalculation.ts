@@ -18,6 +18,8 @@ export type QuorumStatus =
 
 export interface QuorumResult {
   status: QuorumStatus;
+  /** Selected policy for display only; SQL remains authoritative. */
+  selectedRule?: QuorumRule;
   eligibleCount: number;
   requiredCount: number;
   requiredPercent: number;
@@ -32,6 +34,8 @@ export interface QuorumInput {
   /** ID of the governance body (Board/Committee). */
   boardCommitteeId: string;
   boardCommitteeName?: string;
+  /** Persisted meeting identity; never infer it from a title or another meeting. */
+  meetingId?: string;
   /** Canonical participant links from registry (used in row enrichment). */
   participantLinks?: MeetingParticipantLink[];
   /** Draft participant links from wizard values (used in steps 1–4). */
@@ -42,10 +46,35 @@ export interface QuorumInput {
   quorumRules: QuorumRule[];
 }
 
+/** A meeting-scoped policy wins over a general policy. Never select an
+ * unrelated meeting rule, or break an ambiguity by registry ordering. */
+export function selectMeetingQuorumPolicy(input: Pick<QuorumInput, "boardCommitteeId" | "boardCommitteeName" | "meetingId" | "governanceBodies" | "quorumRules">): { rule: QuorumRule | null; conflict?: string } {
+  const { boardCommitteeId, boardCommitteeName, meetingId, governanceBodies, quorumRules } = input;
+  const active = quorumRules.filter(r => r.status === "Active");
+  const meetingKey = meetingId?.trim();
+  const scoped = meetingKey ? active.filter(r => r.meeting_id === meetingKey) : [];
+  if (scoped.length > 1) return { rule: null, conflict: "Multiple active quorum policies for this meeting" };
+  if (scoped.length === 1) return { rule: scoped[0] };
+
+  const committeeKey = boardCommitteeId.trim();
+  const byId = governanceBodies.filter(b => committeeKey && (b.id === committeeKey || b.body_id === committeeKey));
+  const byName = governanceBodies.filter(b => b.body_name && (b.body_name === committeeKey || b.body_name === boardCommitteeName));
+  const bodies = byId.length ? byId : byName;
+  if (bodies.length > 1) return { rule: null, conflict: "Ambiguous governance body for quorum policy" };
+  const body = bodies[0];
+  if (!body) return { rule: null };
+
+  const general = active.filter(r => !r.meeting_id?.trim() &&
+    (r.governance_body_id === body.id || r.governance_body_id === body.body_id));
+  if (general.length > 1) return { rule: null, conflict: "Multiple active quorum policies for this governance body" };
+  return { rule: general[0] ?? null };
+}
+
 export function calculateMeetingQuorum(input: QuorumInput): QuorumResult {
   const {
     boardCommitteeId,
     boardCommitteeName,
+    meetingId,
     participantLinks = [],
     draftLinks = [],
     presentUserIds,
@@ -53,25 +82,12 @@ export function calculateMeetingQuorum(input: QuorumInput): QuorumResult {
     quorumRules,
   } = input;
 
-  // Resolve the governance body
-  const body = governanceBodies.find(b =>
-    b.id === boardCommitteeId ||
-    b.body_id === boardCommitteeId ||
-    b.body_name === boardCommitteeId ||
-    b.body_name === boardCommitteeName,
-  );
-
-  // Find the active quorum rule for this body
-  const govRule = body
-    ? quorumRules.find(r =>
-        (r.governance_body_id === body.id || r.governance_body_id === body.body_id) &&
-        r.status === "Active",
-      ) ?? null
-    : null;
+  const selection = selectMeetingQuorumPolicy({ boardCommitteeId, boardCommitteeName, meetingId, governanceBodies, quorumRules });
+  const govRule = selection.rule;
 
   if (!govRule) {
     return {
-      status: "not_configured",
+      status: selection.conflict ? "not_expected" : "not_configured",
       eligibleCount: 0,
       requiredCount: 0,
       requiredPercent: 0,
@@ -79,7 +95,7 @@ export function calculateMeetingQuorum(input: QuorumInput): QuorumResult {
       totalParticipants: participantLinks.length + draftLinks.length,
       requiredRoles: [],
       missingRoles: [],
-      reasons: ["No active quorum rule configured for this governance body"],
+      reasons: [selection.conflict ?? "No active quorum rule configured for this governance body"],
     };
   }
 
@@ -129,6 +145,7 @@ export function calculateMeetingQuorum(input: QuorumInput): QuorumResult {
 
   return {
     status,
+    selectedRule: govRule,
     eligibleCount,
     requiredCount,
     requiredPercent: requiredPct,
