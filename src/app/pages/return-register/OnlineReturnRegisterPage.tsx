@@ -648,8 +648,10 @@ export function OnlineReturnRegisterPage() {
         };
       });
 
-    // Resolve committee display name from stored ID or name (bodyForRule already resolved above)
-    const committeeLabel = bodyForRule?.body_name ?? committeeKey;
+    // Resolve the display label independently of the selected quorum policy.
+    const committeeKey = m.committee ?? "";
+    const bodyForLabel = govRegistry.items.find(b => b.id === committeeKey || b.body_id === committeeKey || b.body_name === committeeKey);
+    const committeeLabel = bodyForLabel?.body_name ?? committeeKey;
 
     return {
       ...m,
