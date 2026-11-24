@@ -14,7 +14,8 @@ import {
 import {
   createProvisioningCompany,listCompanies,readCompany,
   enrollVerifiedCompanyMember,revokeCompanyMember,
-  type CompanyDirectory,type CompanyProfile,type CompanyMembershipRole,
+  listPendingCompanyInvitations,queuePendingCompanyInvitation,cancelPendingCompanyInvitation,
+  type PendingCompanyInvitation,type CompanyDirectory,type CompanyProfile,type CompanyMembershipRole,
 } from "../../services/saas/companyDirectory";
 import { MeetingTemplateMarketplace } from "./MeetingTemplateMarketplace";
 
@@ -65,6 +66,15 @@ export function SubscribersPage() {
   const [memberRole,setMemberRole] = useState<CompanyMembershipRole>("member");
   const [memberRequestId,setMemberRequestId] = useState(()=>crypto.randomUUID());
   const [pendingMembership,setPendingMembership] = useState<PendingCompanyMembership|null>(null);
+  const [companyInvites,setCompanyInvites]=useState<PendingCompanyInvitation[]|null>(null);
+  const [invitationEmail,setInvitationEmail]=useState("");
+  const [invitationRole,setInvitationRole]=useState<CompanyMembershipRole>("member");
+  const [invitationRequestId,setInvitationRequestId]=useState(()=>crypto.randomUUID());
+  const [invitationLoading,setInvitationLoading]=useState(false);
+  const [invitationWorking,setInvitationWorking]=useState(false);
+  const [invitationError,setInvitationError]=useState("");
+  const [invitationConfirmation,setInvitationConfirmation]=useState<
+    {action:"queue"|"cancel";tenantId:string;email:string;role:CompanyMembershipRole;requestId:string}|null>(null);
 
   const refresh = async () => {
     const result = await subscriptionAction<SubscriptionDirectory>("list");
@@ -111,6 +121,39 @@ export function SubscribersPage() {
       .finally(() => { if (active) setCompanyLoading(false); });
     return () => { active=false; };
   },[tab,selectedCompanyId]);
+  useEffect(()=>{
+    let active=true;
+    setCompanyInvites(null);setInvitationError("");
+    if(tab!=="companies"||!selectedCompanyId)return ()=>{active=false;};
+    setInvitationLoading(true);
+    void listPendingCompanyInvitations(selectedCompanyId).then(records=>{
+      if(active)setCompanyInvites(records);
+    }).catch(reason=>{
+      if(active)setInvitationError(reason instanceof Error?reason.message:"Unable to load company invitation SQL");
+    }).finally(()=>{if(active)setInvitationLoading(false);});
+    return ()=>{active=false;};
+  },[tab,selectedCompanyId]);
+  const commitCompanyInvitation=async()=>{
+    const action=invitationConfirmation;
+    if(!action||invitationWorking||invitationLoading)return;
+    setInvitationWorking(true);setInvitationError("");
+    try{
+      const result=action.action==="queue"
+        ? await queuePendingCompanyInvitation(action.tenantId,action.email,action.role,action.requestId)
+        : await cancelPendingCompanyInvitation(action.tenantId,action.email,action.requestId);
+      setCompanyInvites(result.invites);
+      if(action.action==="queue"){
+        setInvitationEmail("");setInvitationRole("member");
+        setInvitationRequestId(crypto.randomUUID());
+      }
+      setInvitationConfirmation(null);
+      toast.success(action.action==="queue"
+        ?"Pending invitation linked to company in SQL"
+        :"Pending company invitation cancelled in SQL");
+    }catch(reason){
+      setInvitationError(reason instanceof Error?reason.message:"Company invitation was not verified");
+    }finally{setInvitationWorking(false);}
+  };
   const saveCompanyMembership=async()=>{
     const pending=pendingMembership;
     if(!pending||companyWorking||companyLoading)return;
@@ -462,6 +505,44 @@ export function SubscribersPage() {
                   </Button>
                 </div>
                 <p style={{...note,marginTop:12}}>Company membership does not activate paid workspace access or tenant meetings.</p>
+                <section aria-label="Pending invitation company enrollment" style={{
+                  borderTop:"1px solid var(--border-color,#dce1e8)",marginTop:18,paddingTop:14}}>
+                  <h4 style={{fontWeight:650}}>Link a pending user invitation</h4>
+                  <p style={{...note,marginTop:8}}>First invite the person through User Management. Assign their unaccepted invitation here; after verified first login, SQL will automatically enroll the account in this company. Workspaces and billing stay disabled.</p>
+                  <div style={{display:"grid",gap:10,marginTop:12}}>
+                    <AppTextField id="company-pending-invite-email" label="Pending invitation email" required
+                      value={invitationEmail} disabled={invitationWorking||invitationLoading}
+                      onChange={v=>{setInvitationEmail(v);setInvitationRequestId(crypto.randomUUID());setInvitationError("");}}
+                      placeholder="invited@example.com"/>
+                    <AppSelectField id="company-pending-invite-role" label="Role after verification" required
+                      value={invitationRole} disabled={invitationWorking||invitationLoading}
+                      onChange={v=>{setInvitationRole(v as CompanyMembershipRole);setInvitationRequestId(crypto.randomUUID());}}
+                      options={[{value:"member",label:"Company member"},
+                        {value:"tenant_admin",label:"Company Super Admin"}]}/>
+                    <Button variant="secondary" size="sm" disabled={invitationWorking||invitationLoading
+                      ||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(invitationEmail.trim())}
+                      onClick={()=>setInvitationConfirmation({
+                        action:"queue",tenantId:companyProfile.company.id,
+                        email:invitationEmail.trim().toLowerCase(),
+                        role:invitationRole,requestId:invitationRequestId})}>
+                      Link pending invitation
+                    </Button>
+                  </div>
+                  {invitationLoading&&<p role="status" style={note}>Checking pending company invitations…</p>}
+                  {invitationError&&<p role="alert" style={{...note,color:"#b91c1c"}}>{invitationError}</p>}
+                  {companyInvites?.length===0&&<p style={{...note,marginTop:10}}>No company invitation assignments yet.</p>}
+                  {companyInvites?.map(invite=><div key={invite.user_id} style={{
+                    borderTop:"1px solid var(--border-color,#dce1e8)",marginTop:10,paddingTop:10}}>
+                    <p style={note}><strong>{invite.email}</strong> · {invite.membership_role==="tenant_admin"?"Company Super Admin":"Company member"} · {invite.status}</p>
+                    {invite.status==="pending"&&<Button variant="tertiary" size="sm"
+                      disabled={invitationWorking||invitationLoading}
+                      onClick={()=>setInvitationConfirmation({
+                        action:"cancel",tenantId:companyProfile.company.id,email:invite.email,
+                        role:invite.membership_role,requestId:crypto.randomUUID()})}>
+                      Cancel pending assignment
+                    </Button>}
+                  </div>)}
+                </section>
                 {companyProfile.members.length===0 && <p style={note}>No company memberships recorded.</p>}
                 {companyProfile.members.map(member=><div key={member.user_id}
                   style={{borderTop:"1px solid var(--border-color,#dce1e8)",padding:"10px 0"}}>
@@ -518,6 +599,16 @@ export function SubscribersPage() {
         danger={pendingMembership.action==="revoke"}
         onClose={()=>{if(!companyWorking)setPendingMembership(null);}}
         onConfirm={()=>void saveCompanyMembership()}
+      />}
+      {invitationConfirmation && <SConfirmModal
+        title={invitationConfirmation.action==="queue"?"Link pending invitation to company?":"Cancel pending company invitation?"}
+        message={invitationConfirmation.action==="queue"
+          ? `After ${invitationConfirmation.email} verifies their invitation and activates their Convay account, SQL will grant the selected company membership. No paid workspace or meeting access will activate.`
+          : `Cancel the pending company membership for ${invitationConfirmation.email}? This will not cancel their independent Convay user invitation.`}
+        confirmLabel={invitationConfirmation.action==="queue"?"Link invitation":"Cancel assignment"}
+        danger={invitationConfirmation.action==="cancel"}
+        onClose={()=>{if(!invitationWorking)setInvitationConfirmation(null);}}
+        onConfirm={()=>void commitCompanyInvitation()}
       />}
       {confirmProvision && <SConfirmModal
         title="Create a provisioning company?"
