@@ -661,15 +661,20 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
     }
     setSaving(true);
     try {
-      const linked = linkReg.items.filter(link => link.agenda_id === id);
-      const operations = [
-        ...linked.map(link => ({
-          entity_key: "bms.agendaDocumentLinks", action: "delete" as const,
-          record_id: link.id,
-        })),
-        { entity_key: "bms.agenda", action: "delete" as const, record_id: id },
-      ];
-      await convayAuth.applyBatch(operations);
+      const linked = linkReg.items.filter(link =>
+        link.agenda_id === id || link.agenda_id === child.agenda_id);
+      const childRevision = agendaReg.getRevision?.(id);
+      const linkRevisions = linked.map(link => ({
+        recordId: link.id, expectedRevision: linkReg.getRevision?.(link.id),
+      }));
+      if (!Number.isSafeInteger(childRevision) || (childRevision ?? 0) < 1 ||
+        linkRevisions.some(link => !Number.isSafeInteger(link.expectedRevision) ||
+          (link.expectedRevision ?? 0) < 1)) {
+        throw new Error("Agenda child or links are stale. Refresh before removing.");
+      }
+      await convayAuth.deleteAgendaChild(id, childRevision!, linkRevisions.map(link => ({
+        recordId: link.recordId, expectedRevision: link.expectedRevision!,
+      })));
       await Promise.all([agendaReg.refresh?.(), linkReg.refresh?.()]);
       if (cf.id === id) { setCf({ ...EMPTY_CHILD }); setChildMode(false); setCDirty(false); }
       toast.success("Child agenda removed.");
