@@ -40,3 +40,16 @@ describe("QM-01 host management permission and expiry boundary", () => {
     expect(edge.match(/if \(!isQuickMeetingActive\(meeting\)\) \{/g)).toHaveLength(3);
   });
 });
+
+
+describe("QM authoritative company ownership", () => {
+  it("checks current persisted scope before guest admission and media token issuance", () => {
+    const link = edge.slice(edge.indexOf("async function requireGuestLink"), edge.indexOf("async function allRoomParticipants"));
+    const token = edge.slice(edge.indexOf("async function issueRoomToken"), edge.indexOf("async function issueRoomToken")+1800);
+    expect(link).toContain("await assertMeetingOwnerScope(meeting)");
+    expect(token).toContain("await assertMeetingOwnerScope(meeting)");
+    expect(edge).toContain('postRpc<boolean>("convay_quick_meeting_scope_valid"');
+    expect(edge).toContain('postRpc<{allowed: boolean; tenant_id: string | null}>("convay_quick_host_scope"');
+    expect(edge).toContain('if (action !== "end" && action !== "host-leave") await assertMeetingOwnerScope(meeting)');
+  });
+});
