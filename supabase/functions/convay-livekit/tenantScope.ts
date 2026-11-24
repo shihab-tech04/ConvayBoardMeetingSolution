@@ -65,3 +65,34 @@ export async function opaqueId(kind: string, value: string): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("convay-livekit-v1:" + kind + ":" + value));
   return "cv-" + kind + "-" + Array.from(new Uint8Array(hash)).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 40);
 }
+
+/** A single authenticated registry lookup must cover both SQL and business IDs.
+ * Never choose a direct record over a different row with the same business ID. */
+export type SavedMeetingRow = SqlEntity<OnlineMeeting> & { record_id: string };
+export function meetingLookupParams(meetingId: string): URLSearchParams {
+  if (!/^[A-Za-z0-9_-]{1,180}$/.test(meetingId)) throw new Error("Invalid meeting identity");
+  return new URLSearchParams({
+    select: "record_id,tenant_id,payload", entity_key: "eq.bms.meetings",
+    or: "(record_id.eq." + meetingId + ",payload->>meeting_id.eq." + meetingId + ",payload->>id.eq." + meetingId + ")",
+    limit: "2",
+  });
+}
+export function uniqueSavedMeeting(rows: SavedMeetingRow[], requestedId: string): SavedMeetingRow | null {
+  if (rows.length > 1) throw new Error("Ambiguous meeting identity");
+  const meeting = rows[0];
+  if (!meeting) return null;
+  const canonicalId = meeting.payload?.meeting_id ?? meeting.payload?.id;
+  if (!meeting.record_id || !canonicalId || !/^[A-Za-z0-9_-]{1,180}$/.test(canonicalId)
+      || ![meeting.record_id, meeting.payload.meeting_id, meeting.payload.id].includes(requestedId)) {
+    throw new Error("Inconsistent saved meeting identity");
+  }
+  return meeting;
+}
+/** Until the privileged attendance RPCs are tenant scoped, do not allow a
+ * tenant-owned media session to enter a legacy persistence boundary. */
+export function checkAttendancePersistenceScope(meeting: SqlEntity<OnlineMeeting>): AdmissionDecision {
+  if (meeting.tenant_id !== null) {
+    return { allowed: false, status: 409, error: "Company live attendance is not yet available." };
+  }
+  return { allowed: true };
+}

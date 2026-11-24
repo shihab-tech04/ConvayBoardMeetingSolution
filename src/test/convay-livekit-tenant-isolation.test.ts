@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { checkLiveKitTenantScope, scopedRoomIdentity, resolveLiveKitRoomIdentity, type SqlEntity }
+import { checkLiveKitTenantScope, scopedRoomIdentity, resolveLiveKitRoomIdentity, meetingLookupParams, uniqueSavedMeeting, checkAttendancePersistenceScope, type SqlEntity }
   from "../../supabase/functions/convay-livekit/tenantScope";
 import type { OnlineMeeting, OnlineSession, OnlineLink }
   from "../../supabase/functions/convay-livekit/admission";
@@ -108,5 +108,39 @@ describe("LiveKit token/attendance room parity", () => {
     expect(resolveLiveKitRoomIdentity(record(null),reopened,"alias")).toBe("MTG-42:SES-42-R1");
     expect(resolveLiveKitRoomIdentity(record(beta),reopened,"alias")).not.toBe(resolveLiveKitRoomIdentity(record(alpha),reopened,"alias"));
     expect(() => resolveLiveKitRoomIdentity(record(alpha),{...reopened,id:"invalid"},"alias")).toThrow();
+  });
+});
+
+
+describe("regular meeting lookup and persistence safety", () => {
+  const legacy = {...record(null),record_id:"MTG-42"};
+  const alias = {...record(null),record_id:"record-42"};
+  it("queries all identity aliases in a single RLS-authorized lookup", () => {
+    const params = meetingLookupParams("MTG-42");
+    expect(params.get("or")).toBe("(record_id.eq.MTG-42,payload->>meeting_id.eq.MTG-42,payload->>id.eq.MTG-42)");
+    expect(params.get("limit")).toBe("2");
+    expect(() => meetingLookupParams("MTG-42,tenant_id.neq.null")).toThrow();
+  });
+  it("rejects direct-record/business-ID collisions rather than selecting one", () => {
+    expect(() => uniqueSavedMeeting([legacy,alias],"MTG-42")).toThrow(/Ambiguous/);
+    expect(() => uniqueSavedMeeting([legacy,{...record(alpha),record_id:"other"}],"MTG-42")).toThrow(/Ambiguous/);
+    expect(uniqueSavedMeeting([legacy],"MTG-42")).toEqual(legacy);
+    expect(uniqueSavedMeeting([alias],"record-42")).toEqual(alias);
+    expect(uniqueSavedMeeting([],"MTG-42")).toBeNull();
+    expect(() => uniqueSavedMeeting([legacy],"unrelated")).toThrow();
+  });
+  it("never routes a company-owned or missing-scope meeting into legacy privileged SQL", () => {
+    expect(checkAttendancePersistenceScope(record(null))).toEqual({allowed:true});
+    expect(checkAttendancePersistenceScope(record(alpha))).toMatchObject({allowed:false,status:409});
+    expect(checkAttendancePersistenceScope({payload:legacy.payload} as SqlEntity<OnlineMeeting>)).toMatchObject({allowed:false});
+  });
+  it("guards both production gateways before provider issuance or SQL writes", () => {
+    const attendance = readFileSync("supabase/functions/convay-attendance/index.ts","utf8");
+    expect(edgeSource).toContain("checkAttendancePersistenceScope(meeting)");
+    expect(attendance).toContain("checkAttendancePersistenceScope(meetingRow)");
+    expect(edgeSource).toContain("uniqueSavedMeeting(await jsonRequest");
+    expect(attendance).toContain("uniqueSavedMeeting(await authorizedFetch");
+    expect(edgeSource.indexOf("checkAttendancePersistenceScope(meeting)")).toBeLessThan(edgeSource.indexOf("new AccessToken("));
+    expect(attendance.indexOf("checkAttendancePersistenceScope(meetingRow)")).toBeLessThan(attendance.indexOf('await serviceRpc<Record<string, unknown>>("convay_read_live_attendance"'));
   });
 });

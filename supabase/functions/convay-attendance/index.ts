@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { RoomServiceClient } from "npm:livekit-server-sdk@2.19.2";
 import { checkOnlineAdmission, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
-import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, type SqlEntity } from "../convay-livekit/tenantScope.ts";
+import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, meetingLookupParams, uniqueSavedMeeting, checkAttendancePersistenceScope, type SavedMeetingRow, type SqlEntity } from "../convay-livekit/tenantScope.ts";
 
 /**
  * Authenticated regular-meeting attendance gateway.
@@ -46,20 +46,19 @@ async function entityRows<T>(entity: string, meetingId: string, jwt: string): Pr
   return await authorizedFetch<SqlEntity<T>[]>(
     "/rest/v1/convay_entity_records?" + params.toString(), jwt);
 }
-async function savedMeeting(meetingId: string, jwt: string): Promise<SqlEntity<OnlineMeeting> | null> {
-  const key = new URLSearchParams({
-    select: "tenant_id,payload", entity_key: "eq.bms.meetings",
-    record_id: "eq." + meetingId, limit: "2",
-  });
-  const direct = await authorizedFetch<SqlEntity<OnlineMeeting>[]>(
-    "/rest/v1/convay_entity_records?" + key.toString(), jwt);
-  if (direct.length > 1) throw new Error("Ambiguous meeting identity");
-  const match = direct[0];
-  if (match && (match.payload.meeting_id === meetingId || match.payload.id === meetingId)) return match;
-  const matches = (await entityRows<OnlineMeeting>("bms.meetings", meetingId, jwt))
-    .filter(row => row.payload.meeting_id === meetingId);
-  if (matches.length > 1) throw new Error("Ambiguous meeting identity");
-  return matches[0] ?? null;
+async function savedMeeting(meetingId: string, jwt: string): Promise<SavedMeetingRow | null> {
+  const lookup = async (id: string) => uniqueSavedMeeting(await authorizedFetch<SavedMeetingRow[]>(
+    "/rest/v1/convay_entity_records?" + meetingLookupParams(id).toString(), jwt), id);
+  const row = await lookup(meetingId);
+  if (!row) return null;
+  const canonical = row.payload.meeting_id ?? row.payload.id!;
+  if (canonical !== meetingId) {
+    const canonicalRow = await lookup(canonical);
+    if (!canonicalRow || canonicalRow.record_id !== row.record_id || canonicalRow.tenant_id !== row.tenant_id) {
+      throw new Error("Ambiguous meeting identity");
+    }
+  }
+  return row;
 }
 async function confirmedInLiveKit(meeting: SqlEntity<OnlineMeeting>, session: OnlineSession, meetingId: string, participantId: string): Promise<boolean> {
   const url = Deno.env.get("LIVEKIT_URL") ?? "";
@@ -151,6 +150,8 @@ Deno.serve(async req => {
     ]);
     const scope = checkLiveKitTenantScope(meetingRow, [...linkRows, ...sessions]);
     if (!scope.allowed) return reply(req, scope.status, { error: scope.error });
+    const persistence = checkAttendancePersistenceScope(meetingRow);
+    if (!persistence.allowed) return reply(req, persistence.status, { error: persistence.error });
     const links = linkRows.map(row => row.payload);
     const matching = links.filter(link =>
       link.meeting_id === canonicalMeetingId && link.user_id === participantId);
