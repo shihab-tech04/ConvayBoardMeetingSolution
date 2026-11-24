@@ -9,4 +9,6 @@ describe("PT-09 contextual leadership protection",()=>{
   it("protects legacy named chair without a canonical user ID",()=>expect(blocker(meeting,{...member,user_id:undefined,name:"Chair"})).not.toBeNull());
   it("protects a legacy leadership role even if its display name changed",()=>expect(blocker(meeting,{...member,role:"Meeting Secretary"})).not.toBeNull());
   it("denies an ambiguous roster when a designated leadership identity is missing",()=>expect(blocker({...meeting,secretary_user_id:"",secretary:""},member)).not.toBeNull());
+  it("denies a legacy participant without a canonical ID if any leader lacks a comparable name",()=>expect(blocker({...meeting,secretary:""},{...member,user_id:undefined})).not.toBeNull());
+  it("denies a participant with an incomplete identity when a leader has only a name",()=>expect(blocker({...meeting,secretary_user_id:""},{...member,name:""})).not.toBeNull());
 });
