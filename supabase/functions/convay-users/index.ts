@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.95.0";
 import { buildInvitationOptions, hasExactInvitationRoleReadback, isAssignableInvitationRole, mayAcceptInvitation } from "./invitation.ts";
+import { applyAccountStatusWithReadback, type ManagedAccountStatus } from "./accountStatus.ts";
 
 const headers = {
   "Access-Control-Allow-Origin": "*",
@@ -249,9 +250,11 @@ Deno.serve(async (req: Request) => {
     if (target.account_role === "super_admin" || body.user_id === auth.user.id) {
       return response(403, { error: "The sole Super Admin account cannot be changed here" });
     }
+    let previousAuthBanUntil: string | null = null;
     if (action === "set_password" || action === "set_status") {
       const { data: targetAuth, error: targetAuthError } = await admin.auth.admin.getUserById(body.user_id);
       if (targetAuthError || !targetAuth.user) return response(404, { error: "Authentication user not found" });
+      if (action === "set_status") previousAuthBanUntil = targetAuth.user.banned_until ?? null;
       if (targetAuth.user.app_metadata?.convay_invitation_status === "pending" &&
         (action === "set_password" || body.status === "active")) {
         return response(403, { error: "The invitee must verify their email and set their own password before activation" });
@@ -287,18 +290,58 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "set_status") {
-      if (!["active","inactive","suspended"].includes(body.status ?? "")) return response(400, { error: "Invalid status" });
-      const active = body.status === "active";
-      const { error: authError } = await admin.auth.admin.updateUserById(
-        body.user_id, { ban_duration: active ? "none" : "876000h" },
-      );
-      if (authError) return response(500, { error: "Unable to update account access" });
-      const { data: user, error } = await admin.from("user_profiles")
-        .update({ account_status: body.status, updated_at: new Date().toISOString() })
-        .eq("user_id", body.user_id).select(fields).single();
-      if (error) return response(500, { error: "Unable to update account status" });
-      await audit(auth.user.id, body.user_id, active ? "user_activated" : "user_disabled");
-      return response(200, { user });
+      if (!["active","inactive","suspended"].includes(body.status ?? "")) {
+        return response(400, { error: "Invalid status" });
+      }
+      const nextStatus = body.status as ManagedAccountStatus;
+      // Auth and profile writes are separate services. Read SQL after every
+      // transition; compensate Auth only if SQL proves no status was changed.
+      let result;
+      try {
+        result = await applyAccountStatusWithReadback({
+          nextStatus,
+          previousStatus: target.account_status as ManagedAccountStatus,
+          previousBannedUntil: previousAuthBanUntil,
+          nowMs: Date.now(),
+          setAuthBan: async duration => {
+            const { error } = await admin.auth.admin.updateUserById(
+              body.user_id!, { ban_duration: duration },
+            );
+            if (error) throw error;
+          },
+          saveProfile: async status => {
+            const { data, error } = await admin.from("user_profiles")
+              .update({ account_status: status, updated_at: new Date().toISOString() })
+              .eq("user_id", body.user_id!)
+              .eq("account_status", target.account_status)
+              .select("user_id,account_status").maybeSingle();
+            if (error || !data || data.account_status !== status) {
+              throw new Error("Account profile transition was not confirmed");
+            }
+          },
+          readProfile: async () => {
+            const { data, error } = await admin.from("user_profiles")
+              .select(fields).eq("user_id", body.user_id!).maybeSingle();
+            if (error || !data) throw new Error("Account SQL readback unavailable");
+            return data;
+          },
+          getProfileStatus: user => user.account_status === "active"
+            || user.account_status === "inactive" || user.account_status === "suspended"
+            ? user.account_status : null,
+        });
+      } catch {
+        return response(500, { error: "Unable to verify or change account access. Refresh both Auth and SQL before retrying." });
+      }
+      if (result.kind === "confirmed") {
+        await audit(auth.user.id, body.user_id, nextStatus === "active" ? "user_activated" : "user_disabled");
+        return response(200, { user: result.profile });
+      }
+      if (result.kind === "reverted") {
+        return response(409, { error: "SQL did not save the status. The previous Auth restriction was restored; refresh and retry." });
+      }
+      return response(503, { error: result.kind === "restore_failed"
+        ? "SQL rejected the status change and Auth rollback failed. Administrator reconciliation is required before retrying."
+        : "Account status could not be reconciled between Auth and SQL. Verify both records before retrying." });
     }
 
     // Remove both profile and identity, preserving the independent audit trail.
