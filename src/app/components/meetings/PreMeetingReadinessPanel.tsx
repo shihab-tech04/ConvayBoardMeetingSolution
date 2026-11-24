@@ -28,6 +28,7 @@ import {
 } from "../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../data/bmsUsers";
 import { calculateMeetingQuorum, quorumStatusLabel } from "../../utils/quorumCalculation";
+import { attendanceRequirementLabel, hasInvalidAttendanceRequirement, requiresAttendance } from "../../pages/return-register/attendanceRequirement";
 import { readReadinessAttendance, readinessAttendancePatch, PRESENT_STATES, READINESS_STATES, type ReadinessAttendance } from "../../pages/return-register/readinessAttendance";
 import { PrimaryButton } from "../buttons/PrimaryButton";
 import { SecondaryButton } from "../buttons/SecondaryButton";
@@ -174,7 +175,8 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
   const generalPresent     = generalLinks.filter(l => PRESENT_STATES.includes(attendanceMap[l.user_id] ?? "Not Joined")).length;
 
   // Leadership required roles
-  const requiredLinks   = myLinks.filter(l => l.is_required);
+  const invalidAttendanceRequirement = hasInvalidAttendanceRequirement(myLinks);
+  const requiredLinks   = myLinks.filter(requiresAttendance);
   const requiredPresent = requiredLinks.filter(l => PRESENT_STATES.includes(attendanceMap[l.user_id] ?? "Not Joined")).length;
   const requiredMissing = requiredLinks.filter(l => !PRESENT_STATES.includes(attendanceMap[l.user_id] ?? "Not Joined"));
 
@@ -208,7 +210,8 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
   if (!meeting?.chairperson)    blockers.push("Chairperson not assigned");
   if (!meeting?.secretary)      blockers.push("Secretary not assigned");
   // Agenda-free meetings can start. Attendance and leadership safety checks remain.
-  if (requiredMissing.length > 0) blockers.push(`Required leadership not present: ${requiredMissing.map(l => resolveUser(l.user_id)?.name ?? l.user_id).join(", ")}`);
+  if (invalidAttendanceRequirement) blockers.push("Correct invalid attendance requirements in the participant roster before starting.");
+  if (requiredMissing.length > 0) blockers.push(`Required participants not present: ${requiredMissing.map(l => resolveUser(l.user_id)?.name ?? l.user_id).join(", ")}`);
 
   const warnings: string[] = [];
   if (quorumResult.status === "not_expected" || quorumResult.status === "not_configured") {
@@ -322,7 +325,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
   }, [attendanceMap, myLinks, meetingId, meeting, resolveUser, attendanceItems, addAttendanceRec, updateAttendanceRec, sourceError, edits, persisted.values, baselineFor, attendanceRegistry]);
 
   const startAfterAttendanceSave = async () => {
-    if (attendanceSaveInFlight.current || startRequested.current || sourceError) return;
+    if (attendanceSaveInFlight.current || startRequested.current || sourceError || invalidAttendanceRequirement) return;
     // The same readiness blockers apply to every start attempt, not just to
     // the disabled state of the button.
     if (hasCriticalBlocker && (!showOverride || !overrideReason.trim())) return;
@@ -441,7 +444,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ margin: 0, fontSize: "0.78rem", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? link.user_id}</p>
                       <p style={{ margin: 0, fontSize: "0.65rem", color: "var(--muted-foreground)" }}>
-                        {link.participant_type}{link.is_required ? " · Required" : ""}{link.voting_eligible ? " · Voting" : ""}
+                        {link.participant_type} · {attendanceRequirementLabel(link)}{link.voting_eligible ? " · Voting" : ""}
                       </p>
                     </div>
                     <select
@@ -472,7 +475,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ margin: 0, fontSize: "0.78rem", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? link.user_id}</p>
-                      <p style={{ margin: 0, fontSize: "0.65rem", color: "var(--muted-foreground)" }}>{link.participant_type}</p>
+                      <p style={{ margin: 0, fontSize: "0.65rem", color: "var(--muted-foreground)" }}>{link.participant_type} · {attendanceRequirementLabel(link)}</p>
                     </div>
                     <button
                       type="button"
@@ -582,7 +585,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
           </SecondaryButton>
           <PrimaryButton
             onClick={() => { void startAfterAttendanceSave(); }}
-            disabled={savingAttendance || startingMeeting || Boolean(sourceError) || (hasCriticalBlocker && (!showOverride || !overrideReason.trim()))}
+            disabled={savingAttendance || startingMeeting || Boolean(sourceError) || invalidAttendanceRequirement || (hasCriticalBlocker && (!showOverride || !overrideReason.trim()))}
             title={hasCriticalBlocker && !showOverride ? "Resolve blockers or provide an override reason" : undefined}
           >
             {savingAttendance ? "Saving attendance…" : startingMeeting ? "Starting meeting…" : "Start Meeting"}
