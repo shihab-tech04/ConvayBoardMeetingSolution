@@ -36,6 +36,8 @@ import { agendaReference, validateCompleteAgenda } from "./agendaCreationFields"
 import { saveAgendaChildWithAck } from "./agendaChildPersistence";
 import { requireAgendaDocumentLinkAck } from "./agendaDocumentLinkConfirmation";
 import { convayAuth } from "../../services/supabase/convayAuth";
+import { readAccessSnapshot } from "../../services/supabase/convayAccess";
+import { finalizeOwnSuperAdminContent } from "../../services/supabase/convaySuperAdminAutoApproval";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -850,20 +852,33 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
       return;
     }
     setSaving(true);
-    let didSave = false;
     try {
-      didSave = (await agendaReg.update(parentId, {
+      const access = readAccessSnapshot();
+      if (!access.loaded || access.error) {
+        throw new Error("Agenda permissions are not ready. Refresh and retry.");
+      }
+      const saved = await agendaReg.update(parentId, {
         ...parentMetadata(parentId), updated_at: new Date().toISOString(),
-      } as never)) === true;
-    } finally { setSaving(false); }
-    if (!didSave) {
-      toast.error("Agenda was not saved. Check permissions or connection and retry.");
-      return;
+      } as never);
+      if (saved !== true) throw new Error("Agenda was not saved. Check permissions or connection and retry.");
+      let savedStatus = agendaReg.items.find(a => a.id === parentId)?.approval_status ?? "Draft";
+      if (access.is_super_admin) {
+        // The server independently verifies actual actor, creator, complete
+        // hierarchy and explicit approval-history transitions.
+        const confirmed = await finalizeOwnSuperAdminContent("agenda",parentId);
+        savedStatus = confirmed.status;
+        toast.success("Agenda and child items automatically approved by SQL.");
+      }
+      await agendaReg.refresh?.();
+      setPDirty(false);
+      onSaved?.({ agendaId: parentId, status: savedStatus });
+      onClose();
+    } catch(error) {
+      toast.error(error instanceof Error ? error.message : "Agenda approval was not confirmed. Refresh and retry.");
+      await agendaReg.refresh?.().catch(() => undefined);
+    } finally {
+      setSaving(false);
     }
-    setPDirty(false);
-    const savedStatus = agendaReg.items.find(a => a.id === parentId)?.approval_status ?? "Pending Approval";
-    onSaved?.({ agendaId: parentId, status: savedStatus });
-    onClose();
   }
 
   // ── Close guard ───────────────────────────────────────────────────────────
