@@ -10,6 +10,7 @@ describe("AG-368 final committed Agenda lifecycle consistency", () => {
     expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
     expect(sql).toContain("WHERE entity_key='bms.agenda' AND record_id=NEW.record_id");
     expect(sql).toContain("Approved parent has an unapproved active descendant");
+    expect(sql).toContain("Approved agenda must have Meeting Ready status");
   });
   it("does not allow linked agendas to silently lose readiness", () => {
     expect(sql).toContain("l.entity_key='bms.meetingAgendaLinks'");
