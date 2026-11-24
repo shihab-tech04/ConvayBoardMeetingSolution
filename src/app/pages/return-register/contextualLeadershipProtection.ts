@@ -11,6 +11,6 @@ export function contextualLeadershipRemovalBlocker(meeting: Record<string, unkno
   // Legacy adapter records may lack a canonical user ID; never let such a row remove a named leader.
   const names = fields.map(field => normalized(meeting[field])).filter(Boolean);
   if (names.includes(normalized(participant.name))) return "Required meeting leadership cannot be removed. Replace the leader through Meeting Details first.";
-  if (fields.some(field => !String(meeting[`${field}_user_id`] ?? "").trim() && !normalized(meeting[field]))) return "Meeting leadership identity is incomplete. Refresh Meeting Details before removing a participant.";
+  if (fields.some(field => !(userId && String(meeting[`${field}_user_id`] ?? "").trim()) && !(normalized(participant.name) && normalized(meeting[field])))) return "Meeting leadership identity is incomplete. Refresh Meeting Details before removing a participant.";
   return null;
 }
