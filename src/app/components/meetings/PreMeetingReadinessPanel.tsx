@@ -290,7 +290,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
       }
       // The production registry implements fresh SQL readback; test doubles
       // without a reader can only establish the prior ACK contract.
-      if (attendanceRegistry.refresh && attendanceRegistry.getById) {
+      if (typeof attendanceRegistry.refresh === "function" && typeof attendanceRegistry.getById === "function") {
         await attendanceRegistry.refresh();
         for (const write of written) {
           const row = attendanceRegistry.getById(write.id);
@@ -306,7 +306,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
           JSON.stringify(latestAttendance.current) !== JSON.stringify(requested)) {
         throw new Error("Attendance changed during saving. Save again before starting.");
       }
-      if (stillMounted.current && attendanceRegistry.refresh && attendanceRegistry.getById) {
+      if (stillMounted.current && typeof attendanceRegistry.refresh === "function" && typeof attendanceRegistry.getById === "function") {
         setEditScope({ meetingId, values: {} });
       }
       return stillMounted.current;
