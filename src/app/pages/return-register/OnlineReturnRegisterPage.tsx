@@ -13,6 +13,7 @@ import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
 import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDeletion";
 import { DRAFT_DELETION_UNAVAILABLE_REASON, guardMeetingDrawerAction } from "./meetingDeletionReleaseGate";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
+import { validateLeadershipRoster } from "./leadershipRoster";
 import { meetingContextPayload, mergeMeetingUpdateValues } from "./meetingContext";
 import { MEETING_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
@@ -794,6 +795,8 @@ export function OnlineReturnRegisterPage() {
         catch { return "Participant selection is invalid. Reopen the Participants step."; }
         if (!Array.isArray(participants) || participants.length === 0)
           return "Add at least one participant before continuing. You can save a draft instead.";
+        const leadershipError = validateLeadershipRoster(participants, resolveMeetingLeadership(values, bmsUserRegistry.items))[0];
+        if (leadershipError) return leadershipError;
         if (!participants.some(p => p.is_required)) return "Mark at least one participant as required.";
         if (!participants.some(p => p.quorum_eligible)) return "Mark at least one participant as quorum-eligible.";
       }
@@ -1094,6 +1097,7 @@ export function OnlineReturnRegisterPage() {
 
         const quorumEligible = draftLinksRaw.filter(l => l.quorum_eligible).length;
         const requiredParticipants = draftLinksRaw.filter(l => l.is_required).length;
+        blockers.push(...validateLeadershipRoster(draftLinksRaw, leadership));
         if (draftLinksRaw.length === 0)  blockers.push("At least one participant is required");
         if (requiredParticipants === 0)  blockers.push("At least one required participant must be assigned");
         if (quorumEligible === 0)        blockers.push("At least one quorum-eligible participant is required");
