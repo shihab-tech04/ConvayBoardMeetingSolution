@@ -14,6 +14,9 @@ import type { OrgUnit, GovernanceBody } from "../../data/boardMeetingData";
 import type { GovernanceMembership, MembershipRole } from "../../data/governanceMemberships";
 import type { EntryFormValue } from "./EntryForm";
 import { buildPathLabel, resolveUnitUsers } from "../../utils/orgHierarchy";
+import { resolveMeetingLeadership } from "../../pages/return-register/meetingLeadership";
+import { leadershipRosterRoles, type LeaderParticipantRole } from "../../pages/return-register/leadershipRoster";
+import { ATTENDANCE_REQUIREMENT_VALUES, attendanceRequirementPatch, readAttendanceRequirement, type AttendanceRequirement } from "../../pages/return-register/attendanceRequirement";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -46,6 +49,7 @@ export interface DraftParticipantLink {
   member_category: MemberCategory;
   participant_type: MeetingRole;
   is_required: boolean;
+  attendance_requirement?: AttendanceRequirement;
   voting_eligible: boolean;
   quorum_eligible: boolean;
   selection_sources: Array<{
@@ -114,7 +118,7 @@ function buildDraft(
     org_path: userOrgPath(user, orgUnits),
     member_category: category,
     participant_type: role,
-    is_required: isRequired,
+    ...attendanceRequirementPatch(isRequired ? "Mandatory" : "Optional"),
     voting_eligible: voting,
     quorum_eligible: quorum,
     selection_sources: [source],
@@ -248,10 +252,12 @@ interface SelectedCardProps {
   link: DraftParticipantLink;
   onChange: (updated: DraftParticipantLink) => void;
   onRemove: (id: string) => void;
+  leaderRoles?: readonly LeaderParticipantRole[];
 }
-function SelectedCard({ link, onChange, onRemove }: SelectedCardProps) {
+function SelectedCard({ link, onChange, onRemove, leaderRoles }: SelectedCardProps) {
   const [open, setOpen] = useState(false);
   const initial = link.user_name.charAt(0).toUpperCase();
+  const protectedLeader = Boolean(leaderRoles?.length);
 
   return (
     <div className="border border-[var(--border)] rounded-xl overflow-hidden bg-[var(--surface)] transition-shadow hover:shadow-sm">
@@ -295,7 +301,7 @@ function SelectedCard({ link, onChange, onRemove }: SelectedCardProps) {
           >
             {open ? <ChevronUp size={14} strokeWidth={2} /> : <ChevronDown size={14} strokeWidth={2} />}
           </button>
-          {link.is_required ? (
+          {(link.is_required || protectedLeader) ? (
             <span
               className="text-xs px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-400 cursor-help font-semibold"
               title="Required leadership role — return to Meeting Details to replace"
@@ -324,7 +330,7 @@ function SelectedCard({ link, onChange, onRemove }: SelectedCardProps) {
               onChange={e => onChange({ ...link, participant_type: e.target.value as MeetingRole })}
               className="text-xs border border-[var(--border)] rounded px-1.5 py-0.5 bg-[var(--background)] text-[var(--foreground)] flex-1"
             >
-              {MEETING_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+              {(leaderRoles?.length ? leaderRoles : MEETING_ROLES).map(r => <option key={r} value={r}>{r}</option>)}
             </select>
           </div>
           <div className="flex items-center gap-2">
@@ -338,13 +344,26 @@ function SelectedCard({ link, onChange, onRemove }: SelectedCardProps) {
               <option value="general">General</option>
             </select>
           </div>
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] text-[var(--muted-foreground)] w-16 shrink-0" htmlFor={`attendance-${link.id}`}>Attendance</label>
+            <select id={`attendance-${link.id}`} aria-label={`Attendance requirement for ${link.user_name}`}
+              value={readAttendanceRequirement(link) ?? ""} disabled={protectedLeader}
+              onChange={e => onChange({ ...link, ...attendanceRequirementPatch(e.target.value as AttendanceRequirement) })}
+              className="text-xs border border-[var(--border)] rounded px-1.5 py-0.5 bg-[var(--background)] text-[var(--foreground)] flex-1">
+              {readAttendanceRequirement(link) === null && <option value="" disabled>Choose attendance requirement</option>}
+              {ATTENDANCE_REQUIREMENT_VALUES.map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             {(["is_required", "voting_eligible", "quorum_eligible"] as const).map(flag => (
               <label key={flag} className="flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={!!link[flag]}
-                  onChange={e => onChange({ ...link, [flag]: e.target.checked })}
+                  checked={!!link[flag] || (flag === "is_required" && protectedLeader)}
+                  disabled={flag === "is_required" && protectedLeader}
+                  onChange={e => onChange(flag === "is_required"
+                    ? { ...link, ...attendanceRequirementPatch(e.target.checked ? "Mandatory" : "Optional") }
+                    : { ...link, [flag]: e.target.checked })}
                 />
                 <span className="text-[10px] text-[var(--muted-foreground)] capitalize">
                   {flag === "is_required" ? "Required" : flag === "voting_eligible" ? "Voting" : "Quorum"}
@@ -506,6 +525,12 @@ export function ParticipantSelectorStep({
   }, [orgUnits]);
 
   // ── Initialize links from stored JSON + auto-add Step 0 leaders ──────────
+  const protectedRoles = leadershipRosterRoles(resolveMeetingLeadership(values, bmsUsers.filter(isActive)));
+  const protectLink = (link: DraftParticipantLink): DraftParticipantLink => {
+    const roles = protectedRoles.get(link.user_id);
+    if (!roles?.length) return link;
+    return { ...link, ...attendanceRequirementPatch("Mandatory"), participant_type: roles.some(role => role === link.participant_type) ? link.participant_type : roles[0] };
+  };
   const initialised = useRef(false);
   const [links, setLinks] = useState<DraftParticipantLink[]>(() => {
     let stored: DraftParticipantLink[] = [];
@@ -526,7 +551,7 @@ export function ParticipantSelectorStep({
         user = bmsUsers.find(u => u.name === name && isActive(u));
       }
       if (!user) continue;
-      const alreadyIn = stored.some(l => l.user_id === user!.id);
+      const alreadyIn = [...stored, ...autoLeaders].some(l => l.user_id === user!.id);
       if (alreadyIn) continue;
       // Determine member_category from quorum membership
       const isMember = quorumMemberships.some(m => m.user_id === user!.id);
@@ -541,7 +566,7 @@ export function ParticipantSelectorStep({
         orgUnits,
       ));
     }
-    return [...stored, ...autoLeaders];
+    return [...stored, ...autoLeaders].map(protectLink);
   });
 
   const updateLinks = useCallback((next: DraftParticipantLink[]) => {
@@ -677,8 +702,11 @@ export function ParticipantSelectorStep({
     setPendingUserSources(new Map());
   }, [pendingUserIds, pendingUserSources, bmsUsers, links, orgUnits, updateLinks]);
 
-  const removeLink  = useCallback((id: string) => updateLinks(links.filter(l => l.id !== id)), [links, updateLinks]);
-  const updateLink  = useCallback((updated: DraftParticipantLink) => updateLinks(links.map(l => l.id === updated.id ? updated : l)), [links, updateLinks]);
+  const removeLink = (id: string) => {
+    if (links.some(link => link.id === id && protectedRoles.has(link.user_id))) return;
+    updateLinks(links.filter(link => link.id !== id));
+  };
+  const updateLink = (updated: DraftParticipantLink) => updateLinks(links.map(link => link.id === updated.id ? protectLink(updated) : link));
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -987,7 +1015,7 @@ export function ParticipantSelectorStep({
           </div>
           <div className="space-y-2">
             {links.map(link => (
-              <SelectedCard key={link.id} link={link} onChange={updateLink} onRemove={removeLink} />
+              <SelectedCard key={link.id} link={protectLink(link)} leaderRoles={protectedRoles.get(link.user_id)} onChange={updateLink} onRemove={removeLink} />
             ))}
           </div>
         </div>

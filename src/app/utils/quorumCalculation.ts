@@ -18,6 +18,8 @@ export type QuorumStatus =
 
 export interface QuorumResult {
   status: QuorumStatus;
+  /** Selected policy for display only; SQL remains authoritative. */
+  selectedRule?: QuorumRule;
   eligibleCount: number;
   requiredCount: number;
   requiredPercent: number;
@@ -32,43 +34,60 @@ export interface QuorumInput {
   /** ID of the governance body (Board/Committee). */
   boardCommitteeId: string;
   boardCommitteeName?: string;
+  /** Persisted meeting identity; never infer it from a title or another meeting. */
+  meetingId?: string;
   /** Canonical participant links from registry (used in row enrichment). */
   participantLinks?: MeetingParticipantLink[];
   /** Draft participant links from wizard values (used in steps 1–4). */
   draftLinks?: DraftParticipantLink[];
+  /** If provided, only these assigned users are currently present; the denominator remains all assigned eligible members. */
+  presentUserIds?: ReadonlySet<string>;
   governanceBodies: GovernanceBody[];
   quorumRules: QuorumRule[];
+}
+
+/** A meeting-scoped policy wins over a general policy. Never select an
+ * unrelated meeting rule, or break an ambiguity by registry ordering. */
+export function selectMeetingQuorumPolicy(input: Pick<QuorumInput, "boardCommitteeId" | "boardCommitteeName" | "meetingId" | "governanceBodies" | "quorumRules">): { rule: QuorumRule | null; conflict?: string } {
+  const { boardCommitteeId, boardCommitteeName, meetingId, governanceBodies, quorumRules } = input;
+  const active = quorumRules.filter(r => r.status === "Active");
+  const meetingKey = meetingId?.trim();
+  const scoped = meetingKey ? active.filter(r => r.meeting_id === meetingKey) : [];
+  if (scoped.length > 1) return { rule: null, conflict: "Multiple active quorum policies for this meeting" };
+  if (scoped.length === 1) return { rule: scoped[0] };
+
+  const committeeKey = boardCommitteeId.trim();
+  const byId = governanceBodies.filter(b => committeeKey && (b.id === committeeKey || b.body_id === committeeKey));
+  const byName = governanceBodies.filter(b => b.body_name && (b.body_name === committeeKey || b.body_name === boardCommitteeName));
+  const bodies = byId.length ? byId : byName;
+  if (bodies.length > 1) return { rule: null, conflict: "Ambiguous governance body for quorum policy" };
+  const body = bodies[0];
+  if (!body) return { rule: null };
+
+  const general = active.filter(r => !r.meeting_id?.trim() &&
+    (r.governance_body_id === body.id || r.governance_body_id === body.body_id));
+  if (general.length > 1) return { rule: null, conflict: "Multiple active quorum policies for this governance body" };
+  return { rule: general[0] ?? null };
 }
 
 export function calculateMeetingQuorum(input: QuorumInput): QuorumResult {
   const {
     boardCommitteeId,
     boardCommitteeName,
+    meetingId,
     participantLinks = [],
     draftLinks = [],
+    presentUserIds,
     governanceBodies,
     quorumRules,
   } = input;
 
-  // Resolve the governance body
-  const body = governanceBodies.find(b =>
-    b.id === boardCommitteeId ||
-    b.body_id === boardCommitteeId ||
-    b.body_name === boardCommitteeId ||
-    b.body_name === boardCommitteeName,
-  );
-
-  // Find the active quorum rule for this body
-  const govRule = body
-    ? quorumRules.find(r =>
-        (r.governance_body_id === body.id || r.governance_body_id === body.body_id) &&
-        r.status === "Active",
-      ) ?? null
-    : null;
+  const selection = selectMeetingQuorumPolicy({ boardCommitteeId, boardCommitteeName, meetingId, governanceBodies, quorumRules });
+  const govRule = selection.rule;
 
   if (!govRule) {
     return {
-      status: "not_configured",
+      status: selection.conflict ? "not_expected" : "not_configured",
       eligibleCount: 0,
       requiredCount: 0,
       requiredPercent: 0,
@@ -76,65 +95,61 @@ export function calculateMeetingQuorum(input: QuorumInput): QuorumResult {
       totalParticipants: participantLinks.length + draftLinks.length,
       requiredRoles: [],
       missingRoles: [],
-      reasons: ["No active quorum rule configured for this governance body"],
+      reasons: [selection.conflict ?? "No active quorum rule configured for this governance body"],
     };
   }
 
-  const requiredCount  = parseInt(govRule.minimum_members, 10) || 0;
-  const requiredPct    = parseFloat(govRule.quorum_percent) || 0;
+  const minimum = govRule.minimum_members_count ?? (parseInt(govRule.minimum_members, 10) || 0);
+  const requiredPct = govRule.minimum_percentage ?? (parseFloat(govRule.quorum_percent) || 0);
 
   // Required roles from governance rule
   const requiredRoles: string[] = (() => {
     const rv = (govRule as { required_roles?: string | string[] }).required_roles;
     if (!rv) return [];
-    if (Array.isArray(rv)) return rv as string[];
+    if (Array.isArray(rv)) return rv.map(r => r.trim()).filter(Boolean);
     if (typeof rv === "string" && rv) return rv.split(",").map(s => s.trim()).filter(Boolean);
     return [];
   })();
 
-  // Count quorum-eligible participants
-  const totalParticipants = draftLinks.length > 0 ? draftLinks.length : participantLinks.length;
-  const eligibleCount =
-    draftLinks.length > 0
-      ? draftLinks.filter(l => l.quorum_eligible).length
-      : participantLinks.filter(l => l.quorum_eligible).length;
+  // Match the hosted SQL denominator: distinct assigned quorum-eligible users.
+  // Filtering by attendance before counting would incorrectly make every present
+  // subset 100% of the membership, and invitees must not dilute the threshold.
+  const links = draftLinks.length > 0 ? draftLinks : participantLinks;
+  const totalParticipants = links.length;
+  const eligibleUsers = new Set(links.filter(l => l.quorum_eligible && l.user_id).map(l => l.user_id));
+  const presentLinks = presentUserIds === undefined ? links : links.filter(l => presentUserIds.has(l.user_id));
+  const eligibleCount = new Set(presentLinks.filter(l => l.quorum_eligible && l.user_id).map(l => l.user_id)).size;
+  const selectedEligibleCount = eligibleUsers.size;
+  const validThreshold = Number.isInteger(minimum) && minimum >= 0 && minimum <= 100000 &&
+    Number.isFinite(requiredPct) && requiredPct >= 0 && requiredPct <= 100;
+  const requiredCount = validThreshold ? Math.max(minimum, Math.ceil(selectedEligibleCount * requiredPct / 100)) : 0;
 
-  // Check missing required roles
-  const assignedRoles = draftLinks.length > 0
-    ? draftLinks.map(l => l.participant_type)
-    : participantLinks.map(l => l.participant_type);
+  // Required governance roles must be present, not merely invited, when attendance is supplied.
+  const assignedRoles = presentLinks.map(l => l.participant_type);
   const missingRoles = requiredRoles.filter(r => !assignedRoles.includes(r));
-
-  // Calculate status
-  const meetsFixed = requiredCount > 0 ? eligibleCount >= requiredCount : true;
-  const meetsPct   = requiredPct > 0 && totalParticipants > 0
-    ? (eligibleCount / totalParticipants) * 100 >= requiredPct
-    : true;
-  const hasMissingRoles = missingRoles.length > 0;
-
   const reasons: string[] = [];
-  if (!meetsFixed)      reasons.push(`Needs ${requiredCount} quorum-eligible members (have ${eligibleCount})`);
-  if (!meetsPct)        reasons.push(`Needs ${requiredPct}% quorum-eligible (have ${totalParticipants > 0 ? Math.round((eligibleCount / totalParticipants) * 100) : 0}%)`);
-  if (hasMissingRoles)  reasons.push(`Missing required roles: ${missingRoles.join(", ")}`);
+  const unresolvedRolePolicy = govRule.rule_type === "role_based";
+  if (!validThreshold) reasons.push("Invalid configured quorum limits");
+  if (unresolvedRolePolicy) reasons.push("Required role IDs require authoritative role mapping");
+  if (selectedEligibleCount === 0) reasons.push("No quorum-eligible members assigned");
+  if (validThreshold && requiredCount === 0) reasons.push("No positive quorum threshold configured");
+  if (eligibleCount < requiredCount) reasons.push(`Needs ${requiredCount} quorum-eligible members (have ${eligibleCount})`);
+  if (missingRoles.length > 0) reasons.push(`Missing required roles: ${missingRoles.join(", ")}`);
 
-  let status: QuorumStatus;
-  if (meetsFixed && meetsPct && !hasMissingRoles) {
-    status = "expected";
-  } else {
-    // At risk: within 1 member or 5% of threshold
-    const closeFixed = requiredCount > 0 ? eligibleCount >= requiredCount - 1 : true;
-    const closePct   = requiredPct > 0 && totalParticipants > 0
-      ? (eligibleCount / totalParticipants) * 100 >= requiredPct - 5
-      : true;
-    status = (closeFixed && closePct && !hasMissingRoles) ? "at_risk" : "not_expected";
+  let status: QuorumStatus = "not_expected";
+  if (validThreshold && !unresolvedRolePolicy && selectedEligibleCount > 0 && requiredCount > 0 && missingRoles.length === 0) {
+    if (eligibleCount >= requiredCount) status = "expected";
+    else if (eligibleCount >= requiredCount - 1 &&
+      (requiredPct === 0 || eligibleCount / selectedEligibleCount * 100 >= requiredPct - 5)) status = "at_risk";
   }
 
   return {
     status,
+    selectedRule: govRule,
     eligibleCount,
     requiredCount,
     requiredPercent: requiredPct,
-    selectedEligibleCount: eligibleCount,
+    selectedEligibleCount,
     totalParticipants,
     requiredRoles,
     missingRoles,
