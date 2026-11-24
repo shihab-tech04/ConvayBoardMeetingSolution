@@ -17,7 +17,11 @@ describe("AG-364 separate Agenda author, reviewer, approver and parent signoff",
 
   it("matches action controls to SQL roles, including reviewer-only revision requests", () => {
     expect(agenda).toContain('request_revision: "agd_review"');
-    expect(agenda).toContain('if (action === "request_revision" && myPermissions.includes("agd_approve"))');
+    // Approver roles already carry agd_review in authoritative SQL; a client
+    // fallback from agd_approve would advertise a button that SQL may deny.
+    expect(agenda).toContain('return !!permId && hasAccess(permId, access);');
+    expect(agenda).not.toContain('myPermissions.includes("agd_approve")');
+    expect(agenda).not.toContain('systemUsers.find(');
     expect(agenda).toContain('const permitted = hasPermission(action);');
     expect(agenda).toContain('const canSubmit = SUBMITTABLE_STATUSES.has(status) && hasPermission("submit");');
     expect(agenda).toContain('if (action !== "request_revision" || hasPermission("approve")) cascadeStatusUp');
