@@ -36,7 +36,7 @@ begin
  begin perform convay_private.vote_create_motion(a,'MTG-SHARED','SES-A','AG-2','Wrong agenda','Fixture wording',v,'','motion_request_000002');raise exception 'Foreign agenda accepted';exception when insufficient_privilege then n:=n+1;end;
  begin perform convay_private.vote_create_motion(a,'MTG-SHARED','SES-A','AG-1','Changed title','Fixture wording',v,'Fixture notes','motion_request_000001');raise exception 'Conflicting motion replay accepted';exception when unique_violation then n:=n+1;end;
  begin perform convay_private.vote_open(a,'MTG-SHARED','SES-A',m,'missing',1,'round_request_000001');raise exception 'Unapproved policy accepted';exception when insufficient_privilege then n:=n+1;end;
- insert into convay_private.vote_policy_versions values(a,'fixture-secret',1,'Secret Ballot',1,1,'cast','gte',1,true,true,false,false,'SYNTHETIC-TEST-ONLY'),(a,'fixture-open',1,'Open',1,2,'decisive','gt',1,false,false,true,true,'SYNTHETIC-TEST-ONLY');
+ insert into convay_private.vote_policy_versions values(a,'fixture-secret',1,'Secret Ballot',1,1,'cast','gte',1,true,true,true,false,false,'SYNTHETIC-TEST-ONLY'),(a,'fixture-open',1,'Open',1,2,'decisive','gt',1,false,false,true,true,true,'SYNTHETIC-TEST-ONLY');
  begin update convay_private.vote_policy_versions set numerator=2 where tenant_id=a and policy_id='fixture-secret';raise exception 'Policy mutation accepted';exception when insufficient_privilege then n:=n+1;end;
  perform set_config('request.jwt.claim.sub',v::text,true);
  begin perform convay_private.vote_open(a,'MTG-SHARED','SES-A',m,'fixture-secret',1,'round_request_000001');raise exception 'Nonleader opened round';exception when insufficient_privilege then n:=n+1;end;
@@ -64,6 +64,9 @@ begin
  perform convay_private.vote_cast(a,'MTG-SHARED','SES-A',r,'For','ballot_request_000002');n:=n+1;
  begin perform convay_private.vote_close(a,'MTG-SHARED','SES-A',r,'close_request_000001');raise exception 'Nonleader closed';exception when insufficient_privilege then n:=n+1;end;
  perform set_config('request.jwt.claim.sub',h::text,true);
+ insert into convay_private.vote_recusal_scope values(a,'MTG-SHARED','SES-A','AG-1',v);
+ begin perform convay_private.vote_close(a,'MTG-SHARED','SES-A',r,'close_request_000001');raise exception 'Close accepted ineligible recorded voter';exception when insufficient_privilege then n:=n+1;end;
+ delete from convay_private.vote_recusal_scope where tenant_id=a and voter_id=v;
  if convay_private.vote_close(a,'MTG-SHARED','SES-A',r,'close_request_000001')<>'Passed' then raise exception 'Unanimity exact threshold failed';end if;n:=n+1;
  if convay_private.vote_close(a,'MTG-SHARED','SES-A',r,'close_request_000001')<>'Passed' then raise exception 'Close retry failed';end if;n:=n+1;
  x:=convay_private.vote_read(a,'MTG-SHARED','SES-A',r);if x->>'for'<>'2' or x?'ballots' or x?'voters' or exists(select 1 from convay_private.vote_named_ballots where round_id=r) then raise exception 'Secret result leaked or inconsistent';end if;n:=n+1;

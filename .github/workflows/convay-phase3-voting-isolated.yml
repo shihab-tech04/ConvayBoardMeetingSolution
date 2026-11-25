@@ -26,6 +26,10 @@ jobs:
           for f in supabase/tests/live_attendance_scoped/bootstrap.sql supabase/migrations/20261122173000_convay_authoritative_live_attendance.sql supabase/migrations/20261123101000_convay_quorum_snapshot_safeupdate.sql supabase/tests/live_attendance_scoped/activation_candidate.sql supabase/tests/live_voting_transaction/candidate.sql supabase/tests/live_voting_transaction/matrix.sql; do
             docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f "/workspace/$f"
           done
+      - name: Execute independent concurrent PostgreSQL sessions
+        run: |
+          docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/race_setup.sql
+          bash supabase/tests/live_voting_transaction/races.sh
       - name: Destroy disposable PostgreSQL
         if: always()
         run: docker rm -f convay-voting || true

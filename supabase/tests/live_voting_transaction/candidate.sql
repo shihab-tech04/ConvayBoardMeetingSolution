@@ -11,7 +11,7 @@ create table convay_private.vote_policy_versions (
   basis text not null check(basis in ('decisive','cast','electorate')),
   comparison text not null check(comparison in ('gt','gte')),
   min_cast integer not null check(min_cast>0),
-  reopen_allowed boolean not null, seconder_required boolean not null,
+  reopen_allowed boolean not null, seconder_required boolean not null, recheck_at_close boolean not null,
   visible_live_tally boolean not null, visible_named_ballots boolean not null,
   approval_ref text not null check(length(btrim(approval_ref))>0),
   primary key(tenant_id,policy_id,version),
@@ -82,18 +82,23 @@ language plpgsql security definer set search_path='' as $$
 declare s record; m public.convay_entity_records%rowtype; actor uuid:=auth.uid();
 begin
   if p_tenant is null or p_session is null or actor is null then raise exception 'Explicit authenticated company/session scope required' using errcode='42501';end if;
+  perform 1 from convay_private.tenants where id=p_tenant and lifecycle_state='active' for share;
+  if not found then raise exception 'Active company required' using errcode='42501';end if;
   perform 1 from convay_private.tenant_memberships where tenant_id=p_tenant and user_id=actor and membership_state='active' and revoked_at is null for share;
   if not found then raise exception 'Active company membership required' using errcode='42501';end if;
   perform 1 from public.user_profiles where user_id=actor and account_status='active' for share;
   if not found then raise exception 'Active account required' using errcode='42501';end if;
   select * into strict s from convay_private.resolve_live_attendance_scope(p_tenant,p_meeting,p_session);
   select * into strict m from public.convay_entity_records where entity_key='bms.meetings' and tenant_id=p_tenant and record_id=s.meeting_record_id;
+  if lower(coalesce(m.payload->>'approval_status','')) in ('draft','cancelled','canceled','rejected','completed','ended','archived') or lower(coalesce(m.payload->>'status','')) in ('draft','cancelled','canceled','rejected','completed','ended','archived') or lower(coalesce(m.payload->>'workflow_status','')) in ('draft','cancelled','canceled','rejected','completed','ended','archived') then raise exception 'Meeting not live' using errcode='23514';end if;
   if not convay_private.has_permission('mtg_view') or not convay_private.has_permission('mtg_join') then raise exception 'Meeting permission required' using errcode='42501';end if;
   if (select count(*) from public.convay_entity_records where entity_key='bms.meetingParticipantLinks' and tenant_id=p_tenant and payload->>'meeting_id'=s.canonical_meeting_id and payload->>'user_id'=actor::text)<>1 then raise exception 'Meeting participant required' using errcode='42501';end if;
   if p_leader and (not convay_private.has_permission('mtg_start') or not convay_private.is_meeting_leader(actor,m.payload,m.created_by)) then raise exception 'Assigned meeting leader required' using errcode='42501';end if;
   if p_quorum then
-    if (select enabled from convay_private.live_attendance_release_gate where singleton=true) is distinct from true or
-      not exists(select 1 from convay_private.live_quorum_snapshots where tenant_id=p_tenant and meeting_id=s.canonical_meeting_id and session_id=p_session and met=true) then raise exception 'Authoritative quorum required' using errcode='42501';end if;
+    perform 1 from convay_private.live_attendance_release_gate where singleton=true and enabled=true for share;
+    if not found then raise exception 'Authoritative attendance gate required' using errcode='42501';end if;
+    perform 1 from convay_private.live_quorum_snapshots where tenant_id=p_tenant and meeting_id=s.canonical_meeting_id and session_id=p_session and met=true for share;
+    if not found then raise exception 'Authoritative quorum required' using errcode='42501';end if;
     if not exists(select 1 from public.convay_entity_records where entity_key='bms.liveSessions' and tenant_id=p_tenant and record_id=p_session and lower(payload->>'session_status')='active') then raise exception 'Active proceedings required' using errcode='23514';end if;
   end if;
   return s.canonical_meeting_id;
@@ -171,13 +176,17 @@ declare mid text; r convay_private.vote_rounds%rowtype; m convay_private.vote_mo
 end$$;
 create function convay_private.vote_close(p_tenant uuid,p_meeting text,p_session text,p_round uuid,p_request text) returns text
 language plpgsql security definer set search_path='' as $$
-declare mid text; r convay_private.vote_rounds%rowtype; p convay_private.vote_policy_versions%rowtype; total integer; base integer; passed boolean; actor uuid:=auth.uid();begin
+declare mid text; r convay_private.vote_rounds%rowtype; p convay_private.vote_policy_versions%rowtype; agenda text; total integer; base integer; passed boolean; actor uuid:=auth.uid();begin
   perform convay_private.vote_request(p_request);mid:=convay_private.vote_scope(p_tenant,p_meeting,p_session,true,false);
   select * into r from convay_private.vote_rounds where tenant_id=p_tenant and meeting_id=mid and session_id=p_session and round_id=p_round for update;
   if not found then raise exception 'Round unavailable' using errcode='42501';end if;
   if r.state='Closed' then if r.close_request=p_request and r.closed_by=actor then return r.outcome;end if;raise exception 'Round already closed' using errcode='23514';end if;
   perform convay_private.vote_scope(p_tenant,p_meeting,p_session,true,true);
   select * into p from convay_private.vote_policy_versions where tenant_id=p_tenant and policy_id=r.policy_id and version=r.policy_version;
+  if p.recheck_at_close then
+    select agenda_id into strict agenda from convay_private.vote_motions where tenant_id=p_tenant and motion_id=r.motion_id;
+    if exists(select 1 from convay_private.vote_participation b where b.tenant_id=p_tenant and b.round_id=p_round and not convay_private.vote_eligible(p_tenant,mid,p_session,agenda,b.voter_id)) then raise exception 'Previously recorded voter no longer eligible; policy review required' using errcode='42501';end if;
+  end if;
   total:=r.for_count+r.against_count+r.abstain_count;
   if total<p.min_cast or total<>(select count(*) from convay_private.vote_participation where tenant_id=p_tenant and round_id=p_round) then raise exception 'Ballot count not ready or reconciled' using errcode='23514';end if;
   base:=case p.basis when 'decisive' then r.for_count+r.against_count when 'cast' then total else r.electorate_count end;
