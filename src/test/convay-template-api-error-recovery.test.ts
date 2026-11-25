@@ -4,7 +4,7 @@ vi.mock("../app/services/supabase/convayAuth", () => ({
   convayAuth: { authenticatedRequest: vi.fn() },
 }));
 import { convayAuth } from "../app/services/supabase/convayAuth";
-import { templateAction } from "../app/services/saas/meetingTemplateControl";
+import { readManagedTemplate, templateAction } from "../app/services/saas/meetingTemplateControl";
 
 const request = vi.mocked(convayAuth.authenticatedRequest);
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
@@ -37,5 +37,32 @@ describe("MT-CONFIG-01 authenticated SQL template API failure recovery", () => {
       method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({p_action:"list",p_payload:{tenant_id:null}}),
     });
+  });
+});
+
+
+describe("MT-CONFIG-01 immutable template revision readback", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  it.each([0, -1, 2, 4, 1.5, "3", null])("rejects a mismatched or invalid revision %s", async (revision) => {
+    request.mockResolvedValueOnce(response({ template: { id, revision } }));
+    await expect(readManagedTemplate(id, 3)).rejects.toThrow("Template SQL readback identity was not confirmed");
+  });
+  it("accepts the exact requested historical revision", async () => {
+    const template = { id, revision: 3, current_revision: 4 };
+    request.mockResolvedValueOnce(response({ template }));
+    await expect(readManagedTemplate(id, 3)).resolves.toEqual(template);
+    expect(request).toHaveBeenCalledWith("/rest/v1/rpc/convay_meeting_template_manage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_action: "read", p_payload: { template_id: id, revision: 3 } }),
+    });
+  });
+  it.each([0, -1])("rejects nonpositive default readback %s", async (revision) => {
+    request.mockResolvedValueOnce(response({ template: { id, revision } }));
+    await expect(readManagedTemplate(id)).rejects.toThrow("Template SQL readback identity was not confirmed");
+  });
+  it("accepts a valid server-selected revision when none is requested", async () => {
+    const template = { id, revision: 2 };
+    request.mockResolvedValueOnce(response({ template }));
+    await expect(readManagedTemplate(id)).resolves.toEqual(template);
   });
 });
