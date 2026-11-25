@@ -7,7 +7,7 @@ import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { normalizeMeetingSchedule, validateMeetingSchedule } from "./meetingSchedule";
-import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
+import { meetingAccessBlockers, meetingUpdateAccessBlockers, meetingWizardAccess } from "./meetingAccess";
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "./meetingAgendaSelection";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
 import { readMeetingDraftSnapshot, restoreMeetingDraftRow, assertResumedDraftRevision, assertDraftRelationshipReadback } from "./meetingDraftResume";
@@ -959,6 +959,8 @@ export function OnlineReturnRegisterPage() {
       const draftOrg = leadership.names.organizer;
       // Validate all selections before assembling any destructive replacement batch.
       const relationships = normalizeDraftRelationships(values, !existingDraftId);
+      const draftTarget = resolveMeetingDraftTarget(existingDraftId, registry.items);
+      const mid = draftTarget?.meetingId ?? generateId("MTG", registry.items.map(m => m.meeting_id));
 
       const meetingPayload: Record<string, unknown> = {
         meeting_title:    title,
@@ -968,10 +970,7 @@ export function OnlineReturnRegisterPage() {
         start_time:       String(values.start_time       ?? ""),
         end_time:         String(values.end_time         ?? ""),
         time_zone:        String(values.time_zone        ?? "Asia/Dhaka (GMT+6)"),
-        mode:             String(values.mode             ?? "Physical"),
-        venue:            String(values.venue            ?? ""),
-        virtual_platform: "Convay",
-        virtual_link:     String(values.virtual_link     ?? ""),
+        ...meetingWizardAccess(values,mid),
         financial_year:   String(new Date().getFullYear() + "-" + (new Date().getFullYear() + 1)),
         ...meetingLeadershipPayload(leadership),
         language:         "English",
@@ -985,20 +984,16 @@ export function OnlineReturnRegisterPage() {
         updated_at: now,
       };
 
-      let mid: string;
-      const draftTarget = resolveMeetingDraftTarget(existingDraftId, registry.items);
       const savedSnapshot = draftTarget ? await readCurrentDraft(draftTarget.recordId,draftTarget.meetingId) : undefined;
       if (savedSnapshot) assertResumedDraftRevision(savedSnapshot,values.draft_revision);
       if (draftTarget && savedSnapshot) {
         // Upsert — update existing draft record
         batch.push({ entity_key: "bms.meetings", action: "update", record_id: draftTarget.recordId, payload: meetingPayload });
-        mid = draftTarget.meetingId;
         // Remove old child links before re-adding (clean slate for participants/agendas)
         savedSnapshot.participants.forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
         savedSnapshot.agendas.forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
       } else {
         // Insert — new draft
-        mid = generateId("MTG", registry.items.map(m => m.meeting_id));
         batch.push({ entity_key: "bms.meetings", action: "create", payload: {
           id: mid, meeting_id: mid,
           ...meetingPayload,
@@ -1081,6 +1076,7 @@ export function OnlineReturnRegisterPage() {
 
     // ── Create: saves meeting + all child records ─────────────────────────────
     onRowCreate: async (values) => {
+      values = { ...values, ...meetingWizardAccess(values,String(values.meeting_id ?? "")) };
       const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now  = new Date().toISOString();
       const identity = normalizeMeetingIdentity(values);
