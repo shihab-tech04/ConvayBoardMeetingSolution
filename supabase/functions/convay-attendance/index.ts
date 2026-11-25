@@ -1,7 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { RoomServiceClient } from "npm:livekit-server-sdk@2.19.2";
 import { checkOnlineAdmission, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
-import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, meetingLookupParams, uniqueSavedMeeting, checkAttendancePersistenceScope, type SavedMeetingRow, type SqlEntity } from "../convay-livekit/tenantScope.ts";
+import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, meetingLookupParams, uniqueSavedMeeting, type SavedMeetingRow, type SqlEntity } from "../convay-livekit/tenantScope.ts";
+
+import { scopeFromPersistedSession, scopedRpcArgs, verifyScopedReceipt } from "./scopedReceipt.ts";
 
 /**
  * Authenticated regular-meeting attendance gateway.
@@ -104,19 +106,21 @@ Deno.serve(async req => {
   let request: {
     action?: unknown; meetingId?: unknown; participantId?: unknown;
     nextStatus?: unknown; expectedRevision?: unknown; requestId?: unknown;
-    attendanceMode?: unknown;
+    attendanceMode?: unknown; expectedSessionId?: unknown; expectedTenantId?: unknown;
   };
   try { request = await req.json(); }
   catch { return reply(req, 400, { error: "Invalid attendance request." }); }
-  const { action, meetingId, participantId, nextStatus, expectedRevision, requestId, attendanceMode } = request;
+  const { action, meetingId, participantId, nextStatus, expectedRevision, requestId, attendanceMode, expectedSessionId, expectedTenantId } = request;
   if ((action !== "readback" && action !== "commit")
     || typeof meetingId !== "string" || !identityRegex.test(meetingId)
     || typeof participantId !== "string" || !identityRegex.test(participantId)
+    || typeof expectedSessionId !== "string" || !identityRegex.test(expectedSessionId)
     || (action === "commit" && (
       typeof nextStatus !== "string" || !statuses.has(nextStatus)
       || typeof requestId !== "string" || !requestRegex.test(requestId)
       || typeof expectedRevision !== "number" || !Number.isSafeInteger(expectedRevision)
       || expectedRevision < 0 || !["Online", "In-Person"].includes(String(attendanceMode))
+      || expectedTenantId === undefined
     ))) {
     return reply(req, 400, { error: "Invalid attendance request." });
   }
@@ -150,8 +154,6 @@ Deno.serve(async req => {
     ]);
     const scope = checkLiveKitTenantScope(meetingRow, [...linkRows, ...sessions]);
     if (!scope.allowed) return reply(req, scope.status, { error: scope.error });
-    const persistence = checkAttendancePersistenceScope(meetingRow);
-    if (!persistence.allowed) return reply(req, persistence.status, { error: persistence.error });
     const links = linkRows.map(row => row.payload);
     const matching = links.filter(link =>
       link.meeting_id === canonicalMeetingId && link.user_id === participantId);
@@ -184,6 +186,7 @@ Deno.serve(async req => {
     if (session.reopen_started_at && (!session.id || !/^SES-[A-Za-z0-9_-]+-R[0-9]+$/.test(session.id))) {
       return reply(req, 409, { error: "Recovered meeting session identity is invalid." });
     }
+    const attendanceScope = scopeFromPersistedSession(meetingRow.tenant_id, session.id, expectedSessionId, expectedTenantId);
     if (meeting.mode && meeting.meeting_mode && meeting.mode !== meeting.meeting_mode) {
       return reply(req, 409, { error: "Saved meeting mode is inconsistent. Refresh the meeting." });
     }
@@ -200,10 +203,11 @@ Deno.serve(async req => {
       }
     }
     if (action === "readback") {
-      const result = await serviceRpc<Record<string, unknown>>("convay_read_live_attendance", {
+      const result = await serviceRpc<Record<string, unknown>>("convay_read_live_attendance_scoped", {
         p_actor_id: user.id, p_meeting_id: canonicalMeetingId, p_participant_id: participantId,
+        ...scopedRpcArgs(attendanceScope),
       });
-      return reply(req, 200, result);
+      return reply(req, 200, verifyScopedReceipt(result, attendanceScope, canonicalMeetingId, participantId));
     }
 
     let providerVerified = false;
@@ -213,13 +217,14 @@ Deno.serve(async req => {
         return reply(req, 409, { error: "Connect to the LiveKit room before recording attendance." });
       }
     }
-    const result = await serviceRpc<Record<string, unknown>>("convay_commit_live_attendance", {
+    const result = await serviceRpc<Record<string, unknown>>("convay_commit_live_attendance_scoped", {
       p_actor_id: user.id, p_meeting_id: canonicalMeetingId, p_participant_id: participantId,
+        ...scopedRpcArgs(attendanceScope),
       p_next_status: nextStatus, p_expected_revision: expectedRevision,
       p_request_id: requestId, p_provider_confirmed: providerVerified,
       p_attendance_mode: attendanceMode,
     });
-    return reply(req, 200, result);
+    return reply(req, 200, verifyScopedReceipt(result, attendanceScope, canonicalMeetingId, participantId));
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "Unable to confirm attendance.";
     const status = /permission|denied|cannot view/i.test(message) ? 403

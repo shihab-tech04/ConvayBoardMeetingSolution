@@ -23,7 +23,12 @@ begin
  ('bms.quorumrules','rule-A',a,'{"meeting_id":"MTG-SHARED","status":"Active","minimum_members_count":"1"}'),
  ('bms.quorumrules','rule-B',b,'{"meeting_id":"MTG-SHARED","status":"Active","minimum_members_count":"1"}'),
  ('bms.quorumrules','rule-L',null,'{"meeting_id":"MTG-LEGACY","status":"Active","minimum_members_count":"1"}');
+ update convay_private.live_attendance_release_gate set enabled=false where singleton=true;
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A');
+ if (ra->'releaseEnabled') is distinct from 'false'::jsonb then raise exception 'Disabled release proof incorrect';end if;
  update convay_private.live_attendance_release_gate set enabled=true where singleton=true;
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A');
+ if (ra->'releaseEnabled') is distinct from 'true'::jsonb then raise exception 'Enabled release proof incorrect';end if;
  ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',0,'same_request_00000001',true,'Online',a,'SES-A');
  rb:=public.convay_commit_live_attendance_scoped(ub,'MTG-SHARED',ub::text,'Present',0,'same_request_00000001',true,'Online',b,'SES-B');
  if ra#>>'{quorum,met}'<>'true' or rb#>>'{quorum,met}'<>'true' then raise exception 'Tenant quorum calculation failed';end if;

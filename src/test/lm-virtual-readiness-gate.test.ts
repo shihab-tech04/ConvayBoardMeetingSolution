@@ -12,7 +12,7 @@ describe("LM readiness regression: real virtual start and physical readiness", (
     expect(workspace).toContain("if (!hasCanonicalOnlineSession) {");
     expect(workspace).toContain("setOnlineAttendance(null)");
     expect(workspace).toContain("onlineAttendance?.gate === attendanceGate");
-    expect(workspace).toContain("readLiveAttendance(meetingId, target)");
+    expect(workspace).toContain("readLiveAttendance(meetingId, target, gate.sessionId)");
     expect(workspace).toContain("applyVerifiedAttendance(saved, ticket)");
   });
   it("routes Virtual and Hybrid hosts to the real verified LiveKit prejoin, not manual in-person attendance", () => {

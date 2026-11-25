@@ -647,7 +647,8 @@ begin
     'meetingId',v_mid,'participantId',p_participant_id,'tenantId',p_tenant_id,'sessionId',v_current_session,
     'status',v_status,'attendanceId',coalesce(v_row.record_id,''),
     'attendanceRevision',coalesce(v_row.revision,0),
-    'quorum',v_quorum,'attendanceMap',v_attendees
+    'quorum',v_quorum,'attendanceMap',v_attendees,
+    'releaseEnabled',coalesce((select enabled from convay_private.live_attendance_release_gate where singleton=true),false)
   );
 end;
 $$;
