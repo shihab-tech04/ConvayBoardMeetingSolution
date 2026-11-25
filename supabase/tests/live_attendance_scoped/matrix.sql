@@ -95,6 +95,29 @@ begin
  if ra#>>'{quorum,met}'<>'true' then raise exception 'Fresh verified command failed after re-enable';end if;
  if has_table_privilege('authenticated','convay_private.live_attendance_company_gate','UPDATE') or has_table_privilege('service_role','convay_private.live_attendance_company_gate','UPDATE') then raise exception 'Company gate writable by application roles';end if;
  raise notice 'Default-off, explicit session, legacy preservation, company suspension/re-enable and gate ACL PASS';
+ -- Existing approved rule can exclude virtual presence in Hybrid mode. Actual
+ -- physical check-in must replace the persisted mode, not just the status.
+ update public.convay_entity_records set payload=payload||'{"mode":"Hybrid"}'::jsonb where tenant_id=a and entity_key='bms.meetings' and record_id='record-A';
+ update public.convay_entity_records set payload=payload||'{"count_virtual_attendance":false}'::jsonb where tenant_id=a and entity_key='bms.quorumrules' and record_id='rule-A';
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A-R2');
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',(ra->>'attendanceRevision')::bigint,'hybrid_online_000001',true,'Online',a,'SES-A-R2');
+ if ra->>'attendanceMode' is distinct from 'Online' or ra#>>'{quorum,met}' is distinct from 'false' then raise exception 'Virtual presence counted under physical-only rule';end if;
+ prev_revision:=(ra->>'attendanceRevision')::bigint;
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',prev_revision,'hybrid_physical_00001',false,'In-Person',a,'SES-A-R2');
+ if ra->>'attendanceMode' is distinct from 'In-Person' or ra#>>'{quorum,met}' is distinct from 'true' then raise exception 'Hybrid physical mode was not persisted/countable';end if;
+ rb:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A-R2');
+ if rb->>'attendanceMode' is distinct from 'In-Person' or rb->>'attendanceRevision' is distinct from ra->>'attendanceRevision' then raise exception 'Hybrid mode readback differs from ACK';end if;
+ if public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',prev_revision,'hybrid_physical_00001',false,'In-Person',a,'SES-A-R2') is distinct from ra then raise exception 'Same-mode replay changed receipt';end if;
+ begin
+   perform public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',prev_revision,'hybrid_physical_00001',true,'Online',a,'SES-A-R2');
+   raise exception 'Different-mode replay accepted';
+ exception when unique_violation then null;end;
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Temporarily Away',(rb->>'attendanceRevision')::bigint,'hybrid_away_00000001',false,'In-Person',a,'SES-A-R2');
+ if ra->>'status' is distinct from 'Temporarily Away' or ra#>>'{quorum,met}' is distinct from 'true' then raise exception 'Away status violated existing physical quorum rule';end if;
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',(ra->>'attendanceRevision')::bigint,'hybrid_return_000001',false,'In-Person',a,'SES-A-R2');
+ if ra->>'status' is distinct from 'Present' or ra#>>'{quorum,met}' is distinct from 'true' then raise exception 'Return failed';end if;
+ if not exists(select 1 from public.convay_entity_records where tenant_id=a and entity_key='bms.liveSessions' and record_id='SES-A-R2' and payload->>'session_status'='active') then raise exception 'Away ended meeting';end if;
+ raise notice 'Hybrid mode persistence, mode-bound idempotency, temporary away/return under existing quorum rule PASS';
  update convay_private.tenant_memberships set membership_state='revoked',revoked_at=now() where tenant_id=a and user_id=ua;
  begin
    perform public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A-R2');
