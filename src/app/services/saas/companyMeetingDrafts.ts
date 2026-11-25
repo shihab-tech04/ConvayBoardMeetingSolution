@@ -93,7 +93,7 @@ async function progressPayload(tenantId:string,definition:MeetingTemplateVersion
   }
   return {wizard_step_id:progress.stepId,partial_save:progress.partial};
 }
-export async function listStagedCompanyDrafts(tenantId:string):Promise<StagedCompanyDraftSummary[]> {
+export async function listStagedCompanyDrafts(tenantId:string,onProgressSupport?:(supported:boolean)=>void):Promise<StagedCompanyDraftSummary[]> {
   const data=await draftRpc("list",tenantId,{});
   if (!Array.isArray(data.drafts)
     || data.drafts.some(row=>!object(row)||typeof row.draft_id!=="string"
@@ -105,6 +105,7 @@ export async function listStagedCompanyDrafts(tenantId:string):Promise<StagedCom
       || typeof row.updated_at!=="string")) {
     throw new Error("Company draft directory SQL readback invalid");
   }
+  onProgressSupport?.(data.draft_progress_supported===true);
   return data.drafts as StagedCompanyDraftSummary[];
 }
 export async function readStagedCompanyDraft(tenantId:string,draftId:string):Promise<StagedCompanyDraft> {

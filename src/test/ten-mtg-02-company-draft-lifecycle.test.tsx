@@ -65,7 +65,7 @@ beforeEach(()=>{
    description:"",revision:2,current_revision:2,published_revision:2,state:"published",
    source_template_id:null,published_at:draft.created_at,definition});
  state.save.mockResolvedValue({draft});
- state.drafts.mockResolvedValue(directory);
+ state.drafts.mockImplementation(async (_tenant:string,onProgressSupport?:(supported:boolean)=>void)=>{onProgressSupport?.(true);return directory;});
  state.inspect.mockResolvedValue(draft);
  state.update.mockResolvedValue({draft:{...draft,edit_revision:2,
    title:"Updated board review",values:{field_title:"Budget 2027"}}});
@@ -236,4 +236,17 @@ describe("MT-04/11/12 paired staged draft progress journey",()=>{
   fireEvent.click(screen.getByRole("button",{name:"Previous step"}));
   expect(await screen.findByDisplayValue("Budget 2026")).toBeInTheDocument();
  });
+});
+
+it("keeps the existing complete save available when paired SQL progress is not advertised",async()=>{
+ state.drafts.mockImplementation(async (_tenant:string,onProgressSupport?:(supported:boolean)=>void)=>{onProgressSupport?.(false);return directory;});
+ render(<CompanyMeetingDraftWizard tenantId={tenant}/>);
+ const selector=await screen.findByLabelText("Published meeting type");
+ await waitFor(()=>expect(selector).not.toBeDisabled());
+ fireEvent.change(selector,{target:{value:templateId}});
+ fireEvent.change(await screen.findByLabelText("Draft meeting title"),{target:{value:draft.title}});
+ fireEvent.change(screen.getByLabelText("Meeting title"),{target:{value:"Budget 2026"}});
+ expect(screen.queryByRole("button",{name:"Save draft and continue later"})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole("button",{name:"Save staged draft in SQL"}));
+ await waitFor(()=>expect(state.save).toHaveBeenCalledWith(tenant,expect.objectContaining({id:templateId}),draft.title,{field_title:"Budget 2026"},expect.any(String),undefined));
 });

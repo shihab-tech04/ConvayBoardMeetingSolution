@@ -54,6 +54,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
   const [values,setValues]=useState<Record<string,unknown>>({});
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const [loading,setLoading]=useState(true);
+  const [progressSupported,setProgressSupported]=useState(false);
   const [busy,setBusy]=useState(false);
   const [pendingSave,setPendingSave]=useState<"partial"|"complete"|null>(null);
   const saveLock=useRef(false);
@@ -67,10 +68,10 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
 
   useEffect(()=>{
     let active=true;
-    setError("");setLoading(true);setSelectedId("");setTemplate(null);
+    setError("");setLoading(true);setProgressSupported(false);setSelectedId("");setTemplate(null);
     setDirectory([]);setOptions([]);setInspected(null);setLastSaved(null);
     setEditing(null);setDiscardConfirmation(null);setPendingSave(null);
-    void Promise.all([listManagedTemplates(tenantId),listStagedCompanyDrafts(tenantId)])
+    void Promise.all([listManagedTemplates(tenantId),listStagedCompanyDrafts(tenantId,supported=>{if(active)setProgressSupported(supported);})])
       .then(([all,drafts])=>{if(!active)return;
         setOptions(all.filter(t=>t.tenant_id===tenantId&&t.published_revision!==null));
         setDirectory(drafts);
@@ -125,7 +126,8 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
   const save=async(partial=false)=>{
     const mode=partial?"partial":"complete";
     if(!template||!current||busy||loading||saveLock.current||(pendingSave!==null&&pendingSave!==mode))return;
-    const progress={stepId:current.id,partial};
+    if(partial&&!progressSupported)return;
+    const progress=progressSupported?{stepId:current.id,partial}:undefined;
     const failure=partial?null:firstError(template,values);
     if(failure){setError(failure);return;}
     if(title.trim().length<3||title.trim().length>160){
@@ -304,9 +306,9 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
       <div style={{display:"flex",gap:10,justifyContent:"space-between",flexWrap:"wrap"}}>
         <Button variant="secondary" disabled={formLocked||step===0}
           onClick={()=>{setStep(s=>Math.max(0,s-1));setRequestId(crypto.randomUUID());setError("");}}>Previous step</Button>
-        <Button variant="secondary" loading={busy&&pendingSave==="partial"} disabled={loading||busy||pendingSave==="complete"} onClick={()=>void save(true)}>
+        {progressSupported&&<Button variant="secondary" loading={busy&&pendingSave==="partial"} disabled={loading||busy||pendingSave==="complete"} onClick={()=>void save(true)}>
           {pendingSave==="partial"?"Retry saving draft":"Save draft and continue later"}
-        </Button>
+        </Button>}
         {step<template.definition.steps.length-1
           ?<Button disabled={formLocked} onClick={next}>Next step</Button>
           :<Button loading={busy&&pendingSave==="complete"} disabled={loading||busy||pendingSave==="partial"} onClick={()=>void save(false)}>
