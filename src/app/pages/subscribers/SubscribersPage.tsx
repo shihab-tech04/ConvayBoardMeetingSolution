@@ -66,7 +66,11 @@ export function SubscribersPage() {
   const [memberRole,setMemberRole] = useState<CompanyMembershipRole>("member");
   const [memberRequestId,setMemberRequestId] = useState(()=>crypto.randomUUID());
   const [pendingMembership,setPendingMembership] = useState<PendingCompanyMembership|null>(null);
-  const [companyInvites,setCompanyInvites]=useState<PendingCompanyInvitation[]|null>(null);
+  const [companyInviteReadback,setCompanyInviteReadback]=useState<{
+    tenantId:string;invites:PendingCompanyInvitation[];
+  }|null>(null);
+  const companyInvites=companyInviteReadback && companyInviteReadback.tenantId===selectedCompanyId
+    ? companyInviteReadback.invites : null;
   const [invitationEmail,setInvitationEmail]=useState("");
   const [invitationRole,setInvitationRole]=useState<CompanyMembershipRole>("member");
   const [invitationRequestId,setInvitationRequestId]=useState(()=>crypto.randomUUID());
@@ -76,6 +80,18 @@ export function SubscribersPage() {
   const [invitationConfirmation,setInvitationConfirmation]=useState<
     {action:"queue"|"cancel";tenantId:string;email:string;role:CompanyMembershipRole;requestId:string}|null>(null);
 
+  // Company-specific input and confirmations must never carry into another tenant.
+  const companyActionPending=companyWorking||invitationWorking||!!pendingMembership||!!invitationConfirmation||confirmProvision;
+  const resetCompanyOnboardingDrafts=()=>{
+    setCompanyInviteReadback(null);setInvitationError("");setCompanyError("");
+    setMemberEmail("");setMemberRole("member");setMemberRequestId(crypto.randomUUID());
+    setInvitationEmail("");setInvitationRole("member");setInvitationRequestId(crypto.randomUUID());
+    setPendingMembership(null);setInvitationConfirmation(null);
+  };
+  const selectCompany=(tenantId:string)=>{
+    if(companyActionPending||tenantId===selectedCompanyId)return;
+    resetCompanyOnboardingDrafts();setCompanyProfile(null);setSelectedCompanyId(tenantId);
+  };
   const refresh = async () => {
     const result = await subscriptionAction<SubscriptionDirectory>("list");
     if (!Array.isArray(result.quotes) || !Array.isArray(result.invoices)) {
@@ -123,11 +139,12 @@ export function SubscribersPage() {
   },[tab,selectedCompanyId]);
   useEffect(()=>{
     let active=true;
-    setCompanyInvites(null);setInvitationError("");
-    if(tab!=="companies"||!selectedCompanyId)return ()=>{active=false;};
+    setCompanyInviteReadback(null);setInvitationError("");
+    if(tab!=="companies"||!selectedCompanyId){setInvitationLoading(false);return ()=>{active=false;};}
+    const tenantId=selectedCompanyId;
     setInvitationLoading(true);
-    void listPendingCompanyInvitations(selectedCompanyId).then(records=>{
-      if(active)setCompanyInvites(records);
+    void listPendingCompanyInvitations(tenantId).then(records=>{
+      if(active)setCompanyInviteReadback({tenantId,invites:records});
     }).catch(reason=>{
       if(active)setInvitationError(reason instanceof Error?reason.message:"Unable to load company invitation SQL");
     }).finally(()=>{if(active)setInvitationLoading(false);});
@@ -136,12 +153,15 @@ export function SubscribersPage() {
   const commitCompanyInvitation=async()=>{
     const action=invitationConfirmation;
     if(!action||invitationWorking||invitationLoading)return;
+    if(tab!=="companies"||action.tenantId!==selectedCompanyId){
+      setInvitationConfirmation(null);setInvitationError("Company selection changed. Reopen the invitation action.");return;
+    }
     setInvitationWorking(true);setInvitationError("");
     try{
       const result=action.action==="queue"
         ? await queuePendingCompanyInvitation(action.tenantId,action.email,action.role,action.requestId)
         : await cancelPendingCompanyInvitation(action.tenantId,action.email,action.requestId);
-      setCompanyInvites(result.invites);
+      setCompanyInviteReadback({tenantId:action.tenantId,invites:result.invites});
       if(action.action==="queue"){
         setInvitationEmail("");setInvitationRole("member");
         setInvitationRequestId(crypto.randomUUID());
@@ -157,6 +177,9 @@ export function SubscribersPage() {
   const saveCompanyMembership=async()=>{
     const pending=pendingMembership;
     if(!pending||companyWorking||companyLoading)return;
+    if(tab!=="companies"||pending.tenantId!==selectedCompanyId){
+      setPendingMembership(null);setCompanyError("Company selection changed. Reopen the membership action.");return;
+    }
     setCompanyWorking(true);setCompanyError("");
     try{
       const result=pending.action==="enroll"
@@ -186,6 +209,7 @@ export function SubscribersPage() {
       if (!directory.companies.some(item => item.id===verified.company.id))
         throw new Error("Company saved but directory readback is incomplete. Refresh before retrying.");
       setCompanies(directory);
+      resetCompanyOnboardingDrafts();
       setSelectedCompanyId(verified.company.id);
       setCompanyProfile(verified);
       setCompanyName("");
@@ -296,7 +320,8 @@ export function SubscribersPage() {
       {error && <p role="alert" style={{color:"#b91c1c",margin:"14px 0"}}>{error}</p>}
       <nav aria-label="Subscription management sections" style={{display:"flex",flexWrap:"wrap",gap:8,margin:"24px 0"}}>
         {tabs.map(t=><Button key={t.id} size="sm" variant={tab===t.id?"primary":"secondary"}
-          aria-pressed={tab===t.id} onClick={()=>setTab(t.id)}>{t.label}</Button>)}
+          aria-pressed={tab===t.id} disabled={tab==="companies"&&t.id!==tab&&companyActionPending}
+          onClick={()=>{if(tab!=="companies"||!companyActionPending)setTab(t.id);}}>{t.label}</Button>)}
       </nav>
       {loading && <p role="status">Loading subscription records from SQL…</p>}
 
@@ -474,7 +499,7 @@ export function SubscribersPage() {
             {companies?.companies.map(company=><div key={company.id}
               style={{borderTop:"1px solid var(--border-color,#dce1e8)",padding:"10px 0"}}>
               <Button variant={company.id===selectedCompanyId?"primary":"secondary"} size="sm"
-                onClick={()=>setSelectedCompanyId(company.id)}>{company.display_name}</Button>
+                disabled={companyActionPending} onClick={()=>selectCompany(company.id)}>{company.display_name}</Button>
               <p style={note}>{company.lifecycle_state} · {company.active_member_count} active members · {company.published_template_count} published templates</p>
             </div>)}
           </div>
