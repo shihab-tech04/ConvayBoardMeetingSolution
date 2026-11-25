@@ -134,6 +134,7 @@ export function LiveMeetingMedia({
   const [activeSpeakerIdentity, setActiveSpeakerIdentity] = useState<string | null>(null);
   // Serialize provider publish/unpublish commands across rapid share toggles.
   const shareOperations = useRef<Promise<void>>(Promise.resolve());
+  const currentProviderRoom = useRef<any | null>(null);
   const callbacks = useRef({ onPresence, onMicChange, onCamChange, onSharingChange, requestAdmission, onParticipants });
   callbacks.current = { onPresence, onMicChange, onCamChange, onSharingChange, requestAdmission, onParticipants };
 
@@ -141,11 +142,16 @@ export function LiveMeetingMedia({
     let ended = false;
     let nextRoom: any = null;
     let connected = false;
+    let terminal = false;
+    currentProviderRoom.current = null;
+    setRoom(null);
+    setAudioUnlockBusy(false);
     setStatus("Connecting");
     setError("");
     setAudioPlaybackBlocked(false);
     setActiveSpeakerIdentity(null);
     const render = () => {
+      if (ended || terminal) return;
       setRefresh(n => n + 1);
       const members = nextRoom ? [nextRoom.localParticipant, ...nextRoom.remoteParticipants.values()] : [];
       callbacks.current.onParticipants?.(members.map((member: any) => ({
@@ -198,12 +204,12 @@ export function LiveMeetingMedia({
         nextRoom = new sdk.Room({ adaptiveStream: true, dynacast: true });
         if (sdk.RoomEvent.ActiveSpeakersChanged) {
           nextRoom.on(sdk.RoomEvent.ActiveSpeakersChanged, (speakers: Array<{ identity?: string }>) => {
-            if (!ended) setActiveSpeakerIdentity(speakers[0]?.identity ?? null);
+            if (!ended && !terminal) setActiveSpeakerIdentity(speakers[0]?.identity ?? null);
           });
         }
         if (sdk.RoomEvent.AudioPlaybackStatusChanged) {
           nextRoom.on(sdk.RoomEvent.AudioPlaybackStatusChanged, () => {
-            if (!ended) setAudioPlaybackBlocked(nextRoom?.canPlaybackAudio === false);
+            if (!ended && !terminal) setAudioPlaybackBlocked(nextRoom?.canPlaybackAudio === false);
           });
         }
         for (const name of ["TrackSubscribed", "TrackUnsubscribed", "TrackPublished", "TrackUnpublished", "ParticipantConnected", "ParticipantDisconnected",
@@ -212,15 +218,15 @@ export function LiveMeetingMedia({
           if (event) nextRoom.on(event, render);
         }
         nextRoom.on(sdk.RoomEvent.LocalTrackUnpublished, (publication: any) => {
-          if (publication.source === "screen_share") callbacks.current.onSharingChange(false);
+          if (!ended && !terminal && publication.source === "screen_share") callbacks.current.onSharingChange(false);
         });
         nextRoom.on(sdk.RoomEvent.Reconnecting, () => {
-          if (ended) return;
+          if (ended || terminal) return;
           setStatus("Reconnecting");
           callbacks.current.onSharingChange(false);
         });
         nextRoom.on(sdk.RoomEvent.Reconnected, () => {
-          if (ended) return;
+          if (ended || terminal) return;
           if (!connected) {
             connected = true;
             callbacks.current.onPresence(true, nextRoom?.localParticipant?.identity);
@@ -230,7 +236,12 @@ export function LiveMeetingMedia({
           render();
         });
         nextRoom.on(sdk.RoomEvent.Disconnected, () => {
-          if (ended) return;
+          if (ended || terminal) return;
+          terminal = true;
+          currentProviderRoom.current = null;
+          setRoom(null);
+          setAudioUnlockBusy(false);
+          callbacks.current.onParticipants?.([]);
           setStatus("Disconnected");
           setAudioPlaybackBlocked(false);
           setActiveSpeakerIdentity(null);
@@ -239,20 +250,22 @@ export function LiveMeetingMedia({
           if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom?.localParticipant?.identity); }
         });
         await nextRoom.connect(access.serverUrl, access.participantToken);
-        if (ended) { void nextRoom.disconnect(); return; }
+        if (ended || terminal) { void nextRoom.disconnect(); return; }
         connected = true;
+        currentProviderRoom.current = nextRoom;
         setRoom(nextRoom);
         setStatus("Connected");
         setAudioPlaybackBlocked(nextRoom.canPlaybackAudio === false);
         callbacks.current.onPresence(true, nextRoom.localParticipant.identity);
         render();
       } catch (cause) {
-        if (!ended) { setError(cause instanceof Error ? cause.message : "Unable to connect"); setStatus("Disconnected"); }
+        if (!ended && !terminal) { setError(cause instanceof Error ? cause.message : "Unable to connect"); setStatus("Disconnected"); }
         if (nextRoom) void nextRoom.disconnect();
       }
     })();
     return () => {
       ended = true;
+      if (currentProviderRoom.current === nextRoom) currentProviderRoom.current = null;
       // Stop rendering a presentation immediately on unmount/room switch.
       if (connected) callbacks.current.onSharingChange(false);
       if (nextRoom) void nextRoom.disconnect();
@@ -263,6 +276,7 @@ export function LiveMeetingMedia({
   useEffect(() => {
     if (!room) return;
     void room.localParticipant.setMicrophoneEnabled(micOn).catch((cause: unknown) => {
+      if (currentProviderRoom.current !== room) return;
       setError(cause instanceof Error ? cause.message : "Microphone access denied");
       callbacks.current.onMicChange(false);
     });
@@ -270,6 +284,7 @@ export function LiveMeetingMedia({
   useEffect(() => {
     if (!room) return;
     void room.localParticipant.setCameraEnabled(camOn).catch((cause: unknown) => {
+      if (currentProviderRoom.current !== room) return;
       setError(cause instanceof Error ? cause.message : "Camera access denied");
       callbacks.current.onCamChange(false);
     });
@@ -280,15 +295,15 @@ export function LiveMeetingMedia({
     // The last requested transition wins; old responses must not resurrect
     // the green "Sharing screen" indicator or republish after disconnect.
     const operation = shareOperations.current.catch(() => undefined).then(async () => {
-      if (!active) return;
+      if (!active || currentProviderRoom.current !== room) return;
       try {
         await room.localParticipant.setScreenShareEnabled(sharing);
-        if (!active) return;
+        if (!active || currentProviderRoom.current !== room) return;
         const published = confirmedLocalScreenShare(room.localParticipant);
         callbacks.current.onSharingChange(sharing && published);
         if (sharing && !published) setError("Screen sharing was not confirmed by the meeting service.");
       } catch (cause) {
-        if (!active) return;
+        if (!active || currentProviderRoom.current !== room) return;
         setError(cause instanceof Error ? cause.message : "Screen sharing denied");
         callbacks.current.onSharingChange(false);
       }
@@ -300,12 +315,12 @@ export function LiveMeetingMedia({
     if (!room) return;
     if (initialMicDeviceId) {
       void room.switchActiveDevice("audioinput", initialMicDeviceId).catch((cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : "Microphone selection failed");
+        if (currentProviderRoom.current === room) setError(cause instanceof Error ? cause.message : "Microphone selection failed");
       });
     }
     if (initialCameraDeviceId) {
       void room.switchActiveDevice("videoinput", initialCameraDeviceId).catch((cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : "Camera selection failed");
+        if (currentProviderRoom.current === room) setError(cause instanceof Error ? cause.message : "Camera selection failed");
       });
     }
   }, [room, initialMicDeviceId, initialCameraDeviceId]);
@@ -338,21 +353,23 @@ export function LiveMeetingMedia({
     try {
       // LiveKit must be invoked inside a real click to satisfy autoplay rules.
       await room.startAudio();
+      if (currentProviderRoom.current !== room) return;
       const stillBlocked = room.canPlaybackAudio === false;
       setAudioPlaybackBlocked(stillBlocked);
       if (stillBlocked) setError("Your browser still blocks meeting sound. Allow sound for this site, then try again.");
       else setError("");
     } catch (cause) {
+      if (currentProviderRoom.current !== room) return;
       setAudioPlaybackBlocked(true);
       setError(cause instanceof Error ? cause.message : "Unable to enable incoming meeting audio.");
     } finally {
-      setAudioUnlockBusy(false);
+      if (currentProviderRoom.current === room) setAudioUnlockBusy(false);
     }
   }
   async function selectDevice(kind: "audioinput" | "videoinput", deviceId: string) {
     if (!room || !deviceId) return;
     try { await room.switchActiveDevice(kind, deviceId); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Device selection failed"); }
+    catch (cause) { if (currentProviderRoom.current === room) setError(cause instanceof Error ? cause.message : "Device selection failed"); }
   }
   return <section className="convay-live-media" aria-label="Connected meeting participants" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, gap: 8, overflowY: "auto" }}>
     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, fontSize: 12, color: "#cbd5e1" }}>
