@@ -119,7 +119,7 @@ export async function deactivateQuorumRule(
   if (saved?.status === "Inactive") {
     const mutable = new Set(["status", "updated_at", "updated_by"]);
     if ((Object.keys(existing) as (keyof VersionedQuorumRule)[]).some(key =>
-      !mutable.has(key) && !Object.is(saved[key], existing[key]))) {
+      !mutable.has(String(key)) && !Object.is(saved[key], existing[key]))) {
       throw new Error("Quorum rule deactivation SQL readback was inconsistent.");
     }
     return true;
