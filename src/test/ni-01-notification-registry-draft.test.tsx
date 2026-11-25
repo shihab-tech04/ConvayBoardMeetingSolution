@@ -10,7 +10,7 @@ const state = vi.hoisted(() => ({
   getById: vi.fn(),
   refresh: vi.fn(),
   authorized: true,
-  access: { loaded: true },
+  access: { loaded: true, is_super_admin: true },
   loading: false,
   error: null as string | null,
   cfg: null as unknown as PageCfg,
@@ -51,7 +51,7 @@ const validRule = {
 };
 
 beforeEach(() => {
-  state.rules = []; state.access = { loaded: true }; state.authorized = true; state.loading = false; state.error = null;
+  state.rules = []; state.access = { loaded: true, is_super_admin: true }; state.authorized = true; state.loading = false; state.error = null;
   state.add.mockReset().mockImplementation(async (row: Record<string, any>) => {
     state.rules.push(row); return true;
   });
@@ -126,7 +126,7 @@ describe("NI-01 SQL-backed rule draft page", () => {
   it("rejects stale callbacks after a new access snapshot", async () => {
     render(<NotificationRulesPage />);
     const create = state.cfg.onRowCreate!;
-    state.access = { loaded: true };
+    state.access = { loaded: true, is_super_admin: true };
     expect(await create(validRule)).toBe(false);
     expect(state.add).not.toHaveBeenCalled();
   });
@@ -138,6 +138,18 @@ describe("NI-01 SQL-backed rule draft page", () => {
     const result = await state.cfg.onRowCreate!(validRule);
     expect(result).toBe(false);
     expect(state.add).not.toHaveBeenCalled();
+  });
+
+  it("denies non-root access even with delegated notification permission", async () => {
+    state.access = { loaded: true, is_super_admin: false };
+    state.rules = [{ id: "root-only", rule_id: "NR-1", ...validRule, status: "Draft" }];
+    render(<NotificationRulesPage />);
+    expect(state.cfg.rows).toHaveLength(0);
+    expect(state.cfg.entryBtn).toBeUndefined();
+    expect(await state.cfg.onRowCreate!(validRule)).toBe(false);
+    expect(await state.cfg.onRowUpdate!("root-only", validRule)).toBe(false);
+    expect(state.add).not.toHaveBeenCalled();
+    expect(state.update).not.toHaveBeenCalled();
   });
 
   it("holds active-rule editing and provider activation until policy verification", async () => {

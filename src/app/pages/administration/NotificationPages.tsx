@@ -152,14 +152,14 @@ async function confirmNotificationRule(
 export function NotificationRulesPage() {
   const registry = useNotificationRuleRegistry();
   const access = useAccessSnapshot();
-  const canManage = access.loaded && hasAccess("admin_notifications", access);
+  const canManage = access.loaded && access.is_super_admin && hasAccess("admin_notifications", access);
   // A stale or denied read cannot authorize changes from an already-open drawer.
   const canEditDraft = canManage && !registry.loading && !registry.error;
-  const isCurrent = () => readAccessSnapshot() === access && hasAccess("admin_notifications", access);
+  const isCurrent = () => readAccessSnapshot() === access && canManage;
   // Retain the original UUID after an ambiguous acknowledgement/readback.
   // A retry must recover that exact row or submit the same identity, never fork it.
   const pendingCreate = useRef<{ access: typeof access; record: NotificationRule } | null>(null);
-  const rows: TableRow[] = registry.items.map(rule => ({
+  const rows: TableRow[] = (canManage ? registry.items : []).map(rule => ({
     ...rule,
     channel: rule.channels,
     audience: rule.recipients,

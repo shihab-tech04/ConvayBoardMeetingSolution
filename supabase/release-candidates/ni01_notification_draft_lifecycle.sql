@@ -45,3 +45,20 @@ REVOKE ALL ON FUNCTION convay_private.enforce_notification_draft_lifecycle() FRO
 CREATE TRIGGER convay_notification_draft_lifecycle
 BEFORE INSERT OR UPDATE OR DELETE ON public.convay_entity_records
 FOR EACH ROW EXECUTE FUNCTION convay_private.enforce_notification_draft_lifecycle();
+
+-- Preserve the non-delegable platform-root authority in the approved master.
+CREATE POLICY convay_notification_root_only
+ON public.convay_entity_records AS RESTRICTIVE
+FOR ALL TO authenticated
+USING (
+  entity_key <> 'bms.notifyrules' OR EXISTS (
+    SELECT 1 FROM public.user_profiles AS p
+    WHERE p.user_id = (SELECT auth.uid()) AND p.account_role = 'super_admin' AND p.account_status = 'active'
+  )
+)
+WITH CHECK (
+  entity_key <> 'bms.notifyrules' OR EXISTS (
+    SELECT 1 FROM public.user_profiles AS p
+    WHERE p.user_id = (SELECT auth.uid()) AND p.account_role = 'super_admin' AND p.account_status = 'active'
+  )
+);
