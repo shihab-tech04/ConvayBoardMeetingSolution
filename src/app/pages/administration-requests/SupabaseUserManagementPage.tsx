@@ -133,7 +133,13 @@ function ScopedUserManagementPage({ access, canUse }: {
       && (u.account_role === "super_admin" ? "Super Admin" : "User") !== applied.role) return false;
     return true;
   }), [users, search, applied, access.user_assignments]);
-  useEffect(() => { setPage(old => Math.min(old, Math.max(1, Math.ceil(filtered.length / 10)))); }, [filtered.length]);
+  useEffect(() => {
+    // A pending directory refresh has no authoritative row count. Keep the
+    // current page until the new successful response actually shrinks it.
+    if (canUse && !loading && !loadError) {
+      setPage(old => Math.min(old, Math.max(1, Math.ceil(filtered.length / 10))));
+    }
+  }, [filtered.length, loading, loadError, canUse]);
   const pendingRoleCount = users.filter(u => needsRoleAssignment(u, access.user_assignments)).length;
   const activeInviteRoles = access.roles.filter(role => role.status === "Active" && !role.is_system_role);
 

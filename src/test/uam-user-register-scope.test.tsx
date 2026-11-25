@@ -35,8 +35,13 @@ vi.mock("../app/components/forms/AppSelectField", () => ({ AppSelectField: () =>
 vi.mock("../app/components/forms/AppPasswordField", () => ({ AppPasswordField: () => null }));
 vi.mock("../app/components/forms/AppCheckbox", () => ({ AppCheckbox: () => null }));
 vi.mock("../app/components/tables", () => ({
-  UnifiedDataTable: ({rows,onViewRow}: {rows:Array<{id:string;name:string}>;onViewRow:(row:{id:string;name:string})=>void}) =>
-    <div>{rows.map(row => <button key={row.id} onClick={() => onViewRow(row)}>{row.name}</button>)}</div>,
+  UnifiedDataTable: ({rows,onViewRow,page,onPageChange,onRetry}: {
+    rows:Array<{id:string;name:string}>;onViewRow:(row:{id:string;name:string})=>void;
+    page:number;onPageChange:(page:number)=>void;onRetry:()=>void;
+  }) => <div><span data-testid="page">{page}</span>
+    <button onClick={()=>onPageChange(2)}>Page two</button>
+    <button onClick={onRetry}>Retry directory</button>
+    {rows.map(row => <button key={row.id} onClick={() => onViewRow(row)}>{row.name}</button>)}</div>,
 }));
 import { SupabaseUserManagementPage } from "../app/pages/administration-requests/SupabaseUserManagementPage";
 const member = {user_id:"33333333-3333-4333-8333-333333333333",display_name:"Previous Member",username:"member",email:"member@example.invalid",account_role:"user",account_status:"active",invitation_status:"accepted"};
@@ -76,5 +81,24 @@ describe("UAM-01/AC-07 user register authorization lifetime", () => {
     expect(mocks.success).not.toHaveBeenCalled();
     expect(mocks.users.mock.calls.filter(call=>call[0]==="list")).toHaveLength(2);
     expect(screen.queryByRole("button",{name:"Previous Member"})).not.toBeInTheDocument();
+  });
+  it("preserves the page during refresh and clamps only after authoritative directory shrink", async () => {
+    const users=Array.from({length:11},(_,i)=>({...member,user_id:"member-"+i,display_name:"Member "+i}));
+    mocks.users.mockResolvedValue({users});
+    render(<SupabaseUserManagementPage/>);
+    await screen.findByRole("button",{name:"Member 0"});
+    fireEvent.click(screen.getByRole("button",{name:"Page two"}));
+    expect(await screen.findByRole("button",{name:"Member 10"})).toBeInTheDocument();
+    let finish!: (value: unknown)=>void;
+    const pending=new Promise(resolve=>{finish=resolve;});
+    mocks.users.mockReturnValueOnce(pending);
+    fireEvent.click(screen.getByRole("button",{name:"Retry directory"}));
+    expect(screen.getByTestId("page")).toHaveTextContent("2");
+    await act(async()=>{finish({users});await pending;});
+    expect(screen.getByRole("button",{name:"Member 10"})).toBeInTheDocument();
+    mocks.users.mockResolvedValueOnce({users:[users[0]]});
+    fireEvent.click(screen.getByRole("button",{name:"Retry directory"}));
+    expect(await screen.findByRole("button",{name:"Member 0"})).toBeInTheDocument();
+    expect(screen.getByTestId("page")).toHaveTextContent("1");
   });
 });
