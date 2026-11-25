@@ -1,4 +1,5 @@
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
+import { normalizeDraftRelationships } from "./draftRelationshipPayload";
 import type { Meeting, MeetingParticipantLink, MeetingAgendaLink, MeetingDocumentLink } from "../../data/boardMeetingData";
 import type { DraftParticipantLink } from "../../components/forms/ParticipantSelectorStep";
 import type { AttendanceRequirement } from "./attendanceRequirement";
@@ -96,12 +97,14 @@ export function restoreMeetingDraftRow(snapshot: DraftSnapshot, users: readonly 
       voting_eligible: link.voting_eligible, quorum_eligible: link.quorum_eligible, selection_sources: sources,
     };
   });
-  return {
-    ...meeting,
+  const raw = {
     participant_links_json: JSON.stringify(roster),
     selected_agenda_ids_json: JSON.stringify([...agendas].sort((a,b) => a.display_order-b.display_order)
       .map(link => ({ agenda_id: link.agenda_id, display_order: link.display_order }))),
     additional_doc_ids_json: JSON.stringify(links.filter(link => link.source === "additional").sort((a,b) => a.display_order-b.display_order)
       .map(link => ({ doc_id: link.document_id, version: link.version, source_label: documents.find(doc => (doc.doc_id ?? doc.id) === link.document_id)?.doc_name ?? link.document_id }))),
   };
+  const normalized = normalizeDraftRelationships(raw);
+  return { ...meeting, participant_links_json: JSON.stringify(normalized.participants),
+    selected_agenda_ids_json: JSON.stringify(normalized.agendas), additional_doc_ids_json: JSON.stringify(normalized.documents) };
 }
