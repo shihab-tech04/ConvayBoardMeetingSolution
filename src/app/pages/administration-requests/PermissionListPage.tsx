@@ -1,4 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { userDirectoryCsvCell } from "./userDirectoryExport";
+import { clampRegisterPage, requireRoleSaveMode, requirePermissionEditKind } from "./accessRegisterRecovery";
 import { toast } from "sonner";
 import { Plus, ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import { Button } from "../../components/buttons/Button";
@@ -15,6 +17,7 @@ import { fc, BADGE } from "../modulePageUtils";
 import { PERMISSION_METHOD_FILTER_OPTIONS, matchesPermissionMethod } from "./permissionMethodFilter";
 
 const PER_PAGE = 10;
+type EditingPermission = CustomPermission & { originCustom: boolean };
 
 // ── Column config — headerKeys match en/tables.json headers.* ─────────────────
 const PERM_COLS: ColDef[] = [
@@ -59,8 +62,8 @@ export function PermissionListPage() {
   const [fVals, setFVals]           = useState<Record<string, string>>({});
   const [applied, setApplied]       = useState<Record<string, string>>({});
   const [addOpen, setAddOpen]       = useState(false);
-  const [editPerm, setEditPerm]     = useState<CustomPermission | null>(null);
-  const [viewRow, setViewRow]       = useState<TableRow | null>(null);
+  const [editPerm, setEditPerm]     = useState<EditingPermission | null>(null);
+  const [viewRowId, setViewRowId]   = useState<string | null>(null);
   const [deleteId, setDeleteId]     = useState<string | null>(null);
 
   // ── Filter definitions ───────────────────────────────────────────────────
@@ -92,6 +95,11 @@ export function PermissionListPage() {
     [flatPermissions]
   );
 
+  const viewRow = viewRowId === null ? null : rows.find(row => String(row.id) === viewRowId) ?? null;
+  useEffect(() => {
+    if (!loading && !error && viewRowId !== null && !viewRow) setViewRowId(null);
+  }, [loading, error, viewRowId, viewRow]);
+
   // ── Search + filter ───────────────────────────────────────────────────────
   const q = search.toLowerCase();
   const filtered = useMemo(() => rows.filter((r) => {
@@ -114,6 +122,10 @@ export function PermissionListPage() {
     return matchSearch && matchGroup && matchMethod && matchAccess && matchStatus && matchType;
   }), [rows, q, applied]);
 
+  useEffect(() => {
+    if (!loading && !error) setPage(old => clampRegisterPage(old, filtered.length, PER_PAGE));
+  }, [loading, error, filtered.length]);
+
   const paged = useMemo(() => filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE), [filtered, page]);
 
   // ── KPIs ─────────────────────────────────────────────────────────────────
@@ -127,7 +139,8 @@ export function PermissionListPage() {
   // ── Helpers ───────────────────────────────────────────────────────────────
   const isCustomRow = (row: TableRow) => row.isCustom === "true";
 
-  const toCustomPerm = (row: TableRow): CustomPermission => ({
+  const toCustomPerm = (row: TableRow): EditingPermission => ({
+    originCustom: true,
     id:          String(row.id),
     label:       String(row.label),
     groupId:     String(row.groupId),
@@ -143,9 +156,11 @@ export function PermissionListPage() {
 
   const handleDelete = async (id: string) => {
     try {
+      if (loading || error) throw new Error("Refresh Permission List before deleting.");
+      requirePermissionEditKind(id, id, true, flatPermissions);
       await deleteCustomPermission(id);
       setDeleteId(null);
-      setViewRow(null);
+      setViewRowId(null);
       setPage(1);
       toast.success("Permission deleted");
     } catch (error) {
@@ -187,6 +202,7 @@ export function PermissionListPage() {
               setEditPerm(toCustomPerm(viewRow));
             } else {
               setEditPerm({
+                originCustom: false,
                 id: String(viewRow.id), label: String(viewRow.label),
                 groupId: String(viewRow.groupId),
                 endpoint: viewRow.endpoint !== "—" ? String(viewRow.endpoint) : "",
@@ -198,7 +214,7 @@ export function PermissionListPage() {
                 createdAt: "", updatedAt: "",
               });
             }
-            setViewRow(null);
+            setViewRowId(null);
           }}
         >{"Edit"}</Button>
       </div>
@@ -208,7 +224,7 @@ export function PermissionListPage() {
           variant="destructive-subtle" size="sm" leadingIcon={Trash2}
           disabled={!isCustomRow(viewRow)}
           title={!isCustomRow(viewRow) ? "Base permissions cannot be deleted." : undefined}
-          onClick={() => { if (isCustomRow(viewRow)) { setDeleteId(String(viewRow.id)); setViewRow(null); } }}
+          onClick={() => { if (isCustomRow(viewRow)) { setDeleteId(String(viewRow.id)); setViewRowId(null); } }}
         >{"Delete"}</Button>
       </div>
     </div>
@@ -249,7 +265,7 @@ export function PermissionListPage() {
         cols={PERM_COLS}
         rows={paged}
         actions={ROW_VIEW}
-        onViewRow={(row) => setViewRow(row)}
+        onViewRow={(row) => setViewRowId(String(row.id))}
         search={search}
         searchPlaceholder="Search permissions…"
         onSearchChange={(v) => { setSearch(v); setPage(1); }}
@@ -259,7 +275,7 @@ export function PermissionListPage() {
         onFilterChange={(k, v) => setFVals((p) => ({ ...p, [k]: v }))}
         onApplyFilters={() => { setApplied(fVals); setPage(1); }}
         onResetFilters={() => { setFVals({}); setApplied({}); setPage(1); }}
-        onExport={() => { const csv=[["Permission","Group","Method","Endpoint","Status"],...flatPermissions.map(p=>[p.label,p.groupLabel,p.method??"",p.endpoint??"",p.status??""])].map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n"); const a=document.createElement("a"); const url=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.href=url; a.download="convay-permissions.csv"; a.click(); URL.revokeObjectURL(url); }}
+        onExport={() => { if (loading || error) return; const csv=[["Permission","Group","Method","Endpoint","Status"],...flatPermissions.map(p=>[p.label,p.groupLabel,p.method??"",p.endpoint??"",p.status??""])].map(row=>row.map(userDirectoryCsvCell).join(",")).join("\r\n"); const a=document.createElement("a"); const url=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.href=url; a.download="convay-permissions.csv"; a.click(); URL.revokeObjectURL(url); }}
         page={page}
         perPage={PER_PAGE}
         onPageChange={setPage}
@@ -271,7 +287,7 @@ export function PermissionListPage() {
       {/* ── Permission detail drawer ─────────────────────────────── */}
       <DynamicDetailsDrawer
         open={viewRow !== null}
-        onClose={() => setViewRow(null)}
+        onClose={() => setViewRowId(null)}
         title="Record Details"
         columns={DRAWER_COLUMNS}
         rowData={drawerRow}
@@ -288,8 +304,9 @@ export function PermissionListPage() {
         existingEndpoints={existingEndpoints}
         onClose={() => { setAddOpen(false); setEditPerm(null); }}
         onSave={async (perm) => {
+          if (loading || error) throw new Error("Refresh Permission List before saving.");
           if (editPerm) {
-            const isBaseEdit = !flatPermissions.find((p) => p.id === perm.id)?.isCustom;
+            const isBaseEdit = requirePermissionEditKind(editPerm.id, perm.id, editPerm.originCustom, flatPermissions) === "base";
             if (isBaseEdit) {
               await updateBasePermission(perm.id, {
                 endpoint: perm.endpoint, method: perm.method,
