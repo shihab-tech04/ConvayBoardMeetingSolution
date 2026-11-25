@@ -1,0 +1,50 @@
+-- Requires existing Convay schema and active root. No persistent test or DDL changes.
+\set ON_ERROR_STOP on
+BEGIN;
+\ir ../release-candidates/ni01_notification_draft_lifecycle.sql
+DO $test$ DECLARE root_id uuid; BEGIN
+  SELECT user_id INTO root_id FROM public.user_profiles WHERE account_role='super_admin' AND account_status='active' LIMIT 1;
+  IF root_id IS NULL THEN RAISE EXCEPTION 'No active root for test'; END IF;
+  PERFORM set_config('request.jwt.claim.sub',root_id::text,true);
+END $test$;
+SET LOCAL ROLE authenticated;
+DO $test$ DECLARE
+  v_id text:=gen_random_uuid()::text;
+  v_payload jsonb;
+  v_count int;
+  rejected boolean;
+BEGIN
+  v_payload:=jsonb_build_object('id',v_id,'rule_id','QA-ROLLBACK','rule_name','Rollback guard','trigger_event','Test','channels','In-App','recipients','Nobody','timing','None','template','Test','entity_type','Meeting','status','Draft');
+  rejected:=false;
+  BEGIN
+    INSERT INTO public.convay_entity_records(entity_key,record_id,payload) VALUES ('bms.notifyrules',v_id,jsonb_set(v_payload,'{status}','"Active"'));
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Active creation accepted'; END IF;
+  rejected:=false;
+  BEGIN
+    INSERT INTO public.convay_entity_records(entity_key,record_id,payload) VALUES ('bms.notifyrules',v_id,v_payload-'channels');
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Incomplete payload accepted'; END IF;
+  INSERT INTO public.convay_entity_records(entity_key,record_id,payload) VALUES ('bms.notifyrules',v_id,v_payload);
+  UPDATE public.convay_entity_records SET payload=jsonb_set(payload,'{rule_name}','"Rollback revised"') WHERE entity_key='bms.notifyrules' AND record_id=v_id;
+  SELECT count(*) INTO v_count FROM public.convay_entity_records WHERE entity_key='bms.notifyrules' AND record_id=v_id AND payload->>'rule_name'='Rollback revised';
+  IF v_count<>1 THEN RAISE EXCEPTION 'Valid draft update/readback failed'; END IF;
+  rejected:=false;
+  BEGIN
+    UPDATE public.convay_entity_records SET payload=jsonb_set(payload,'{status}','"Active"') WHERE entity_key='bms.notifyrules' AND record_id=v_id;
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Active transition accepted'; END IF;
+  rejected:=false;
+  BEGIN
+    UPDATE public.convay_entity_records SET payload=jsonb_set(payload,'{rule_id}','"ALTERED"') WHERE entity_key='bms.notifyrules' AND record_id=v_id;
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Identity mutation accepted'; END IF;
+  rejected:=false;
+  BEGIN
+    DELETE FROM public.convay_entity_records WHERE entity_key='bms.notifyrules' AND record_id=v_id;
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Deletion accepted'; END IF;
+END $test$;
+RESET ROLE;
+SELECT 'NI-01 draft lifecycle guard: positive create/edit/readback and five negative checks passed' AS result;
+ROLLBACK;
