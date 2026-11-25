@@ -224,7 +224,7 @@ Deno.serve(async req => {
       p_request_id: requestId, p_provider_confirmed: providerVerified,
       p_attendance_mode: attendanceMode,
     });
-    return reply(req, 200, verifyScopedReceipt(result, attendanceScope, canonicalMeetingId, participantId));
+    return reply(req, 200, verifyScopedReceipt(result, attendanceScope, canonicalMeetingId, participantId, attendanceMode as "Online" | "In-Person"));
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "Unable to confirm attendance.";
     const status = /permission|denied|cannot view/i.test(message) ? 403

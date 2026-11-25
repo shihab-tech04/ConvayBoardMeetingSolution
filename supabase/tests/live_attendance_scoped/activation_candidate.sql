@@ -348,7 +348,11 @@ begin
     if v_previous.session_id is distinct from v_current_session or v_previous.actor_id<>p_actor_id or v_previous.meeting_id<>v_actual_mid
        or v_previous.participant_id<>p_participant_id
        or v_previous.next_status<>p_next_status
-       or v_previous.expected_revision<>p_expected_revision then
+       or v_previous.expected_revision<>p_expected_revision
+       -- New scoped receipts bind the attendance mode; historical legacy receipts
+       -- lack this field and retain their original replay contract.
+       or ((p_tenant_id is not null or v_previous.receipt ? 'attendanceMode')
+           and v_previous.receipt->>'attendanceMode' is distinct from p_attendance_mode) then
       raise exception 'An idempotency key was reused for another command' using errcode='23505';
     end if;
     return v_previous.receipt;
@@ -402,6 +406,7 @@ begin
     v_payload:=v_existing.payload || pg_catalog.jsonb_build_object(
       'live_session_id',v_current_session,
       'attendance_status',p_next_status,
+      'attendance_mode',p_attendance_mode,
       'check_in_time',case when p_next_status in ('Present','Temporarily Away') then v_record_at::text
         else coalesce(v_existing.payload->>'check_in_time','') end,
       'check_out_time',case when not v_existing_current then '' when p_next_status='Left' then v_record_at::text
@@ -562,7 +567,7 @@ begin
   end if;
   v_receipt:=pg_catalog.jsonb_build_object(
     'requestId',p_request_id,'meetingId',v_actual_mid,'participantId',p_participant_id,'tenantId',p_tenant_id,'sessionId',v_current_session,
-    'status',p_next_status,'attendanceId',v_att_id,'attendanceRevision',v_att_revision,
+    'status',p_next_status,'attendanceMode',p_attendance_mode,'attendanceId',v_att_id,'attendanceRevision',v_att_revision,
     'quorum',pg_catalog.jsonb_build_object('revision',v_quorum_revision,
       'required',v_required,'present',v_present,'met',v_met)
   );
@@ -674,7 +679,7 @@ begin
   return pg_catalog.jsonb_build_object(
     'requestId',coalesce(v_latest.request_id,'initial_1234567890123456'),
     'meetingId',v_mid,'participantId',p_participant_id,'tenantId',p_tenant_id,'sessionId',v_current_session,
-    'status',v_status,'attendanceId',coalesce(v_row.record_id,''),
+    'status',v_status,'attendanceMode',case when v_row.record_id is not null and convay_private.live_attendance_row_current(v_row.payload,p_tenant_id,v_current_session,v_reopened) then v_row.payload->>'attendance_mode' else null end,'attendanceId',coalesce(v_row.record_id,''),
     'attendanceRevision',coalesce(v_row.revision,0),
     'quorum',v_quorum,'attendanceMap',v_attendees,
     'releaseEnabled',coalesce((select enabled from convay_private.live_attendance_release_gate where singleton=true),false) and (p_tenant_id is null or coalesce((select enabled from convay_private.live_attendance_company_gate where singleton=true),false))

@@ -15,11 +15,16 @@ export function scopeFromPersistedSession(tenantId: unknown, sessionId: unknown,
 export function scopedRpcArgs(scope: AttendanceScope) {
   return { p_tenant_id: scope.tenantId, p_session_id: scope.sessionId };
 }
-export function verifyScopedReceipt(value: unknown, scope: AttendanceScope, meetingId: string, participantId: string) {
+export function verifyScopedReceipt(value: unknown, scope: AttendanceScope, meetingId: string, participantId: string, expectedMode?: "Online" | "In-Person") {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Attendance scope readback unavailable.");
   const row = value as Record<string, unknown>;
   if (row.tenantId !== scope.tenantId || row.sessionId !== scope.sessionId || row.meetingId !== meetingId || row.participantId !== participantId) {
     throw new Error("Attendance scope changed. Reconnect before retrying.");
+  }
+  // A company write must prove its mode as well as its exact session. Legacy
+  // receipts created before the scoped rollout remain backward compatible.
+  if (scope.tenantId !== null && expectedMode !== undefined && row.attendanceMode !== expectedMode) {
+    throw new Error("Attendance mode readback differs from the requested command.");
   }
   return row;
 }
