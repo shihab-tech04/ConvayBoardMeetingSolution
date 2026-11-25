@@ -4,8 +4,12 @@ insert into auth.sessions values
  ('51111111-1111-4111-8111-111111111111','11111111-1111-4111-8111-111111111111',null),
  ('52222222-2222-4222-8222-222222222222','22222222-2222-4222-8222-222222222222',null),
  ('53333333-3333-4333-8333-333333333333','11111111-1111-4111-8111-111111111111',clock_timestamp()-interval '1 second');
+\ir release_guard.sql
+\ir projections.sql
 \ir gateway.sql
 begin;
+do $$begin if (select enabled from convay_private.transactional_voting_gate where singleton) then raise exception 'Gate not default-off';end if;end$$;
+update convay_private.transactional_voting_gate set enabled=true where singleton;
 set local role service_role;
 do $gateway$
 declare a uuid:='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';b uuid:='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';

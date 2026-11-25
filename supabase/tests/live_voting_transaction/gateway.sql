@@ -9,6 +9,10 @@ declare action text; allowed text[]; required text[]; result jsonb; rid uuid;beg
  if not found then raise exception 'Authenticated session unavailable' using errcode='42501';end if;
  if jsonb_typeof(p_command) is distinct from 'object' then raise exception 'Invalid command' using errcode='22023';end if;
  action:=p_command->>'action';
+ if action not in ('workspace','archive','read') then
+  perform 1 from convay_private.transactional_voting_gate where singleton=true and enabled=true for share;
+  if not found then raise exception 'Transactional voting not activated' using errcode='42501';end if;
+ end if;
  case action
  when 'motion' then allowed:=array['action','agendaId','title','wording','seconderId','notes','requestId'];required:=array['action','agendaId','title','wording','requestId'];
  when 'open' then allowed:=array['action','motionId','policyId','policyVersion','requestId'];required:=allowed;
@@ -16,6 +20,8 @@ declare action text; allowed text[]; required text[]; result jsonb; rid uuid;beg
  when 'close' then allowed:=array['action','roundId','requestId'];required:=allowed;
  when 'reopen' then allowed:=array['action','motionId','policyId','policyVersion','requestId','priorRoundId','reason'];required:=allowed;
  when 'read' then allowed:=array['action','roundId'];required:=allowed;
+ when 'workspace' then allowed:=array['action'];required:=allowed;
+ when 'archive' then allowed:=array['action'];required:=allowed;
  else raise exception 'Unsupported command' using errcode='22023';end case;
  if not (p_command ?& required) or exists(select 1 from jsonb_object_keys(p_command) k where not(k=any(allowed))) or exists(select 1 from unnest(required) k where p_command->k='null'::jsonb) then raise exception 'Unexpected or missing command fields' using errcode='22023';end if;
  if exists(select 1 from jsonb_each(p_command) x where (x.key='policyVersion' and jsonb_typeof(x.value)<>'number') or (x.key<>'policyVersion' and jsonb_typeof(x.value)<>'string' and not (x.key='seconderId' and jsonb_typeof(x.value)='null'))) then raise exception 'Invalid command field types' using errcode='22023';end if;
@@ -27,6 +33,8 @@ declare action text; allowed text[]; required text[]; result jsonb; rid uuid;beg
  when 'cast' then result:=convay_private.vote_cast(p_tenant_id,p_meeting_id,p_session_id,(p_command->>'roundId')::uuid,p_command->>'choice',p_command->>'requestId');
  when 'close' then result:=jsonb_build_object('roundId',(p_command->>'roundId')::uuid,'outcome',convay_private.vote_close(p_tenant_id,p_meeting_id,p_session_id,(p_command->>'roundId')::uuid,p_command->>'requestId'));
  when 'read' then result:=convay_private.vote_read(p_tenant_id,p_meeting_id,p_session_id,(p_command->>'roundId')::uuid);
+ when 'workspace' then result:=convay_private.vote_workspace(p_tenant_id,p_meeting_id,p_session_id);
+ when 'archive' then result:=convay_private.vote_archive(p_tenant_id,p_meeting_id,p_session_id);
  end case;
  return result||jsonb_build_object('tenantId',p_tenant_id,'meetingId',p_meeting_id,'sessionId',p_session_id);
 end$$;

@@ -7,7 +7,9 @@ export type Command =
   | { action: 'reopen'; motionId: string; policyId: string; policyVersion: number; priorRoundId: string; reason: string; requestId: string }
   | { action: 'cast'; roundId: string; choice: Choice; requestId: string }
   | { action: 'close'; roundId: string; requestId: string }
-  | { action: 'read'; roundId: string };
+  | { action: 'read'; roundId: string }
+  | { action: 'workspace' }
+  | { action: 'archive' };
 export const record = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
 export const uuid = (x: unknown): x is string => typeof x === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
 const identity = (x: unknown): x is string => typeof x === 'string' && /^[A-Za-z0-9_-]{1,180}$/.test(x);
@@ -26,6 +28,7 @@ export function parseRequest(raw: unknown): { scope: Scope; command: Command } |
     case 'cast': valid=keys(c,['action','roundId','choice','requestId']) && uuid(c.roundId) && choice(c.choice) && requestId(c.requestId); break;
     case 'close': valid=keys(c,['action','roundId','requestId']) && uuid(c.roundId) && requestId(c.requestId); break;
     case 'read': valid=keys(c,['action','roundId']) && uuid(c.roundId); break;
+    case 'workspace': case 'archive': valid=keys(c,['action']); break;
   }
   return valid ? { scope:{tenantId:raw.tenantId,meetingId:raw.meetingId,sessionId:raw.sessionId},command:c as Command } : null;
 }
@@ -45,6 +48,8 @@ export function verifiedSession(jwt: string, verifiedUserId: string, now = Date.
 export function projectReceipt(raw: unknown, scope: Scope, c: Command): Record<string,unknown> | null {
   if(!record(raw) || raw.tenantId!==scope.tenantId || raw.meetingId!==scope.meetingId || raw.sessionId!==scope.sessionId) return null;
   const base={...scope};
+  if(c.action==='workspace') return projectWorkspace(raw,scope);
+  if(c.action==='archive') return projectArchive(raw,scope);
   if(c.action==='motion') return uuid(raw.motionId)?{...base,motionId:raw.motionId}:null;
   if(c.action==='open'||c.action==='reopen') return uuid(raw.roundId)?{...base,roundId:raw.roundId}:null;
   if(raw.roundId!==c.roundId) return null;
@@ -63,4 +68,43 @@ export function projectReceipt(raw: unknown, scope: Scope, c: Command): Record<s
     out.ballots=raw.ballots.map(b=>({voter:b.voter,choice:b.choice}));
   }
   return out;
+}
+
+export type MotionView={motionId:string;agendaId:string;title:string;wording:string;proposerId:string;seconderId:string|null;notes:string;createdAt:string};
+export type PolicyView={policyId:string;version:number;method:'Open'|'Secret Ballot';numerator:number;denominator:number;basis:'decisive'|'cast'|'electorate';comparison:'gt'|'gte';seconderRequired:boolean;reopenAllowed:boolean};
+export type RoundView={roundId:string;motionId:string;round:number;state:'Open'|'Closed';method:'Open'|'Secret Ballot';policyId:string;policyVersion:number;priorRound:string|null;reopenReason:string|null;myRecorded:boolean;canCast:boolean;reopenAllowed:boolean;for?:number;against?:number;abstain?:number;outcome?:'Passed'|'Rejected'|null;ballots?:{voter:string;choice:Choice}[]};
+export type WorkspaceView=Scope&{motions:MotionView[];rounds:RoundView[];policies:PolicyView[];canManage:boolean;quorumMet:boolean};
+const string=(x:unknown):x is string=>typeof x==='string';
+const date=(x:unknown):x is string=>string(x)&&Number.isFinite(Date.parse(x));
+function policy(x:unknown):PolicyView|null {
+ if(!record(x)||!identity(x.policyId)||!integer(x.version)||x.version<1||!['Open','Secret Ballot'].includes(String(x.method))||!integer(x.numerator)||!integer(x.denominator)||x.numerator<1||x.numerator>x.denominator||!['decisive','cast','electorate'].includes(String(x.basis))||!['gt','gte'].includes(String(x.comparison))||typeof x.seconderRequired!=='boolean'||typeof x.reopenAllowed!=='boolean')return null;
+ return {policyId:x.policyId,version:x.version,method:x.method,numerator:x.numerator,denominator:x.denominator,basis:x.basis,comparison:x.comparison,seconderRequired:x.seconderRequired,reopenAllowed:x.reopenAllowed} as PolicyView;
+}
+function motion(x:unknown):MotionView|null {
+ if(!record(x)||!uuid(x.motionId)||!identity(x.agendaId)||!string(x.title)||!string(x.wording)||!uuid(x.proposerId)||!(x.seconderId===null||uuid(x.seconderId))||!string(x.notes)||!date(x.createdAt))return null;
+ return {motionId:x.motionId,agendaId:x.agendaId,title:x.title,wording:x.wording,proposerId:x.proposerId,seconderId:x.seconderId,notes:x.notes,createdAt:x.createdAt};
+}
+function projectWorkspace(raw:Record<string,unknown>,scope:Scope):WorkspaceView|null {
+ if(!Array.isArray(raw.motions)||!Array.isArray(raw.rounds)||!Array.isArray(raw.policies)||typeof raw.canManage!=='boolean'||typeof raw.quorumMet!=='boolean')return null;
+ const motions=raw.motions.map(motion),policies=raw.policies.map(policy);
+ if(motions.some(x=>!x)||policies.some(x=>!x))return null;
+ const rounds=raw.rounds.map(r=>{
+  if(!record(r)||!uuid(r.roundId)||typeof r.canCast!=='boolean'||typeof r.reopenAllowed!=='boolean')return null;
+  const projected=projectReceipt({...r,...scope},scope,{action:'read',roundId:r.roundId});if(!projected)return null;
+  const {tenantId:_,meetingId:__,sessionId:___,...round}=projected;
+  return {...round,canCast:r.canCast,reopenAllowed:r.reopenAllowed} as RoundView;
+ });
+ if(rounds.some(x=>!x)||rounds.filter(r=>r?.state==='Open').length>1||rounds.some(r=>!motions.some(m=>m?.motionId===r?.motionId)))return null;
+ return {...scope,motions:motions as MotionView[],policies:policies as PolicyView[],rounds:rounds as RoundView[],canManage:raw.canManage,quorumMet:raw.quorumMet};
+}
+function projectArchive(raw:Record<string,unknown>,scope:Scope):Record<string,unknown>|null {
+ if(!Array.isArray(raw.rounds))return null;
+ const rounds=raw.rounds.map(r=>{
+  if(!record(r)||!uuid(r.roundId)||r.state!=='Closed'||!identity(r.agendaId)||!string(r.title)||!string(r.wording)||!date(r.closedAt))return null;
+  const projected=projectReceipt({...r,...scope,myRecorded:false},scope,{action:'read',roundId:r.roundId});
+  if(!projected||!integer(r.numerator)||!integer(r.denominator)||r.numerator<1||r.numerator>r.denominator||!['decisive','cast','electorate'].includes(String(r.basis))||!['gt','gte'].includes(String(r.comparison)))return null;
+  const {tenantId:_,meetingId:__,sessionId:___,myRecorded:____,...round}=projected;
+  return {...round,agendaId:r.agendaId,title:r.title,wording:r.wording,closedAt:r.closedAt,numerator:r.numerator,denominator:r.denominator,basis:r.basis,comparison:r.comparison};
+ });
+ return rounds.some(r=>!r)?null:{...scope,rounds};
 }

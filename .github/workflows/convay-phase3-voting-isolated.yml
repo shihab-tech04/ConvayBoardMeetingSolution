@@ -40,6 +40,8 @@ jobs:
           bash supabase/tests/live_voting_transaction/races.sh
       - name: Execute service-only scoped voting RPC with synthetic Auth sessions
         run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/gateway_matrix.sql
+      - name: Verify session workspace and archive confidentiality
+        run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/projection_matrix.sql
       - name: Destroy disposable PostgreSQL
         if: always()
         run: docker rm -f convay-voting || true
