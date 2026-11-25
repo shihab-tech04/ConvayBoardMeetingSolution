@@ -224,7 +224,9 @@ export function QuorumRulesPage() {
       }
       await createVersionedQuorumRule(values, pendingCreate.current, governance.items, gateway);
       pendingCreate.current = null;
-      await registry.refresh?.();
+      // A verified SQL save remains successful even if the directory refresh fails.
+      try { await registry.refresh?.(); }
+      catch { toast.warning("Quorum policy saved. Refresh the list to see the latest records."); }
       return true;
     },
   };
@@ -249,7 +251,11 @@ export function QuorumRulesPage() {
           const id = confirmDeactivation;
           setConfirmDeactivation(null);
           void deactivateQuorumRule(id, gateway)
-            .then(async () => { await registry.refresh?.(); toast.success("Quorum rule deactivated. You can create a new version."); })
+            .then(async () => {
+              try { await registry.refresh?.(); }
+              catch { toast.warning("Quorum rule deactivated. Refresh the list to see the latest records."); return; }
+              toast.success("Quorum rule deactivated. You can create a new version.");
+            })
             .catch(err => toast.error(err instanceof Error ? err.message : "Could not deactivate the rule."));
         }}
       />}
