@@ -11,6 +11,7 @@ import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAcc
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "./meetingAgendaSelection";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
 import { readMeetingDraftSnapshot, restoreMeetingDraftRow } from "./meetingDraftResume";
+import { normalizeDraftRelationships } from "./draftRelationshipPayload";
 import { readDraftWizardStep } from "../../components/forms/draftWizardStep";
 import { readAccessSnapshot } from "../../services/supabase/convayAccess";
 import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDeletion";
@@ -946,6 +947,8 @@ export function OnlineReturnRegisterPage() {
       if (savedStep.recovered) throw new Error("The current wizard step is invalid. Reopen the draft and retry.");
       const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
       const draftOrg = leadership.names.organizer;
+      // Validate all selections before assembling any destructive replacement batch.
+      const relationships = normalizeDraftRelationships(values, !existingDraftId);
 
       const meetingPayload: Record<string, unknown> = {
         meeting_title:    title,
@@ -998,15 +1001,8 @@ export function OnlineReturnRegisterPage() {
       }
 
       // Participants — synchronize canonical participant links
-      const draftLinks: DraftParticipantLink[] = (() => {
-        try { return JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
-        catch { return []; }
-      })();
-      if (!Array.isArray(draftLinks) || hasInvalidAttendanceRequirement(draftLinks)) throw new Error("Correct invalid attendance requirements before saving the draft.");
-      const seenDraft = new Set<string>();
+      const draftLinks = relationships.participants;
       draftLinks.forEach((link, idx) => {
-        if (!link.user_id || seenDraft.has(link.user_id)) return;
-        seenDraft.add(link.user_id);
         const primarySrc = link.selection_sources[0] ?? { type: "individual", source_id: link.user_id, source_label: "Individual" };
         batch.push({ entity_key: "bms.meetingParticipantLinks", action: "create", payload: {
           id: `${mid}-LNK${String(idx + 1).padStart(3, "0")}`,
@@ -1026,14 +1022,8 @@ export function OnlineReturnRegisterPage() {
       });
 
       // Agenda links
-      const draftAgendas: SelectedAgendaEntry[] = (() => {
-        try { return JSON.parse(String(values.selected_agenda_ids_json ?? "[]")) as SelectedAgendaEntry[]; }
-        catch { return []; }
-      })();
-      const seenDraftAgenda = new Set<string>();
+      const draftAgendas = relationships.agendas;
       draftAgendas.forEach((e, idx) => {
-        if (seenDraftAgenda.has(e.agenda_id)) return;
-        seenDraftAgenda.add(e.agenda_id);
         batch.push({ entity_key: "bms.meetingAgendaLinks", action: "create", payload: {
           id: `${mid}-MAL${String(idx + 1).padStart(2, "0")}`,
           meeting_id: mid, agenda_id: e.agenda_id,
@@ -1046,14 +1036,8 @@ export function OnlineReturnRegisterPage() {
       meetingDocLinkRegistry.items
         .filter(l => l.meeting_id === mid && l.source === "additional")
         .forEach(l => batch.push({ entity_key: "bms.meetingDocumentLinks", action: "delete", record_id: l.id }));
-      const draftAdditionalDocs: AdditionalDocEntry[] = (() => {
-        try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")); }
-        catch { return []; }
-      })();
-      const seenDraftDocIds = new Set<string>();
+      const draftAdditionalDocs = relationships.documents;
       draftAdditionalDocs.forEach((ad, idx) => {
-        if (seenDraftDocIds.has(ad.doc_id)) return;
-        seenDraftDocIds.add(ad.doc_id);
         batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
           id: `${mid}-MDL-D${String(idx + 1).padStart(3, "0")}`,
           meeting_id: mid,
@@ -1099,16 +1083,11 @@ export function OnlineReturnRegisterPage() {
       const approvalStatus = "Scheduled";
 
       // Parse canonical participant/agenda/doc blobs for validation and persistence
-      const draftLinksRaw: DraftParticipantLink[] = (() => {
-        try { return JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
-        catch { return []; }
-      })();
-      const agendaEntriesParsed = parseOptionalMeetingAgendas(values.selected_agenda_ids_json);
-      const agendaEntriesRaw: SelectedAgendaEntry[] = agendaEntriesParsed ?? [];
-      const additionalDocsRaw: AdditionalDocEntry[] = (() => {
-        try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")) as AdditionalDocEntry[]; }
-        catch { return []; }
-      })();
+      const relationships = normalizeDraftRelationships(values, !values._draft_meeting_id);
+      const draftLinksRaw = relationships.participants;
+      const agendaEntriesParsed = parseOptionalMeetingAgendas(JSON.stringify(relationships.agendas));
+      const agendaEntriesRaw = relationships.agendas;
+      const additionalDocsRaw = relationships.documents;
       // ── Schedule Meeting validation ─────────────────────────────────────────
       {
         const blockers: string[] = [];
