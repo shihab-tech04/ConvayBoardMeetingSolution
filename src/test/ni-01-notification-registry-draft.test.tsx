@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   getById: vi.fn(),
   refresh: vi.fn(),
   authorized: true,
+  access: { loaded: true },
   loading: false,
   error: null as string | null,
   cfg: null as unknown as PageCfg,
@@ -24,7 +25,8 @@ vi.mock("../app/data/boardMeetingData", () => ({
 }));
 
 vi.mock("../app/services/supabase/convayAccess", () => ({
-  useAccessSnapshot: () => ({ loaded: true }),
+  useAccessSnapshot: () => state.access,
+  readAccessSnapshot: () => state.access,
   hasAccess: () => state.authorized,
 }));
 
@@ -49,7 +51,7 @@ const validRule = {
 };
 
 beforeEach(() => {
-  state.rules = []; state.authorized = true; state.loading = false; state.error = null;
+  state.rules = []; state.access = { loaded: true }; state.authorized = true; state.loading = false; state.error = null;
   state.add.mockReset().mockImplementation(async (row: Record<string, any>) => {
     state.rules.push(row); return true;
   });
@@ -93,6 +95,40 @@ describe("NI-01 SQL-backed rule draft page", () => {
     let result = true;
     await act(async () => { result = await state.cfg.onRowCreate!(validRule) as boolean; });
     expect(result).toBe(false);
+  });
+
+  it("recovers a confirmed draft on retry without a second write", async () => {
+    state.getById.mockReturnValueOnce(undefined);
+    render(<NotificationRulesPage />);
+    expect(await state.cfg.onRowCreate!(validRule)).toBe(false);
+    expect(await state.cfg.onRowCreate!(validRule)).toBe(true);
+    expect(state.add).toHaveBeenCalledTimes(1);
+    expect(state.rules).toHaveLength(1);
+  });
+
+  it("reuses the same identity when retrying an unacknowledged write", async () => {
+    state.add.mockResolvedValueOnce(false);
+    render(<NotificationRulesPage />);
+    expect(await state.cfg.onRowCreate!(validRule)).toBe(false);
+    expect(await state.cfg.onRowCreate!(validRule)).toBe(true);
+    expect(state.add.mock.calls[0][0].id).toBe(state.add.mock.calls[1][0].id);
+    expect(state.rules).toHaveLength(1);
+  });
+
+  it("refuses changed values while an ambiguous draft is unresolved", async () => {
+    state.getById.mockReturnValueOnce(undefined);
+    render(<NotificationRulesPage />);
+    expect(await state.cfg.onRowCreate!(validRule)).toBe(false);
+    await expect(state.cfg.onRowCreate!({ ...validRule, rule_name: "Another rule" })).rejects.toThrow("unconfirmed");
+    expect(state.add).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects stale callbacks after a new access snapshot", async () => {
+    render(<NotificationRulesPage />);
+    const create = state.cfg.onRowCreate!;
+    state.access = { loaded: true };
+    expect(await create(validRule)).toBe(false);
+    expect(state.add).not.toHaveBeenCalled();
   });
 
   it("denies unauthorized draft creation and does not call SQL transport", async () => {

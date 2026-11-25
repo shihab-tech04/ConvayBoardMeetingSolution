@@ -4,6 +4,7 @@
  *  - MessageTemplatesPage
  *  - DeliveryLogsPage
  */
+import { useRef } from "react";
 import {
   Bell, MessageSquare, Mail, Smartphone, Monitor,
   CheckCircle, XCircle, Pencil, Pause, Copy, Archive, Download,
@@ -14,7 +15,7 @@ import type { PageCfg, TableRow, KpiDef, ColDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS, dg } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { useNotificationRuleRegistry, type NotificationRule } from "../../data/boardMeetingData";
-import { hasAccess, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { hasAccess, readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import type { FormField } from "../../components/forms/EntryForm";
 import { toast } from "sonner";
 
@@ -133,10 +134,12 @@ async function confirmNotificationRule(
   values: RuleValues,
   expectedStatus: NotificationRule["status"],
   expectedRuleId: string,
+  isCurrent: () => boolean,
 ): Promise<boolean> {
   // A transport ACK alone must not be presented as a verified saved rule.
-  if (!registry.refresh) return false;
+  if (!registry.refresh || !isCurrent()) return false;
   await registry.refresh();
+  if (!isCurrent()) return false;
   const authoritative = registry.getById(id);
   return Boolean(
     authoritative && authoritative.id === id &&
@@ -152,6 +155,10 @@ export function NotificationRulesPage() {
   const canManage = access.loaded && hasAccess("admin_notifications", access);
   // A stale or denied read cannot authorize changes from an already-open drawer.
   const canEditDraft = canManage && !registry.loading && !registry.error;
+  const isCurrent = () => readAccessSnapshot() === access && hasAccess("admin_notifications", access);
+  // Retain the original UUID after an ambiguous acknowledgement/readback.
+  // A retry must recover that exact row or submit the same identity, never fork it.
+  const pendingCreate = useRef<{ access: typeof access; record: NotificationRule } | null>(null);
   const rows: TableRow[] = registry.items.map(rule => ({
     ...rule,
     channel: rule.channels,
@@ -213,23 +220,51 @@ export function NotificationRulesPage() {
     formFields: RULE_FORM_FIELDS,
     awaitCreateSave: true,
     async onRowCreate(values) {
-      if (!canEditDraft) return false;
+      if (!canEditDraft || !isCurrent()) return false;
       const normalized = validateRuleValues(values);
-      const id = crypto.randomUUID();
-      const created: NotificationRule = {
-        id, rule_id: "NR-" + id.slice(0, 8).toUpperCase(),
-        ...normalized, status: "Draft", created_at: "",
-      };
+      let pending = pendingCreate.current;
+      if (pending && pending.access !== access) {
+        throw new Error("Access changed during the previous save. Reopen Notification Rules and verify the saved record before creating another.");
+      }
+      if (pending && !RULE_FIELDS.every(field => pending!.record[field] === normalized[field])) {
+        throw new Error("A previous draft save is unconfirmed. Retry the original values or reopen the saved rule before starting another.");
+      }
+      if (!pending) {
+        const id = crypto.randomUUID();
+        pending = { access, record: {
+          id, rule_id: "NR-" + id.slice(0, 8).toUpperCase(),
+          ...normalized, status: "Draft", created_at: "",
+        } };
+        pendingCreate.current = pending;
+      } else {
+        if (!registry.refresh) return false;
+        await registry.refresh();
+        if (!isCurrent()) return false;
+        const existing = registry.getById(pending.record.id);
+        if (existing) {
+          if (existing.status !== "Draft" || existing.rule_id !== pending.record.rule_id ||
+              !RULE_FIELDS.every(field => existing[field] === normalized[field])) {
+            throw new Error("The saved draft differs from the requested values. Reopen the authoritative record before editing.");
+          }
+          pendingCreate.current = null;
+          return true;
+        }
+      }
+      if (!isCurrent()) return false;
+      const created = pending.record;
       const saved = await registry.add(created);
-      return saved && await confirmNotificationRule(registry, id, normalized, "Draft", created.rule_id);
+      if (!saved || !isCurrent()) return false;
+      const confirmed = await confirmNotificationRule(registry, created.id, normalized, "Draft", created.rule_id, isCurrent);
+      if (confirmed) pendingCreate.current = null;
+      return confirmed;
     },
     async onRowUpdate(id, values) {
-      if (!canEditDraft) return false;
+      if (!canEditDraft || !isCurrent()) return false;
       const current = registry.getById(id);
       if (!current || (current.status !== "Draft" && current.status !== "Inactive")) return false;
       const normalized = validateRuleValues(values);
       const saved = await registry.update(id, normalized);
-      return saved && await confirmNotificationRule(registry, id, normalized, current.status, current.rule_id);
+      return saved && isCurrent() && await confirmNotificationRule(registry, id, normalized, current.status, current.rule_id, isCurrent);
     },
     searchPlaceholder: "Search notification rules",
   };
