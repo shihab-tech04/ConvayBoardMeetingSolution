@@ -7,11 +7,12 @@ import { fc, BADGE } from "../modulePageUtils";
 import { buildMeetingRegisterFilters, meetingRegisterSourceState } from "./meetingRegisterReadiness";
 import { normalizeMeetingIdentity, validateMeetingIdentity } from "./meetingIdentity";
 import { normalizeMeetingSchedule, validateMeetingSchedule } from "./meetingSchedule";
-import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
+import { meetingAccessBlockers, meetingUpdateAccessBlockers, meetingWizardAccess } from "./meetingAccess";
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "./meetingAgendaSelection";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
 import { readMeetingDraftSnapshot, restoreMeetingDraftRow, assertResumedDraftRevision, assertDraftRelationshipReadback } from "./meetingDraftResume";
 import { normalizeDraftRelationships } from "./draftRelationshipPayload";
+import { buildMeetingDocumentPlan } from "./meetingDocumentPlan";
 import { readDraftWizardStep } from "../../components/forms/draftWizardStep";
 import { readAccessSnapshot } from "../../services/supabase/convayAccess";
 import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDeletion";
@@ -32,7 +33,7 @@ import {
   useMeetingAgendaLinkRegistry, useQuorumRuleRegistry,
   useMeetingParticipantLinkRegistry,
   useOrgUnitRegistry, useAgendaDocumentLinkRegistry,
-  useMeetingDocumentLinkRegistry,
+  useMeetingDocumentLinkRegistry, useDocumentVersionRegistry,
   generateId,
 } from "../../data/boardMeetingData";
 import { useGovernanceMembershipRegistry } from "../../data/governanceMemberships";
@@ -99,6 +100,7 @@ export function OnlineReturnRegisterPage() {
   const orgUnitRegistry         = useOrgUnitRegistry();
   const agendaDocLinkRegistry   = useAgendaDocumentLinkRegistry();
   const meetingDocLinkRegistry  = useMeetingDocumentLinkRegistry();
+  const documentVersionRegistry = useDocumentVersionRegistry();
 
   // Any required registry error must not be misrepresented as an empty register.
   const meetingSources = [
@@ -795,6 +797,7 @@ export function OnlineReturnRegisterPage() {
         allAgendas={agendaRegistry.items}
         agendaDocLinks={agendaDocLinkRegistry.items}
         allDocuments={documentRegistry.items}
+        documentVersions={documentVersionRegistry.items}
         governanceBodies={govRegistry.items}
         quorumRules={quorumRuleRegistry.items}
         bmsUsers={bmsUserRegistry.items}
@@ -956,6 +959,8 @@ export function OnlineReturnRegisterPage() {
       const draftOrg = leadership.names.organizer;
       // Validate all selections before assembling any destructive replacement batch.
       const relationships = normalizeDraftRelationships(values, !existingDraftId);
+      const draftTarget = resolveMeetingDraftTarget(existingDraftId, registry.items);
+      const mid = draftTarget?.meetingId ?? generateId("MTG", registry.items.map(m => m.meeting_id));
 
       const meetingPayload: Record<string, unknown> = {
         meeting_title:    title,
@@ -965,10 +970,7 @@ export function OnlineReturnRegisterPage() {
         start_time:       String(values.start_time       ?? ""),
         end_time:         String(values.end_time         ?? ""),
         time_zone:        String(values.time_zone        ?? "Asia/Dhaka (GMT+6)"),
-        mode:             String(values.mode             ?? "Physical"),
-        venue:            String(values.venue            ?? ""),
-        virtual_platform: "Convay",
-        virtual_link:     String(values.virtual_link     ?? ""),
+        ...meetingWizardAccess(values,mid),
         financial_year:   String(new Date().getFullYear() + "-" + (new Date().getFullYear() + 1)),
         ...meetingLeadershipPayload(leadership),
         language:         "English",
@@ -982,20 +984,16 @@ export function OnlineReturnRegisterPage() {
         updated_at: now,
       };
 
-      let mid: string;
-      const draftTarget = resolveMeetingDraftTarget(existingDraftId, registry.items);
       const savedSnapshot = draftTarget ? await readCurrentDraft(draftTarget.recordId,draftTarget.meetingId) : undefined;
       if (savedSnapshot) assertResumedDraftRevision(savedSnapshot,values.draft_revision);
       if (draftTarget && savedSnapshot) {
         // Upsert — update existing draft record
         batch.push({ entity_key: "bms.meetings", action: "update", record_id: draftTarget.recordId, payload: meetingPayload });
-        mid = draftTarget.meetingId;
         // Remove old child links before re-adding (clean slate for participants/agendas)
         savedSnapshot.participants.forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
         savedSnapshot.agendas.forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
       } else {
         // Insert — new draft
-        mid = generateId("MTG", registry.items.map(m => m.meeting_id));
         batch.push({ entity_key: "bms.meetings", action: "create", payload: {
           id: mid, meeting_id: mid,
           ...meetingPayload,
@@ -1078,6 +1076,7 @@ export function OnlineReturnRegisterPage() {
 
     // ── Create: saves meeting + all child records ─────────────────────────────
     onRowCreate: async (values) => {
+      values = { ...values, ...meetingWizardAccess(values,String(values.meeting_id ?? "")) };
       const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now  = new Date().toISOString();
       const identity = normalizeMeetingIdentity(values);
@@ -1106,6 +1105,7 @@ export function OnlineReturnRegisterPage() {
       const agendaEntriesParsed = parseOptionalMeetingAgendas(JSON.stringify(relationships.agendas));
       const agendaEntriesRaw = relationships.agendas;
       const additionalDocsRaw = relationships.documents;
+      const documentPlan = buildMeetingDocumentPlan(agendaEntriesRaw,additionalDocsRaw,agendaRegistry.items,agendaDocLinkRegistry.items,documentRegistry.items,documentVersionRegistry.items,draftLinksRaw);
       // ── Schedule Meeting validation ─────────────────────────────────────────
       {
         const blockers: string[] = [];
@@ -1128,6 +1128,8 @@ export function OnlineReturnRegisterPage() {
         // No agenda is required; malformed or explicitly selected invalid agendas
         // remain blocked in the final server-backed scheduling path.
         blockers.push(...validateOptionalMeetingAgendas(agendaEntriesParsed, agendaRegistry.items));
+        blockers.push(...documentPlan.errors);
+        if (documentPlan.accessConflicts > 0) blockers.push("Resolve role-based document access conflicts before scheduling");
 
         blockers.push(...meetingAccessBlockers(values));
 
@@ -1258,57 +1260,11 @@ export function OnlineReturnRegisterPage() {
         } as never });
       });
 
-      // ── Document links ────────────────────────────────────────────────────────
-      let docLinkOrder = 0;
-
-      // Agenda documents (auto-derived: all docs linked to selected agendas + their children)
-      const relevantAgendaIds = new Set<string>(agendaEntries.map(e => e.agenda_id));
-      agendaRegistry.items.forEach(a => {
-        if (relevantAgendaIds.has(a.parent_agenda_id ?? "")) relevantAgendaIds.add(a.agenda_id ?? a.id);
-      });
-      const agendaDocIds = new Set(
-        agendaDocLinkRegistry.items.filter(l => relevantAgendaIds.has(l.agenda_id)).map(l => l.document_id),
-      );
-      // Also include docs with related_agenda pointing to a relevant agenda
-      documentRegistry.items.forEach(d => {
-        if (d.related_agenda && relevantAgendaIds.has(d.related_agenda)) agendaDocIds.add(d.doc_id ?? d.id);
-      });
-      const seenDocIds = new Set<string>();
-      agendaDocIds.forEach(docId => {
-        if (seenDocIds.has(docId)) return;
-        seenDocIds.add(docId);
-        docLinkOrder++;
-        const mlId = `${newId}-MDL${String(docLinkOrder).padStart(3, "0")}`;
-        const doc = documentRegistry.items.find(d => (d.doc_id ?? d.id) === docId);
+      // ── Document links: exactly the same plan shown in Review ──────────────────
+      documentPlan.documents.forEach(({document_name,confidentiality,...link}) => {
         batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
-          id: mlId,
-          meeting_id: newId,
-          document_id: docId,
-          version: doc?.version ?? "1.0",
-          source: "agenda",
-          source_agenda_id: doc?.related_agenda ?? "",
-          display_order: docLinkOrder,
-          added_by: organizerName || "Current User",
-          added_at: now,
-        } as never });
-      });
-
-      // Additional documents (from additional_doc_ids_json — already parsed above)
-      const additionalDocs = additionalDocsRaw;
-      additionalDocs.forEach(ad => {
-        if (seenDocIds.has(ad.doc_id)) return;
-        seenDocIds.add(ad.doc_id);
-        docLinkOrder++;
-        const mlId = `${newId}-MDL${String(docLinkOrder).padStart(3, "0")}`;
-        batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
-          id: mlId,
-          meeting_id: newId,
-          document_id: ad.doc_id,
-          version: ad.version,
-          source: "additional",
-          display_order: docLinkOrder,
-          added_by: organizerName || "Current User",
-          added_at: now,
+          id: `${newId}-MDL${String(link.display_order).padStart(3,"0")}`,
+          meeting_id:newId, ...link, added_by:organizerName || "Current User", added_at:now,
         } as never });
       });
 

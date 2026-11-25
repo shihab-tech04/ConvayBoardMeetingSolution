@@ -9,16 +9,20 @@ import {
   CheckCircle2, AlertTriangle, XCircle, Edit2, Clock, Video, MapPin,
 } from "lucide-react";
 import type { EntryFormValue } from "./EntryForm";
-import type { DraftParticipantLink } from "./ParticipantSelectorStep";
-import type { SelectedAgendaEntry, AdditionalDocEntry } from "./AgendaDocumentStep";
 import type {
-  AgendaSubmission, AgendaDocumentLink, BoardDocument,
+  AgendaSubmission, AgendaDocumentLink, BoardDocument, DocumentVersion,
   GovernanceBody, QuorumRule,
 } from "../../data/boardMeetingData";
 import type { BmsUser } from "../../data/bmsUsers";
-import { calculateMeetingQuorum } from "../../utils/quorumCalculation";
+import { calculateMeetingQuorum, quorumStatusLabel } from "../../utils/quorumCalculation";
+import { normalizeDraftRelationships } from "../../pages/return-register/draftRelationshipPayload";
+import { buildMeetingDocumentPlan } from "../../pages/return-register/meetingDocumentPlan";
+import { normalizeMeetingIdentity, validateMeetingIdentity } from "../../pages/return-register/meetingIdentity";
+import { normalizeMeetingSchedule, validateMeetingSchedule } from "../../pages/return-register/meetingSchedule";
+import { resolveMeetingLeadership, meetingLeadershipLabel } from "../../pages/return-register/meetingLeadership";
+import { validateLeadershipRoster } from "../../pages/return-register/leadershipRoster";
 import { readAttendanceRequirement, hasInvalidAttendanceRequirement } from "../../pages/return-register/attendanceRequirement";
-import { meetingAccessBlockers } from "../../pages/return-register/meetingAccess";
+import { meetingAccessBlockers, meetingWizardAccess } from "../../pages/return-register/meetingAccess";
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "../../pages/return-register/meetingAgendaSelection";
 
 // ── Props ──────────────────────────────────────────────────────────────────────
@@ -29,6 +33,7 @@ export interface MeetingReviewPanelProps {
   allAgendas?: AgendaSubmission[];
   agendaDocLinks?: AgendaDocumentLink[];
   allDocuments?: BoardDocument[];
+  documentVersions?: DocumentVersion[];
   governanceBodies?: GovernanceBody[];
   quorumRules?: QuorumRule[];
   bmsUsers?: BmsUser[];
@@ -66,7 +71,7 @@ function Row({ label, value, warn }: { label: string; value: string; warn?: bool
   return (
     <div className="flex items-baseline gap-3">
       <span className="text-[11px] text-[var(--muted-foreground)] shrink-0 w-32 font-medium">{label}</span>
-      <span className={`text-xs font-semibold ${warn ? "text-amber-600 dark:text-amber-400" : "text-[var(--foreground)]"}`}>
+      <span className={`min-w-0 break-words text-xs font-semibold ${warn ? "text-amber-600 dark:text-amber-400" : "text-[var(--foreground)]"}`}>
         {value}
       </span>
     </div>
@@ -126,19 +131,6 @@ function findBody(
   );
 }
 
-function parseLinks(json: EntryFormValue): DraftParticipantLink[] {
-  try { return JSON.parse(String(json ?? "[]")) as DraftParticipantLink[]; }
-  catch { return []; }
-}
-function parseAgendaEntries(json: EntryFormValue): SelectedAgendaEntry[] {
-  try { return JSON.parse(String(json ?? "[]")) as SelectedAgendaEntry[]; }
-  catch { return []; }
-}
-function parseAdditionalDocs(json: EntryFormValue): AdditionalDocEntry[] {
-  try { return JSON.parse(String(json ?? "[]")) as AdditionalDocEntry[]; }
-  catch { return []; }
-}
-
 function durationLabel(minutes: number): string {
   if (minutes <= 0) return "—";
   const h = Math.floor(minutes / 60);
@@ -161,14 +153,22 @@ interface Blocker { label: string; step: number }
 
 export function MeetingReviewPanel({
   values, onGoToStep,
-  allAgendas = [], agendaDocLinks = [], allDocuments = [],
+  allAgendas = [], agendaDocLinks = [], allDocuments = [], documentVersions = [],
   governanceBodies = [], quorumRules = [], bmsUsers = [],
 }: MeetingReviewPanelProps) {
 
   // ── Parse canonical blobs ──────────────────────────────────────────────────
-  const participants = useMemo(() => parseLinks(values.participant_links_json), [values.participant_links_json]);
-  const agendaEntries = useMemo(() => parseAgendaEntries(values.selected_agenda_ids_json), [values.selected_agenda_ids_json]);
-  const additionalDocs = useMemo(() => parseAdditionalDocs(values.additional_doc_ids_json), [values.additional_doc_ids_json]);
+  const relationshipState = useMemo(() => {
+    try { return {data:normalizeDraftRelationships(values,!v(values,"meeting_id")),error:""}; }
+    catch(error) { return {data:{participants:[],agendas:[],documents:[]},error:error instanceof Error?error.message:"Invalid relationship selection"}; }
+  },[values]);
+  const {participants,agendas:agendaEntries,documents:additionalDocs}=relationshipState.data;
+  const identity=normalizeMeetingIdentity(values);
+  const schedule=normalizeMeetingSchedule(values);
+  const leadership=resolveMeetingLeadership(values,bmsUsers);
+  const access=meetingWizardAccess(values,v(values,"meeting_id"));
+  const documentPlan=useMemo(()=>buildMeetingDocumentPlan(agendaEntries,additionalDocs,allAgendas,agendaDocLinks,allDocuments,documentVersions,participants),
+    [agendaEntries,additionalDocs,allAgendas,agendaDocLinks,allDocuments,documentVersions,participants]);
 
   // ── Participant stats ──────────────────────────────────────────────────────
   const participantStats = useMemo(() => {
@@ -186,20 +186,17 @@ export function MeetingReviewPanel({
   // ── Agenda stats ───────────────────────────────────────────────────────────
   const agendaStats = useMemo(() => {
     const parentIds = agendaEntries.map(e => e.agenda_id);
-    const children = allAgendas.filter(a =>
-      a.parent_agenda_id != null && parentIds.includes(a.parent_agenda_id) && !a.archived_at,
-    );
+    const includedIds = new Set(documentPlan.agendas.map(a=>a.id));
+    const children = documentPlan.agendas.filter(a=>a.depth>0);
     const totalDuration = allAgendas
-      .filter(a => parentIds.includes(a.agenda_id ?? a.id) || (a.parent_agenda_id != null && parentIds.includes(a.parent_agenda_id)))
+      .filter(a => includedIds.has(a.agenda_id ?? a.id))
       .reduce((sum, a) => sum + (parseInt(String((a as {estimated_duration?: string}).estimated_duration ?? "0"), 10) || 0), 0);
     const votingCount = allAgendas.filter(a =>
-      parentIds.includes(a.agenda_id ?? a.id) &&
+      includedIds.has(a.agenda_id ?? a.id) &&
       ((a as {voting_required?: string}).voting_required === "Yes" || (a as {agenda_category?: string}).agenda_category === "For Decision"),
     ).length;
-    const allApproved = agendaEntries.length > 0 && agendaEntries.every(e => {
-      const agenda = allAgendas.find(a => (a.agenda_id ?? a.id) === e.agenda_id);
-      return agenda?.approval_status === "Approved";
-    });
+    const allApproved = agendaEntries.length > 0 && !documentPlan.errors.some(e=>e.startsWith("Selected agenda")) &&
+      documentPlan.agendas.every(e=>allAgendas.find(a=>(a.agenda_id??a.id)===e.id)?.approval_status==="Approved");
     const allMeetingReady = agendaEntries.length > 0 && agendaEntries.every(e => {
       const agenda = allAgendas.find(a => (a.agenda_id ?? a.id) === e.agenda_id);
       return agenda?.approval_status === "Approved" && (agenda as {meeting_readiness?: string}).meeting_readiness === "Meeting Ready";
@@ -209,103 +206,44 @@ export function MeetingReviewPanel({
       return ag && ag.approval_status !== "Approved";
     });
     return { parentCount: parentIds.length, childCount: children.length, totalDuration, votingCount, allApproved, allMeetingReady, draftAgendas };
-  }, [agendaEntries, allAgendas]);
+  }, [agendaEntries, allAgendas, documentPlan]);
 
-  // ── Document stats ─────────────────────────────────────────────────────────
-  const docStats = useMemo(() => {
-    const parentIds = agendaEntries.map(e => e.agenda_id);
-    const childIds = allAgendas
-      .filter(a => a.parent_agenda_id != null && parentIds.includes(a.parent_agenda_id))
-      .map(a => a.agenda_id ?? a.id);
-    const allAgendaIds = new Set([...parentIds, ...childIds]);
-
-    const agendaDocIds = new Set(
-      agendaDocLinks.filter(l => allAgendaIds.has(l.agenda_id)).map(l => l.document_id),
-    );
-    allDocuments.forEach(d => {
-      const ra = (d as {related_agenda?: string}).related_agenda;
-      if (ra && allAgendaIds.has(ra)) agendaDocIds.add(d.doc_id ?? d.id);
-    });
-
-    const additionalDocIds = new Set(additionalDocs.map(d => d.doc_id));
-    const allRelevantDocs = allDocuments.filter(d => {
-      const did = d.doc_id ?? d.id;
-      return agendaDocIds.has(did) || additionalDocIds.has(did);
-    });
-    const restrictedDocs = allRelevantDocs.filter(d =>
-      d.confidentiality && !["Non-Confidential", "Internal"].includes(d.confidentiality),
-    );
-
-    // Missing access: Observers/Invitees/Presenters vs Strictly Confidential
-    let missingAccess = 0;
-    for (const p of participants) {
-      if (!["Observer", "Invitee", "Presenter"].includes(p.participant_type)) continue;
-      for (const d of restrictedDocs) {
-        if (d.confidentiality === "Strictly Confidential") missingAccess++;
-      }
-    }
-
-    return {
-      agendaDocCount: agendaDocIds.size,
-      additionalCount: additionalDocs.length,
-      restrictedCount: restrictedDocs.length,
-      missingAccess,
-    };
-  }, [agendaEntries, agendaDocLinks, allDocuments, additionalDocs, allAgendas, participants]);
+  const docStats = {
+    agendaDocCount:documentPlan.documents.filter(d=>d.source==="agenda").length,
+    additionalCount:documentPlan.documents.filter(d=>d.source==="additional").length,
+    restrictedCount:documentPlan.documents.filter(d=>d.confidentiality&&!["Non-Confidential","Internal"].includes(d.confidentiality)).length,
+    missingAccess:documentPlan.accessConflicts,
+  };
 
   // ── Quorum stats ───────────────────────────────────────────────────────────
   const quorumStats = useMemo(() => {
     const result = calculateMeetingQuorum({
       boardCommitteeId: v(values, "committee"),
-      meetingId: v(values, "_draft_meeting_id") || v(values, "meeting_id"),
+      meetingId: v(values, "meeting_id") || v(values, "_draft_meeting_id"),
       draftLinks: participants,
       governanceBodies,
       quorumRules,
     });
     const rule = result.selectedRule;
     const ruleSource = rule
-      ? `${rule.meeting_id ? "Meeting" : "Governance"} rule (${result.requiredPercent}% min)`
+      ? `${rule.meeting_id ? "Meeting" : "Governance"} rule`
       : result.status === "not_configured" ? "Not configured" : result.reasons.join("; ");
     const eligible = rule ? result.eligibleCount : new Set(participants.filter(p => p.quorum_eligible && p.user_id).map(p => p.user_id)).size;
     return { eligible, required: result.requiredCount, requiredPct: result.requiredPercent,
-      configured: result.status !== "not_configured", met: result.status === "expected", ruleSource };
+      configured: result.status !== "not_configured", met: result.status === "expected", ruleSource, result, rule };
   }, [values, governanceBodies, quorumRules, participants]);
 
   // ── Scheduling blockers ────────────────────────────────────────────────────
   const blockers = useMemo((): Blocker[] => {
     const out: Blocker[] = [];
-    if (!v(values, "meeting_title"))  out.push({ label: "Meeting title is required",               step: 0 });
-    if (!v(values, "committee"))      out.push({ label: "Governance body is required",              step: 0 });
-    if (!v(values, "meeting_date"))   out.push({ label: "Meeting date is required",                 step: 0 });
-    if (!v(values, "start_time") || !v(values, "end_time"))
-                                      out.push({ label: "Start and end time are required",          step: 0 });
-    if (!v(values, "chairperson"))    out.push({ label: "Chairperson is required",                  step: 0 });
-    if (!v(values, "secretary"))      out.push({ label: "Secretary is required",                    step: 0 });
-    if (!v(values, "organizer"))      out.push({ label: "Organizer is required",                    step: 0 });
-
-    // Validate governance body is active
-    const committeeVal = v(values, "committee");
-    if (committeeVal) {
-      const body = findBody(committeeVal, governanceBodies);
-      const bodyName = body?.body_name ?? committeeVal;
-      if (body && (body as {status?: string}).status && (body as {status?: string}).status !== "Active") {
-        out.push({ label: `Governance body "${bodyName}" is not active`, step: 0 });
-      }
-    }
-
-    // Validate leadership are active users — look up by ID first, then by name
-    const isInactiveUser = (val: string): boolean => {
-      if (!val) return false;
-      const user = bmsUsers.find(u => u.id === val)
-        ?? bmsUsers.find(u => u.name === val.split(" — ")[0].trim());
-      return user ? (user.status !== "Active" && !!user.status) : false;
-    };
-    if (v(values, "chairperson") && isInactiveUser(v(values, "chairperson")))
-      out.push({ label: "Chairperson must be an active user", step: 0 });
-    if (v(values, "secretary") && isInactiveUser(v(values, "secretary")))
-      out.push({ label: "Secretary must be an active user", step: 0 });
-    if (v(values, "organizer") && isInactiveUser(v(values, "organizer")))
-      out.push({ label: "Organizer must be an active user", step: 0 });
+    for(const label of [...validateMeetingIdentity(identity),...validateMeetingSchedule(schedule),
+      ...leadership.missing.map(role=>meetingLeadershipLabel(role)+" must be selected from active registered users")])
+      out.push({label,step:0});
+    const body=findBody(identity.committee,governanceBodies);
+    if(body?.status && body.status!=="Active") out.push({label:`Governance body "${body.body_name}" is not active`,step:0});
+    if(relationshipState.error) out.push({label:relationshipState.error,step:/agenda|document/i.test(relationshipState.error)?2:1});
+    if(!relationshipState.error) validateLeadershipRoster(participants,leadership).forEach(label=>out.push({label,step:1}));
+    documentPlan.errors.forEach(label=>out.push({label,step:2}));
 
     if (participantStats.invalidAttendance) out.push({ label: "Correct invalid attendance requirements", step: 1 });
     if (participantStats.total === 0)
@@ -318,10 +256,10 @@ export function MeetingReviewPanel({
     // An agenda-free meeting is ready to schedule when the other gates pass.
     // Check explicitly selected agendas using the same rules as Step 3 and Save.
     validateOptionalMeetingAgendas(
-      parseOptionalMeetingAgendas(values.selected_agenda_ids_json), allAgendas,
+      relationshipState.error ? parseOptionalMeetingAgendas(values.selected_agenda_ids_json) : agendaEntries, allAgendas,
     ).forEach(label => out.push({ label, step: 2 }));
 
-    meetingAccessBlockers(values).forEach(label => out.push({ label, step: 3 }));
+    meetingAccessBlockers({...values,...access}).forEach(label => out.push({ label, step: 3 }));
 
     // Quorum is assessed at meeting time; an unconfigured or not-yet-met
     // projection is information, not a scheduling blocker.
@@ -330,11 +268,11 @@ export function MeetingReviewPanel({
       out.push({ label: `${docStats.missingAccess} document access conflict${docStats.missingAccess > 1 ? "s" : ""} must be resolved`, step: 2 });
 
     return out;
-  }, [values, governanceBodies, bmsUsers, participantStats, agendaEntries, agendaStats, quorumStats, docStats]);
+  }, [values, governanceBodies, bmsUsers, participantStats, agendaEntries, agendaStats, quorumStats, docStats, identity, schedule, leadership, participants, relationshipState, documentPlan, allAgendas]);
 
   const isReady = blockers.length === 0;
   const scheduledMin = scheduledDuration(v(values, "start_time"), v(values, "end_time"));
-  const mode = v(values, "mode") || "Physical";
+  const mode = access.mode;
 
   return (
     <div className="space-y-4 pb-2">
@@ -393,12 +331,12 @@ export function MeetingReviewPanel({
 
         {/* Meeting */}
         <SummaryCard icon={<CalendarDays size={13} strokeWidth={2} />} title="Meeting" step={0} onEdit={onGoToStep}>
-          <Row label="Title"           value={v(values, "meeting_title")} />
-          <Row label="Type"            value={v(values, "meeting_type")} />
+          <Row label="Title"           value={identity.meeting_title} />
+          <Row label="Type"            value={identity.meeting_type} />
           <Row label="Governance Body" value={resolveBodyName(v(values, "committee"), governanceBodies)} />
           <Row label="Date"            value={v(values, "meeting_date")} />
           <Row label="Time"            value={[v(values, "start_time"), v(values, "end_time")].filter(Boolean).join(" – ")} />
-          <Row label="Time Zone"       value={v(values, "time_zone")} />
+          <Row label="Time Zone"       value={schedule.time_zone} />
           <Row label="Confidentiality" value={v(values, "confidentiality")} />
           <MultilineRow label="Purpose" value={v(values, "purpose")} />
           <MultilineRow label="Description" value={v(values, "description")} />
@@ -408,9 +346,9 @@ export function MeetingReviewPanel({
 
         {/* Leadership */}
         <SummaryCard icon={<Landmark size={13} strokeWidth={2} />} title="Leadership" step={0} onEdit={onGoToStep}>
-          <Row label="Chairperson" value={resolveUserName(v(values, "chairperson"), bmsUsers)} warn={!v(values, "chairperson")} />
-          <Row label="Secretary"   value={resolveUserName(v(values, "secretary"),   bmsUsers)} warn={!v(values, "secretary")} />
-          <Row label="Organizer"   value={resolveUserName(v(values, "organizer"),   bmsUsers)} warn={!v(values, "organizer")} />
+          <Row label="Chairperson" value={leadership.names.chairperson || "Not verified"} warn={!leadership.ids.chairperson} />
+          <Row label="Secretary" value={leadership.names.secretary || "Not verified"} warn={!leadership.ids.secretary} />
+          <Row label="Organizer" value={leadership.names.organizer || "Not verified"} warn={!leadership.ids.organizer} />
           {!v(values, "chairperson") && <Empty text="Chairperson not assigned" />}
           {!v(values, "secretary")   && <Empty text="Secretary not assigned" />}
         </SummaryCard>
@@ -426,8 +364,9 @@ export function MeetingReviewPanel({
               <Row label="Voting Eligible" value={String(participantStats.voting)} />
               <Row label="Quorum Eligible" value={String(participantStats.quorum)} />
               {participantStats.presenters > 0 && <Row label="Presenters" value={String(participantStats.presenters)} />}
-              {!participantStats.hasChair     && <div className="text-[10px] text-amber-600">Chairperson not in participant list</div>}
-              {!participantStats.hasSecretary && <div className="text-[10px] text-amber-600">Meeting Secretary not in participant list</div>}
+              {participants.map(p=><MultilineRow key={p.user_id} label={p.user_name || p.user_id} value={[p.participant_type,readAttendanceRequirement(p),p.voting_eligible?"Voting eligible":"Not voting eligible",p.quorum_eligible?"Quorum eligible":"Not quorum eligible",p.user_id].join(" · ")} />)}
+              {!participants.some(p=>p.user_id===leadership.ids.chairperson) && <div className="text-[10px] text-amber-600">Chairperson not in participant list</div>}
+              {!participants.some(p=>p.user_id===leadership.ids.secretary) && <div className="text-[10px] text-amber-600">Meeting Secretary not in participant list</div>}
             </>
           ) : (
             <Empty text="No participants added" />
@@ -448,6 +387,7 @@ export function MeetingReviewPanel({
               )}
               {agendaStats.votingCount > 0 && <Row label="Decision Items" value={String(agendaStats.votingCount)} />}
               <Row label="Readiness"       value={agendaStats.allApproved ? "All Approved" : "Some not Approved"} warn={!agendaStats.allApproved} />
+              {documentPlan.agendas.map((a,i)=><Row key={a.id} label={a.depth===0?"Agenda "+(i+1):"Child item"} value={a.title+" · "+a.id} />)}
             </>
           ) : (
             <Empty text="No agenda attached (optional)" />
@@ -460,13 +400,14 @@ export function MeetingReviewPanel({
           <Row label="Additional"     value={docStats.additionalCount > 0 ? String(docStats.additionalCount) : ""} />
           {docStats.agendaDocCount === 0 && docStats.additionalCount === 0 && <Empty text="No documents linked" />}
           {docStats.restrictedCount > 0 && <Row label="Restricted"  value={String(docStats.restrictedCount)} />}
+          {documentPlan.documents.map(d=><MultilineRow key={d.document_id} label={d.document_name} value={d.document_id+" · Version "+d.version+(d.document_version_id?" · "+d.document_version_id:"")+" · "+(d.source==="agenda"?"Agenda "+d.source_agenda_id:"Additional")} />)}
           {docStats.missingAccess > 0 && (
             <div className="text-[10px] text-red-600 dark:text-red-400">
               {docStats.missingAccess} access conflict{docStats.missingAccess > 1 ? "s" : ""} — resolve before scheduling
             </div>
           )}
           {docStats.missingAccess === 0 && (docStats.agendaDocCount + docStats.additionalCount) > 0 && (
-            <div className="text-[10px] text-emerald-600 dark:text-emerald-400">All participants have document access</div>
+            <div className="text-[10px] text-emerald-600 dark:text-emerald-400">No role-based document access conflicts detected</div>
           )}
         </SummaryCard>
 
@@ -475,10 +416,10 @@ export function MeetingReviewPanel({
           icon={mode === "Virtual" ? <Video size={13} strokeWidth={2} /> : <MapPin size={13} strokeWidth={2} />}
           title="Mode & Venue" step={3} onEdit={onGoToStep}
         >
-          <Row label="Mode"             value={mode} />
+          <Row label="Mode"             value={mode || "Not selected"} />
           {(mode === "Physical" || mode === "Hybrid") && <Row label="Venue"          value={v(values, "venue")}            warn={!v(values, "venue")} />}
-          {(mode === "Virtual"  || mode === "Hybrid") && <Row label="Platform"       value={v(values, "virtual_platform")} />}
-          {(mode === "Virtual" || mode === "Hybrid") && <Row label="LiveKit Join Link" value={v(values, "virtual_link") || (v(values, "virtual_platform") === "LiveKit" ? "Assigned when saved" : "")} warn={!v(values, "virtual_link") && v(values, "virtual_platform") !== "LiveKit"} />}
+          {(mode === "Virtual"  || mode === "Hybrid") && <Row label="Platform"       value="LiveKit" />}
+          {(mode === "Virtual" || mode === "Hybrid") && <Row label="LiveKit Join Link" value={access.virtual_link || "Assigned when saved"} />}
           {v(values, "invitation_date")  && <Row label="Invitation Date" value={v(values, "invitation_date")} />}
           {v(values, "board_pack_date")  && <Row label="Board Pack Date" value={v(values, "board_pack_date")} />}
         </SummaryCard>
@@ -486,14 +427,22 @@ export function MeetingReviewPanel({
         {/* Quorum */}
         <SummaryCard icon={<ShieldCheck size={13} strokeWidth={2} />} title="Quorum" step={3} onEdit={onGoToStep}>
           <Row label="Rule"             value={quorumStats.ruleSource} />
+          {quorumStats.rule && <>
+            <Row label="Policy ID" value={quorumStats.rule.rule_id || quorumStats.rule.id} />
+            <Row label="Policy version" value={quorumStats.rule.policy_version==null?"Not versioned":String(quorumStats.rule.policy_version)} />
+            <Row label="Rule type" value={String(quorumStats.rule.rule_type ?? "")} />
+            <Row label="Required roles" value={quorumStats.result.requiredRoles.join(", ")} />
+            <Row label="Lost-quorum action" value={String(quorumStats.rule.lost_quorum_action ?? "Not configured")} />
+          </>}
           <Row label="Quorum Eligible"  value={String(quorumStats.eligible)} />
           {quorumStats.required > 0 && <Row label="Required Count" value={String(quorumStats.required)} />}
           {quorumStats.requiredPct > 0 && <Row label="Required %" value={`${quorumStats.requiredPct}%`} />}
+          {quorumStats.result.reasons.map(reason=><Empty key={reason} text={reason} />)}
           {quorumStats.configured ? (
             <div className={`flex items-center gap-1 text-[10px] mt-0.5 ${quorumStats.met ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
               {quorumStats.met
                 ? <><CheckCircle2 size={9} strokeWidth={2} /> Projected to meet</>
-                : <><XCircle size={9} strokeWidth={2} /> Projected not to meet</>
+                : <><XCircle size={9} strokeWidth={2} /> {quorumStatusLabel(quorumStats.result)}</>
               }
             </div>
           ) : (
