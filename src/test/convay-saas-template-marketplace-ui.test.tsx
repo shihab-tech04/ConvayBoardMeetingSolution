@@ -8,12 +8,13 @@ const ids={
 };
 const state=vi.hoisted(()=>({
   companies: [] as Array<{id:string;display_name:string;lifecycle_state:string}>,
-  list:vi.fn(),read:vi.fn(),save:vi.fn(),
+  list:vi.fn(),read:vi.fn(),save:vi.fn(),readCompany:vi.fn(),
   toast:vi.fn(),
 }));
 vi.mock("sonner",()=>({toast:{success:state.toast}}));
 vi.mock("../app/services/saas/companyDirectory",()=>({
   listCompanies:async()=>({companies:state.companies,tenant_isolation_certified:false,workspace_activation_enabled:false}),
+  readCompany:(id:string)=>state.readCompany(id),
 }));
 vi.mock("../app/services/saas/meetingTemplateControl",async()=>{
   const actual=await vi.importActual<typeof import("../app/services/saas/meetingTemplateControl")>("../app/services/saas/meetingTemplateControl");
@@ -63,6 +64,7 @@ const empty=()=>({id:ids.template,tenant_id:null,template_key:"board_custom",
 });
 beforeEach(()=>{
   state.companies=[];
+  state.readCompany.mockReset();state.readCompany.mockImplementation(async(id:string)=>({company:state.companies.find(c=>c.id===id)}));
   state.list.mockReset();state.read.mockReset();state.save.mockReset();state.toast.mockReset();
   state.list.mockResolvedValue([]);state.read.mockResolvedValue(empty());
   state.save.mockResolvedValue(empty());
@@ -77,6 +79,8 @@ describe("SQL-backed dynamic meeting templates UI",()=>{
     await screen.findByText("No templates saved for this owner.");
     const owner=screen.getByLabelText("Template owner") as HTMLSelectElement;
     expect(owner.value).toBe(ids.company);
+    expect(owner).toBeDisabled();
+    expect(state.readCompany).toHaveBeenCalledWith(ids.company);
     expect(within(owner).queryByRole("option",{name:"Convay starter marketplace"})).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Meeting type name"),{target:{value:"Alpha Committee Meeting"}});
     fireEvent.change(screen.getByLabelText("Template key"),{target:{value:"alpha_committee"}});
@@ -145,4 +149,67 @@ describe("SQL-backed dynamic meeting templates UI",()=>{
     await waitFor(()=>expect(state.save).toHaveBeenCalledWith("publish",
       expect.objectContaining({template_id:ids.template,expected_revision:1,tenant_id:null})));
   });
+});
+
+describe("AD-05/10 complete authoring and verified publication recovery",()=>{
+ it("pins company-only ownership even when the actor has access to multiple companies",async()=>{
+  state.companies=[{id:ids.company,display_name:"Client Alpha",lifecycle_state:"active"},
+    {id:"44444444-4444-4444-8444-444444444444",display_name:"Client Beta",lifecycle_state:"active"}];
+  render(<MeetingTemplateMarketplace companyOnly initialCompanyId={ids.company}/>);
+  await screen.findByText("No templates saved for this owner.");
+  const owner=screen.getByLabelText("Template owner");
+  expect(owner).toBeDisabled();
+  expect(within(owner).queryByRole("option",{name:/Client Beta/})).not.toBeInTheDocument();
+  expect(state.readCompany).toHaveBeenCalledWith(ids.company);
+ });
+ it("never loads or writes global templates when the company-only scope is missing",async()=>{
+  render(<MeetingTemplateMarketplace companyOnly/>);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Verified company scope is required");
+  expect(state.list).not.toHaveBeenCalled();
+  expect(screen.getByRole("button",{name:"Save draft"})).toBeDisabled();
+ });
+ it("retries the same create intent after a lost response and preserves verified success when refresh fails",async()=>{
+  state.save.mockRejectedValueOnce(new Error("Lost response"));
+  render(<MeetingTemplateMarketplace/>);
+  await screen.findByText("No templates saved for this owner.");
+  fireEvent.change(screen.getByLabelText("Meeting type name"),{target:{value:"Board Custom"}});
+  fireEvent.change(screen.getByLabelText("Template key"),{target:{value:"board_custom"}});
+  fireEvent.click(screen.getByRole("button",{name:"Save draft"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Retry the same template save");
+  expect(screen.getByLabelText("Template owner")).toBeDisabled();
+  expect(screen.getByLabelText("Meeting type name")).toBeDisabled();
+  expect(screen.getByRole("button",{name:"New draft"})).toBeDisabled();
+  const first=state.save.mock.calls[0];
+  state.list.mockRejectedValueOnce(new Error("Directory offline"));
+  fireEvent.click(screen.getByRole("button",{name:"Retry template save"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Template saved and verified in SQL");
+  expect(state.save.mock.calls[1]).toEqual(first);
+  expect(screen.getByRole("button",{name:"Save new revision"})).toBeEnabled();
+  expect(state.toast).toHaveBeenCalledWith("Meeting template draft verified in SQL");
+ });
+ it("prevents publishing an old revision after edits and preserves exact publish retry intent",async()=>{
+  const item={id:ids.template,tenant_id:null,title:"Board Custom",template_key:"board_custom",description:"",revision:1,published_revision:null,source_template_id:null,updated_at:"2026-11-23T00:00:00Z"};
+  state.list.mockResolvedValue([item]);
+  state.save.mockResolvedValueOnce({...empty(),revision:2,current_revision:2,title:"Updated Board"});
+  render(<MeetingTemplateMarketplace/>);
+  fireEvent.click(await screen.findByRole("button",{name:"Board Custom"}));
+  await screen.findByRole("button",{name:"Publish revision"});
+  fireEvent.change(screen.getByLabelText("Meeting type name"),{target:{value:"Updated Board"}});
+  expect(screen.getByRole("button",{name:"Publish revision"})).toBeDisabled();
+  fireEvent.click(screen.getByRole("button",{name:"Save new revision"}));
+  await waitFor(()=>expect(screen.getByRole("button",{name:"Publish revision"})).toBeEnabled());
+  fireEvent.click(screen.getByRole("button",{name:"Publish revision"}));
+  const modal=await screen.findByRole("dialog",{name:"Publish this meeting template version?"});
+  state.save.mockRejectedValueOnce(new Error("Lost publication response"));
+  fireEvent.click(within(modal).getByRole("button",{name:"Publish revision"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Retry this exact publication");
+  const first=state.save.mock.calls[1];
+  fireEvent.click(within(modal).getByRole("button",{name:"Cancel"}));
+  expect(screen.getByRole("dialog",{name:"Publish this meeting template version?"})).toBeInTheDocument();
+  state.save.mockResolvedValueOnce({...empty(),revision:2,current_revision:2,title:"Updated Board",state:"published",published_revision:2});
+  fireEvent.click(within(modal).getByRole("button",{name:"Publish revision"}));
+  await waitFor(()=>expect(screen.queryByRole("dialog",{name:"Publish this meeting template version?"})).not.toBeInTheDocument());
+  expect(state.save.mock.calls[2]).toEqual(first);
+  expect(state.save.mock.calls[2][1].expected_revision).toBe(2);
+ });
 });
