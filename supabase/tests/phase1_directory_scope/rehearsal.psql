@@ -464,21 +464,21 @@ END $$;
 UPDATE convay_private.tenant_memberships SET membership_state='revoked', revoked_at=now() WHERE user_id='00000000-0000-4000-8000-000000000003';
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000003',true);
-DO $ BEGIN
+DO $$ BEGIN
  IF NOT convay_private.legacy_unscoped_authorized() THEN RAISE EXCEPTION 'Original revoked fallback not reproduced'; END IF;
  BEGIN PERFORM public.convay_member_directory(); RAISE EXCEPTION 'Revoked actor member read accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
  BEGIN PERFORM public.convay_org_member_directory(); RAISE EXCEPTION 'Revoked actor org read accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-END $;
+END $$;
 SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000001',true);
-DO $ BEGIN
+DO $$ BEGIN
  IF EXISTS (SELECT 1 FROM public.convay_member_directory() WHERE display_name='Tenant A') OR EXISTS (SELECT 1 FROM public.convay_org_member_directory() WHERE user_id='00000000-0000-4000-8000-000000000003') THEN RAISE EXCEPTION 'Revoked tenant profile projected globally'; END IF;
  BEGIN PERFORM public.convay_assign_org_member('00000000-0000-4000-8000-000000000003',NULL,'branch-global','assign','30000000-0000-4000-8000-000000000005'); RAISE EXCEPTION 'Revoked tenant assignment accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-END $;
+END $$;
 RESET ROLE;
-DO $ BEGIN
+DO $$ BEGIN
  IF has_function_privilege('anon','public.convay_member_directory()','EXECUTE') OR has_function_privilege('anon','public.convay_org_member_directory()','EXECUTE') OR has_function_privilege('anon','public.convay_assign_org_member(uuid,text,text,text,uuid,text,text,date,uuid)','EXECUTE') THEN RAISE EXCEPTION 'Anonymous grant leaked'; END IF;
  IF (SELECT count(*) FROM convay_private.org_member_assignment_events)<>2 OR (SELECT count(*) FROM convay_private.org_member_assignment_receipts)<>2 THEN RAISE EXCEPTION 'Denied request changed audit counts'; END IF;
-END $;
+END $$;
 \echo 'Revoked actor, target, anonymous and audit denial passed (synthetic)'
 ROLLBACK;
 \echo 'Synthetic directory/assignment guard rehearsal passed; not hosted Auth or native restore.'
