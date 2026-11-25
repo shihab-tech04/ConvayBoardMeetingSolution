@@ -28,7 +28,7 @@ describe("MT-15 exact wizard review projection",()=>{
   fireEvent.click(screen.getByRole("button",{name:"Edit Documents"}));expect(props.onGoToStep).toHaveBeenCalledWith(2);
  });
  it("does not present corrupt selections as a ready meeting",()=>{
-  render(<MeetingReviewPanel {...props} values={{...values,participant_links_json:"{broken"}}}/>);
+  render(<MeetingReviewPanel {...props} values={{...values,participant_links_json:"{broken"}}/>);
   expect(screen.getByText(/Saved participant selection is invalid/)).toBeTruthy();
   expect(screen.queryByText("Ready to Schedule")).toBeNull();
  });
