@@ -52,7 +52,8 @@ BEGIN
     AND m.membership_role='tenant_admin'
     AND m.membership_state='active' AND m.revoked_at IS NULL
     AND t.lifecycle_state IN ('provisioning','active')
-    AND p.account_status='active';
+    AND p.account_status='active'
+  FOR SHARE OF m,t,p NOWAIT;
   IF v_tenant_role IS DISTINCT FROM 'tenant_admin' THEN
     RAISE EXCEPTION 'Active company Super Admin membership required'
       USING ERRCODE='42501';
@@ -288,8 +289,9 @@ BEGIN
  END IF;
  -- Never accept a client-declared company role. A platform root user must
  -- also have explicit current membership in the exact company.
- IF NOT EXISTS(
-   SELECT 1 FROM convay_private.tenant_memberships m
+ -- Serialize authority with membership revocation, company suspension and
+ -- profile status writers. NOWAIT is a retryable fail-closed boundary.
+ PERFORM 1 FROM convay_private.tenant_memberships m
    JOIN convay_private.tenants t ON t.id=m.tenant_id
    JOIN public.user_profiles p ON p.user_id=m.user_id
    WHERE m.user_id=v_actor AND m.tenant_id=p_tenant_id
@@ -297,7 +299,8 @@ BEGIN
      AND m.membership_state='active' AND m.revoked_at IS NULL
      AND p.account_status='active'
      AND t.lifecycle_state IN ('provisioning','active')
- ) THEN
+ FOR SHARE OF m,t,p NOWAIT;
+ IF NOT FOUND THEN
    RAISE EXCEPTION 'Active company Super Admin membership required' USING ERRCODE='42501';
  END IF;
  IF p_action='list' THEN
