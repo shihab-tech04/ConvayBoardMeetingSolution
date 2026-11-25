@@ -76,7 +76,7 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
 
   const committeeValue = String(values.committee ?? "");
 
-  const policyMeetingId = String(values._draft_meeting_id ?? values.meeting_id ?? "").trim();
+  const policyMeetingId = String(values.meeting_id || values._draft_meeting_id || "").trim();
   const projection = useMemo(() => calculateMeetingQuorum({
     boardCommitteeId: committeeValue,
     meetingId: policyMeetingId,
@@ -96,7 +96,7 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
   // ── Real LiveKit link ──────────────────────────────────────────────────────
   const mode = String(values.mode ?? "Physical");
   const isVirtual = mode === "Virtual" || mode === "Hybrid";
-  const savedId = String(values._draft_meeting_id ?? values.meeting_id ?? "").trim();
+  const savedId = String(values.meeting_id || values._draft_meeting_id || "").trim();
   const savedLiveUrl = isVirtual && savedId ? liveMeetingUrl(savedId) ?? "" : "";
 
   useEffect(() => {
