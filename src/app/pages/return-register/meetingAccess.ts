@@ -1,3 +1,5 @@
+import { liveMeetingUrl } from "../../utils/liveMeetingLink";
+
 /** MT-09/MT-10: one shared rule for the three supported meeting modes. */
 export const MEETING_MODE_OPTIONS = ["Physical", "Virtual", "Hybrid"] as const;
 
@@ -46,4 +48,13 @@ export function meetingUpdateAccessBlockers(
       && String(submitted[key] ?? "") !== String(current?.[key] ?? ""),
   );
   return changedAccess ? meetingAccessBlockers(merged) : [];
+}
+
+/** Creation/resume wizard uses Convay's authorized LiveKit journey, never a
+ * client-supplied or fabricated room URL. A new draft receives its ID on save. */
+export function meetingWizardAccess(values: Record<string,unknown>, meetingId = "") {
+  const mode=String(values.mode??"Physical");
+  const online=mode==="Virtual"||mode==="Hybrid";
+  return {mode,venue:String(values.venue??""),virtual_platform:online?"LiveKit":"",
+    virtual_link:online&&meetingId ? liveMeetingUrl(meetingId)??"" : ""};
 }
