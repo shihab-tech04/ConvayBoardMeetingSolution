@@ -102,6 +102,33 @@ describe("access snapshot account/session isolation", () => {
     })).toBe(true);
   });
 
+  it("uses router-equivalent casing and encoding before applying route permissions", () => {
+    const delegated = {
+      ...readAccessSnapshot(), loaded: true, is_super_admin: false,
+      effective_permissions: ["gov_org_view", "admin_users", "mtg_view", "agd_view", "arc_view"],
+    };
+    for (const path of [
+      "/governance-org/Users-Assignments", "/governance-org/%75sers-assignments",
+      "/governance-org/User-Management", "/governance-org/user-%6danagement",
+      "/meetings/meeting-id/LIVE", "/meetings/meeting-id/%6cive",
+      "/meetings/Quick-Meeting", "/meetings/%71uick-meeting",
+      "/agenda-documents/Document-Library/doc-id/Editor",
+      "/archive-reports/Registers/Resolution-Register",
+      "/governance-org/%ZZ",
+    ]) expect(mayVisitPath(path, delegated), path).toBe(false);
+    expect(mayVisitPath("/governance-org/Organization-Structure", delegated)).toBe(true);
+    expect(mayVisitPath("/meetings/meeting-id/LIVE", {
+      ...delegated, effective_permissions: ["mtg_join"],
+    })).toBe(true);
+    expect(mayVisitPath("/agenda-documents/%64ocument-library/doc-id/Editor", {
+      ...delegated, effective_permissions: ["doc_view"],
+    })).toBe(true);
+    expect(mayVisitPath("/Company-Management/overview", {
+      ...delegated, company_admin_tenant_ids: ["authorized-tenant"],
+    })).toBe(true);
+    expect(mayVisitPath("/Company-Management/overview", delegated)).toBe(false);
+  });
+
   it("enforces sole-root administration routes with or without leading slash", () => {
     const roleAdmin = {
       ...readAccessSnapshot(), loaded: true, is_super_admin: false,
