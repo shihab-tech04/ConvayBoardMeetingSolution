@@ -5,7 +5,7 @@ import { PreMeetingReadinessPanel } from "../app/components/meetings/PreMeetingR
 
 type Row = { id: string; meeting_id: string; participant_id: string; attendance_status?: string; check_in_time?: string; check_out_time?: string; live_session_id?: string };
 const state = vi.hoisted(() => ({
-  rows: [] as Row[], loading: false, error: null as string | null, reopened: false,
+  materials: [] as {id:string; meeting_id:string; document_id:string; version:string; source:"additional"; display_order:number}[], rows: [] as Row[], loading: false, error: null as string | null, reopened: false,
   update: vi.fn(), add: vi.fn(), refresh: vi.fn(), getById: vi.fn(), getRevision: vi.fn(),
 }));
 vi.mock("../app/data/boardMeetingData", () => ({
@@ -14,6 +14,9 @@ vi.mock("../app/data/boardMeetingData", () => ({
   useMeetingAgendaLinkRegistry: () => ({ items: [] }),
   useAgendaDocumentLinkRegistry: () => ({ items: [] }),
   useDocumentRegistry: () => ({ items: [] }),
+  useAgendaRegistry: () => ({ items: [] }),
+  useDocumentVersionRegistry: () => ({ items: [] }),
+  useMeetingDocumentLinkRegistry: () => ({ items: state.materials }),
   useGovernanceRegistry: () => ({ items: [] }),
   useQuorumRuleRegistry: () => ({ items: [] }),
   useAttendanceRegistry: () => ({ items: state.rows, loading: state.loading, error: state.error, add: state.add, update: state.update, refresh: state.refresh, getById: state.getById, getRevision: state.getRevision }),
@@ -31,7 +34,7 @@ const renderPanel = () => {
   return { ...result, refreshPanel: () => result.rerender(component()), onStartMeeting };
 };
 beforeEach(() => {
-  vi.clearAllMocks(); state.rows = []; state.loading = false; state.error = null; state.reopened = false;
+  vi.clearAllMocks(); state.materials = []; state.rows = []; state.loading = false; state.error = null; state.reopened = false;
   state.getRevision.mockReturnValue(1);
   state.getById.mockImplementation((id: string) => state.rows.find(r => r.id === id));
   state.refresh.mockResolvedValue(undefined);
@@ -67,5 +70,24 @@ describe("WS1 QR-03 pre-meeting attendance SQL consumption", () => {
     expect(screen.getByRole("combobox")).toHaveProperty("value", "Not Joined");
     expect(screen.getByRole("button", {name: "Start Meeting"})).toHaveProperty("disabled", true);
     expect(panel.onStartMeeting).not.toHaveBeenCalled();
+  });
+});
+
+describe("WS1 QR-05/12 document readiness", () => {
+  it("shows missing additional material and reviews the warning without weakening start requirements", () => {
+    state.materials = [{id:"ml-1",meeting_id:"MTG-1",document_id:"DOC-404",version:"1.0",source:"additional",display_order:1}];
+    const panel = renderPanel();
+    fireEvent.click(screen.getByRole("button",{name:"Documents"}));
+    expect(screen.getByText("DOC-404")).toBeTruthy();
+    expect(screen.getByText("Document unavailable to this account")).toBeTruthy();
+    const start = screen.getByRole("button",{name:"Start Meeting"});
+    expect(start).toHaveProperty("disabled",false);
+    fireEvent.click(screen.getByRole("button",{name:"Acknowledge material warnings"}));
+    expect(screen.getByRole("button",{name:"Material warnings reviewed"})).toHaveProperty("disabled",true);
+    expect(start).toHaveProperty("disabled",false);
+    expect(panel.onStartMeeting).not.toHaveBeenCalled();
+    state.materials = [{...state.materials[0],document_id:"DOC-405"}];
+    panel.refreshPanel();
+    expect(screen.getByRole("button",{name:"Acknowledge material warnings"})).toBeTruthy();
   });
 });

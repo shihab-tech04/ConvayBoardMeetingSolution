@@ -21,6 +21,9 @@ import {
   useMeetingParticipantLinkRegistry,
   useMeetingAgendaLinkRegistry,
   useAgendaDocumentLinkRegistry,
+  useAgendaRegistry,
+  useMeetingDocumentLinkRegistry,
+  useDocumentVersionRegistry,
   useDocumentRegistry,
   useGovernanceRegistry,
   useQuorumRuleRegistry,
@@ -30,6 +33,7 @@ import { useBmsUserRegistry } from "../../data/bmsUsers";
 import { calculateMeetingQuorum, quorumStatusLabel } from "../../utils/quorumCalculation";
 import { attendanceRequirementLabel, hasInvalidAttendanceRequirement, requiresAttendance } from "../../pages/return-register/attendanceRequirement";
 import { readReadinessAttendance, readinessAttendancePatch, PRESENT_STATES, READINESS_STATES, type ReadinessAttendance } from "../../pages/return-register/readinessAttendance";
+import { readDocumentReadiness, materialStatusLabel } from "../../pages/return-register/documentReadiness";
 import { PrimaryButton } from "../buttons/PrimaryButton";
 import { SecondaryButton } from "../buttons/SecondaryButton";
 
@@ -102,9 +106,13 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
   const participantRegistry = useMeetingParticipantLinkRegistry();
   const { items: meetings } = meetingRegistry;
   const { items: participantLinks } = participantRegistry;
-  const { items: agendaLinks }        = useMeetingAgendaLinkRegistry();
-  const { items: agendaDocLinks }     = useAgendaDocumentLinkRegistry();
-  const { items: allDocuments }       = useDocumentRegistry();
+  const agendaLinkRegistry = useMeetingAgendaLinkRegistry();
+  const agendaDocRegistry = useAgendaDocumentLinkRegistry();
+  const documentRegistry = useDocumentRegistry();
+  const agendaRegistry = useAgendaRegistry();
+  const meetingDocRegistry = useMeetingDocumentLinkRegistry();
+  const versionRegistry = useDocumentVersionRegistry();
+  const { items: agendaLinks } = agendaLinkRegistry;
   const { items: govBodies }          = useGovernanceRegistry();
   const { items: quorumRules }        = useQuorumRuleRegistry();
   const { items: bmsUsers }           = useBmsUserRegistry();
@@ -197,13 +205,28 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
 
   // ── Agenda readiness ──────────────────────────────────────────────────────
   const linkedAgendaCount = myAgendaLinks.length;
-  const linkedDocIds = new Set(
-    agendaDocLinks
-      .filter(l => myAgendaLinks.some(al => al.agenda_id === l.agenda_id))
-      .map(l => l.document_id)
-  );
-  const linkedDocs = allDocuments.filter(d => linkedDocIds.has(d.id));
-  const missingDocContent = linkedDocs.filter(d => !(d as { file_url?: string }).file_url && !(d as { content?: string }).content);
+  const materialSources = [agendaLinkRegistry, agendaDocRegistry, documentRegistry, agendaRegistry, meetingDocRegistry, versionRegistry];
+  const materialsLoading = materialSources.some(source => source.loading === true);
+  const materialsError = materialSources.some(source => Boolean(source.error));
+  const linkedDocs = !materialsLoading && !materialsError ? readDocumentReadiness(meetingId, agendaRegistry.items, agendaLinks, meetingDocRegistry.items, agendaDocRegistry.items, documentRegistry.items, versionRegistry.items) : [];
+  const missingDocContent = linkedDocs.filter(d => d.status !== "reference_present");
+  const unsavedReferences = linkedDocs.filter(d => !d.inSnapshot);
+  const agendaDocumentCount = linkedDocs.filter(d => d.source.includes("agenda") || d.source.startsWith("Agenda")).length;
+  const documentWarnings = [
+    ...(materialsLoading ? ["Loading document readiness"] : []),
+    ...(materialsError ? ["Document readiness could not be loaded — refresh materials"] : []),
+    ...(missingDocContent.length ? [missingDocContent.length + " document(s) have unavailable material or content"] : []),
+    ...(unsavedReferences.length ? [unsavedReferences.length + " reference(s) not in saved meeting links"] : []),
+  ];
+  const warningFingerprint = JSON.stringify([meetingId, documentWarnings, linkedDocs]);
+  const [reviewedWarnings, setReviewedWarnings] = useState("");
+  const warningsReviewed = reviewedWarnings === warningFingerprint;
+  const [materialRefreshError, setMaterialRefreshError] = useState("");
+  const refreshMaterials = async () => {
+    setMaterialRefreshError("");
+    try { await Promise.all(materialSources.map(source => source.refresh?.())); }
+    catch { setMaterialRefreshError("Could not refresh all materials. Please retry."); }
+  };
 
   // ── Blockers ──────────────────────────────────────────────────────────────
   const blockers: string[] = [];
@@ -221,7 +244,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
     warnings.push(quorumResult.status === "not_configured" ? "Quorum rule not configured" : "Quorum not met at start");
   }
   if (quorumResult.status === "at_risk") warnings.push("Quorum is at risk — some eligible members not yet present");
-  if (missingDocContent.length > 0) warnings.push(`${missingDocContent.length} document(s) have no content available for preview`);
+  warnings.push(...documentWarnings);
 
   const hasCriticalBlocker = blockers.length > 0;
 
@@ -526,7 +549,7 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
         <Section title="Agendas" icon={<Layers size={15} />} defaultOpen={false}>
           <div style={{ display: "flex", flexDirection: "column" }}>
             <InfoRow label="Linked Agendas"  value={String(linkedAgendaCount)} />
-            <InfoRow label="Agenda Documents" value={String(linkedDocIds.size)} />
+            <InfoRow label="Agenda Documents" value={String(agendaDocumentCount)} />
           </div>
           {linkedAgendaCount === 0 && (
             <p style={{ margin: "0.4rem 0 0", fontSize: "0.75rem", color: "#f59e0b" }}>No agenda attached (optional). You can start without one.</p>
@@ -535,15 +558,27 @@ export function PreMeetingReadinessPanel({ meetingId, onClose, onStartMeeting }:
 
         {/* Documents */}
         <Section title="Documents" icon={<FileText size={15} />} defaultOpen={false}>
-          <div style={{ display: "flex", flexDirection: "column" }}>
-            <InfoRow label="Total Documents"    value={String(linkedDocs.length)} />
-            <InfoRow label="Missing Content"    value={String(missingDocContent.length)} warn={missingDocContent.length > 0} />
-          </div>
-          {missingDocContent.length > 0 && (
-            <ul style={{ margin: "0.4rem 0 0", padding: "0 0 0 1.2rem", fontSize: "0.75rem", color: "#f59e0b" }}>
-              {missingDocContent.map(d => <li key={d.id}>{d.doc_name ?? d.id}</li>)}
-            </ul>
+          {materialsLoading || materialsError ? (
+            <p role="status">{materialsLoading ? "Loading document readiness…" : "Document readiness unavailable. Refresh materials to retry."}</p>
+          ) : (
+            <>
+              <InfoRow label="Total Documents" value={String(linkedDocs.length)} />
+              <InfoRow label="Unavailable Materials" value={String(missingDocContent.length)} warn={missingDocContent.length > 0} />
+              {linkedDocs.length === 0 && <p style={{ fontSize: "0.75rem", color: "var(--muted-foreground)" }}>No meeting or agenda document references found.</p>}
+              {linkedDocs.map(doc => <div key={doc.key} style={{ borderBottom: "1px solid var(--border)", padding: "0.35rem 0", overflowWrap: "anywhere" }}>
+                <InfoRow label={doc.title} value={doc.source + " · Version " + doc.version} />
+                <p style={{ margin: "0.2rem 0", fontSize: "0.72rem", color: "var(--muted-foreground)" }}>{materialStatusLabel(doc.status)}</p>
+              </div>)}
+            </>
           )}
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
+            <SecondaryButton onClick={() => void refreshMaterials()} disabled={materialsLoading}>Refresh materials</SecondaryButton>
+            {documentWarnings.length > 0 && !materialsLoading && !materialsError && (
+              <SecondaryButton onClick={() => setReviewedWarnings(warningFingerprint)} disabled={warningsReviewed}>{warningsReviewed ? "Material warnings reviewed" : "Acknowledge material warnings"}</SecondaryButton>
+            )}
+          </div>
+          {materialRefreshError && <p role="status">{materialRefreshError}</p>}
+          {warningsReviewed && documentWarnings.length > 0 && <p role="status">Material warnings reviewed for this screen only. Start requirements are unchanged.</p>}
         </Section>
 
         {/* Override reason (only when blockers exist) */}
