@@ -11,6 +11,9 @@ begin
  m:=(x->>'motionId')::uuid;
  x:=public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','open','motionId',m,'policyId','fixture-race','policyVersion',1,'requestId','integrated_open_0001'));r:=(x->>'roundId')::uuid;
  perform public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','cast','roundId',r,'choice','For','requestId','integrated_cast_0001'));n:=n+1;
+ begin update public.convay_entity_records set payload=payload||'{"approval_status":"Awaiting Minutes"}'::jsonb where tenant_id=a and entity_key='bms.meetings' and record_id='record-A';raise exception 'Open ballot bypassed by terminal meeting write';exception when check_violation then n:=n+1;end;
+ if (select payload->>'approval_status' from public.convay_entity_records where tenant_id=a and entity_key='bms.meetings' and record_id='record-A') is distinct from 'In Progress' then raise exception 'Rejected closure changed meeting';end if;n:=n+1;
+ begin delete from public.convay_entity_records where tenant_id=a and entity_key='bms.meetings' and record_id='record-A';raise exception 'Open ballot bypassed by deleting meeting';exception when check_violation then n:=n+1;end;
  x:=public.convay_read_live_attendance_scoped(v,'MTG-SHARED',v::text,a,'SES-A');vr:=(x->>'attendanceRevision')::bigint;
  x:=public.convay_commit_live_attendance_scoped(v,'MTG-SHARED',v::text,'Left',vr,'integrated_leave_v_01',false,'Online',a,'SES-A');vr:=(x->>'attendanceRevision')::bigint;
  x:=public.convay_read_live_attendance_scoped(h,'MTG-SHARED',h::text,a,'SES-A');hr:=(x->>'attendanceRevision')::bigint;
@@ -31,6 +34,8 @@ begin
  if x#>>'{quorum,met}'<>'true' then raise exception 'Fresh quorum recovery failed';end if;n:=n+1;
  x:=public.convay_vote_command_scoped(v,vs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','cast','roundId',r,'choice','For','requestId','integrated_cast_0002'));if x->>'recorded'<>'true' or x?'choice' then raise exception 'Recovered ballot invalid';end if;n:=n+1;
  x:=public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','close','roundId',r,'requestId','integrated_close_001'));if x->>'outcome'<>'Passed' then raise exception 'Incorrect recovered result';end if;n:=n+1;
+ update public.convay_entity_records set payload=payload||'{"approval_status":"Awaiting Minutes"}'::jsonb where tenant_id=a and entity_key='bms.meetings' and record_id='record-A';
+ begin perform public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A','{"action":"motion","agendaId":"AG-1","title":"Late fixture","wording":"Closed meeting","requestId":"late_motion_00000001"}');raise exception 'New motion accepted after terminal meeting state';exception when check_violation then n:=n+1;end;
  update public.convay_entity_records set payload=payload||'{"session_status":"ended"}'::jsonb where tenant_id=a and entity_key='bms.liveSessions' and record_id='SES-A';
  x:=public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A','{"action":"archive"}');y:=public.convay_vote_command_scoped(v,vs,a,'MTG-SHARED','SES-A','{"action":"archive"}');
  if x is distinct from y or not exists(select 1 from jsonb_array_elements(x->'rounds') q where q->>'roundId'=r::text and q->>'for'='2' and q->>'outcome'='Passed' and not(q?'ballots')) then raise exception 'Archive result mismatch or privacy leak';end if;n:=n+1;
