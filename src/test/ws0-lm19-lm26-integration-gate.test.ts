@@ -44,7 +44,7 @@ describe("WS0 cross-Main LM-19/26 production integration gate", () => {
     expect(transport).toContain('convayAuth.authenticatedRequest("/functions/v1/convay-attendance"');
     expect(transport).toContain("submitAndVerifyRegularAttendance(intent");
     expect(transport).toContain("expectedRevision: initial.attendanceRevision");
-    expect(transport).toContain("readback: (id, participant) => readLiveAttendance(id, participant)");
+    expect(transport).toMatch(/readback: \(id, participant\) => \{\s*assertCurrentScope\(\);\s*return readLiveAttendance\(id, participant\);\s*\}/);
     expect(transport).not.toContain("actorId:");
     expect(workspace).toContain("attendanceQueue.enqueue(id, async () =>");
   });

@@ -70,27 +70,41 @@ export async function commitLiveAttendance(
   participantId: string,
   nextStatus: RegularMeetingAttendanceStatus,
   attendanceMode: "Online" | "In-Person",
+  isCurrentScope: () => boolean = () => true,
 ): Promise<LiveAttendanceSnapshot> {
+  // This prevents obsolete queued client work, not a substitute for server authorization.
+  const assertCurrentScope = () => {
+    if (!isCurrentScope()) throw new Error("Meeting attendance scope changed. Refresh before retrying.");
+  };
+  assertCurrentScope();
   // Never assume a local cached revision. The read is scoped by the real actor
   // server-side, so an old tab cannot overwrite a newer participant record.
   const initial = await readLiveAttendance(meetingId, participantId);
+  assertCurrentScope();
   const intent: RegularAttendanceIntent = {
     meetingId, participantId, nextStatus,
     expectedRevision: initial.attendanceRevision,
     requestId: "lmatt_" + crypto.randomUUID().replace(/-/g, ""),
   };
   const receipt = await submitAndVerifyRegularAttendance(intent, {
-    submit: current => gateway({
-      action: "commit",
-      meetingId: current.meetingId,
-      participantId: current.participantId,
-      nextStatus: current.nextStatus,
-      expectedRevision: current.expectedRevision,
-      requestId: current.requestId,
-      attendanceMode,
-    }),
-    readback: (id, participant) => readLiveAttendance(id, participant),
+    submit: current => {
+      assertCurrentScope();
+      return gateway({
+        action: "commit",
+        meetingId: current.meetingId,
+        participantId: current.participantId,
+        nextStatus: current.nextStatus,
+        expectedRevision: current.expectedRevision,
+        requestId: current.requestId,
+        attendanceMode,
+      });
+    },
+    readback: (id, participant) => {
+      assertCurrentScope();
+      return readLiveAttendance(id, participant);
+    },
   });
+  assertCurrentScope();
   const full = validateReadback(receipt);
   if (full.meetingId !== meetingId || full.participantId !== participantId) {
     throw new Error("Server attendance identity changed after commit.");

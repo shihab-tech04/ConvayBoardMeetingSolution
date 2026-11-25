@@ -35,7 +35,8 @@ describe("independent regular and Quick Meeting release boundaries", () => {
   });
   it("never promotes online readiness check-ins to attendee presence before SQL readback", () => {
     expect(workspaceSource).toContain("if (!isOnlineMeeting) setAttendanceMap(prev => {");
-    expect(workspaceSource).toContain("const saved = await commitLiveAttendance(meetingId, id, status, mode);");
+    expect(workspaceSource).toContain("const saved = await commitLiveAttendance(meetingId, id, status, mode,");
+    expect(workspaceSource).toContain("() => activeAttendanceGate.current === gate");
     expect(workspaceSource).toContain("serverQuorum?.met === true");
   });
 });
