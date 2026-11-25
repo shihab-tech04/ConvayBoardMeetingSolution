@@ -171,6 +171,22 @@ BEGIN
    RAISE EXCEPTION 'Retry organization assignment in READ COMMITTED' USING ERRCODE='40001';
  END IF;
  LOCK TABLE convay_private.tenant_memberships IN SHARE MODE NOWAIT;
+ -- Membership locks do not protect account status, root role or handover status.
+ -- Lock all involved profile rows in one deterministic order, failing closed
+ -- on concurrent profile writers rather than waiting with stale authorization.
+ PERFORM p.user_id FROM public.user_profiles p
+ WHERE p.user_id IN (v_actor,p_member_id,p_handover_user_id)
+ ORDER BY p.user_id FOR UPDATE NOWAIT;
+ IF NOT EXISTS(
+   SELECT 1 FROM public.user_profiles p
+   WHERE p.user_id=v_actor AND p.account_status='active' AND p.account_role='super_admin'
+ ) OR NOT convay_private.has_permission('gov_org_manage') THEN
+   RAISE EXCEPTION 'Platform Super Admin required for identity-level organization assignment' USING ERRCODE='42501';
+ END IF;
+ IF p_position IS NOT NULL AND btrim(p_position)<>'' AND
+    NOT convay_private.has_permission('admin_users') THEN
+   RAISE EXCEPTION 'Only authorized User Management may change designation' USING ERRCODE='42501';
+ END IF;
  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('convay-org-member-'||p_member_id::text));
  IF p_handover_user_id IS NOT NULL AND EXISTS (
    SELECT 1 FROM convay_private.tenant_memberships WHERE user_id=p_handover_user_id
