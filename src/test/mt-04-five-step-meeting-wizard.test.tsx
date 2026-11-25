@@ -257,3 +257,42 @@ describe("MT-11 save draft and continue", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 });
+
+describe("MT-12 authoritative draft resume through the wizard", () => {
+  const stale: TableRow = { id:"MTG-12", meeting_id:"MTG-12", approval_status:"Draft", meeting_title:"Cached title", draft_current_step:"1" };
+  const action = { id:"continue_setup",label:"Continue Setup",icon:()=>null };
+  const open = () => {fireEvent.click(screen.getByRole("button",{name:"Open MTG-12"}));fireEvent.click(screen.getByRole("button",{name:"Continue Setup"}));};
+  it("opens the freshly saved fourth step after a delayed read and preserves earlier editable values",async()=>{
+    let finish!: (row:TableRow)=>void;
+    const read=vi.fn(()=>new Promise<TableRow>(resolve=>{finish=resolve;}));
+    renderWizard({rows:[stale],drawerActionsResolver:()=>[action],onResumeDraft:read});
+    open();expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"Loading draft..."})).toBeDisabled();
+    finish({...stale,meeting_title:"Fresh saved title",draft_current_step:"3"});
+    await waitFor(()=>expect(screen.getByRole("dialog")).toBeInTheDocument());
+    expect(screen.getByRole("button",{name:"Meeting Mode and Quorum"})).toBeEnabled();
+    expect(screen.getByRole("button",{name:"Review and Schedule"})).toBeDisabled();
+    fireEvent.click(screen.getByRole("button",{name:"Meeting Details"}));
+    expect(screen.getByLabelText(/Meeting Title/)).toHaveValue("Fresh saved title");
+  });
+  it("keeps the drawer and permits retry after a denied or failed read",async()=>{
+    const read=vi.fn().mockRejectedValueOnce(new Error("Draft unavailable")).mockResolvedValueOnce({...stale,draft_current_step:"3"});
+    renderWizard({rows:[stale],drawerActionsResolver:()=>[action],onResumeDraft:read});
+    open();await waitFor(()=>expect(state.toast.error).toHaveBeenCalledWith("Draft unavailable"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Continue Setup"}));
+    await waitFor(()=>expect(screen.getByRole("dialog")).toBeInTheDocument());
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+  it("recovers a corrupted saved step without opening a nonexistent screen",async()=>{
+    renderWizard({rows:[stale],drawerActionsResolver:()=>[action],onResumeDraft:vi.fn().mockResolvedValue({...stale,draft_current_step:"99"})});
+    open();await waitFor(()=>expect(screen.getByLabelText(/Meeting Title/)).toHaveValue("Cached title"));
+    expect(state.toast.info).toHaveBeenCalledWith("The saved step is invalid. Review Meeting Details before continuing.");
+  });
+  it("does not display a pending read after unmount",async()=>{
+    let finish!:(row:TableRow)=>void;
+    const view=renderWizard({rows:[stale],drawerActionsResolver:()=>[action],onResumeDraft:()=>new Promise(resolve=>{finish=resolve;})});
+    open();view.unmount();finish({...stale,draft_current_step:"3"});
+    await Promise.resolve();expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
