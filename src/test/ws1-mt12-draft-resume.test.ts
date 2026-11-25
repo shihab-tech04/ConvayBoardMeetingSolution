@@ -65,3 +65,20 @@ describe("MT-12 current authorized draft snapshot",()=>{
     const f=fixture({participants:[participant,participant]});await expect(f.read()).rejects.toThrow(/Duplicate/);
   });
 });
+
+describe("MT-13 restored canonical links",()=>{
+  it("merges duplicate canonical participant provenance during actual draft reconstruction",async()=>{
+    const duplicate={...participant,record_id:"p2",payload:{...participant.payload,id:"p2",selection_sources_json:JSON.stringify([{type:"department",source_id:"dept-2",source_label:"Department"}])}};
+    const {read}=fixture({participants:[participant,duplicate]});
+    const row=restoreMeetingDraftRow(await read(),[{id:"user-1",name:"Member"}],[]);
+    const roster=JSON.parse(row.participant_links_json);
+    expect(roster).toHaveLength(1);expect(roster[0].selection_sources).toHaveLength(3);
+    expect(roster[0].attendance_requirement).toBe("By Invitation");
+  });
+  it("denies conflicting persisted rights rather than silently discarding a canonical row",async()=>{
+    const duplicate={...participant,record_id:"p2",payload:{...participant.payload,id:"p2",voting_eligible:false}};
+    const {read}=fixture({participants:[participant,duplicate]});
+    const snapshot=await read();
+    expect(()=>restoreMeetingDraftRow(snapshot,[],[])).toThrow(/Conflicting/);
+  });
+});
