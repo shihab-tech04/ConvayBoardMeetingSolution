@@ -21,7 +21,9 @@ jobs:
           for n in $(seq 1 45); do docker exec convay-phase1-scope pg_isready -U postgres -d fixture && exit 0; sleep 2; done
           exit 1
       - name: Reproduce and verify scoped candidate (synthetic only)
-        run: docker exec convay-phase1-scope psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/phase1_directory_scope/rehearsal.psql
+        run: docker exec convay-phase1-scope psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -v keep_concurrency_fixture=1 -f /workspace/supabase/tests/phase1_directory_scope/rehearsal.psql
+      - name: Exercise actual concurrent sessions (synthetic only)
+        run: bash supabase/tests/phase1_directory_scope/concurrency.sh
       - name: Destroy disposable PostgreSQL
         if: always()
         run: docker rm -f convay-phase1-scope || true

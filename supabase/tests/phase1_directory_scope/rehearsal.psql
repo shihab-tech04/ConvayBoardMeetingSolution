@@ -480,5 +480,9 @@ DO $$ BEGIN
  IF (SELECT count(*) FROM convay_private.org_member_assignment_events)<>2 OR (SELECT count(*) FROM convay_private.org_member_assignment_receipts)<>2 THEN RAISE EXCEPTION 'Denied request changed audit counts'; END IF;
 END $$;
 \echo 'Revoked actor, target, anonymous and audit denial passed (synthetic)'
+\if :{?keep_concurrency_fixture}
+COMMIT;
+\else
 ROLLBACK;
+\endif
 \echo 'Synthetic directory/assignment guard rehearsal passed; not hosted Auth or native restore.'

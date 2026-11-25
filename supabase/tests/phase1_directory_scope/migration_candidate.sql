@@ -163,7 +163,20 @@ BEGIN
  IF p_operation='transfer' AND length(btrim(COALESCE(p_reason,'')))<3 THEN
    RAISE EXCEPTION 'A transfer reason is required' USING ERRCODE='22023';
  END IF;
+ -- A membership insert has no existing row to lock. Serialize this legacy
+ -- assignment against every membership writer, including invitation claim.
+ -- NOWAIT fails closed rather than waiting behind a writer or stale snapshot.
+ -- READ COMMITTED supplies a fresh snapshot after obtaining the table lock.
+ IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+   RAISE EXCEPTION 'Retry organization assignment in READ COMMITTED' USING ERRCODE='40001';
+ END IF;
+ LOCK TABLE convay_private.tenant_memberships IN SHARE MODE NOWAIT;
  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('convay-org-member-'||p_member_id::text));
+ IF p_handover_user_id IS NOT NULL AND EXISTS (
+   SELECT 1 FROM convay_private.tenant_memberships WHERE user_id=p_handover_user_id
+ ) THEN
+   RAISE EXCEPTION 'Tenant membership requires tenant-scoped handover flow' USING ERRCODE='42501';
+ END IF;
  IF EXISTS(SELECT 1 FROM convay_private.tenant_memberships WHERE user_id=p_member_id) THEN
    RAISE EXCEPTION 'Tenant membership requires tenant-scoped assignment flow' USING ERRCODE='42501';
  END IF;

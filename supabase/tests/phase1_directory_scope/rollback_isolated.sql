@@ -270,4 +270,3 @@ $func$;
 
 REVOKE ALL ON FUNCTION public.convay_assign_org_member(uuid,text,text,text,uuid,text,text,date,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.convay_assign_org_member(uuid,text,text,text,uuid,text,text,date,uuid) TO authenticated;
-
