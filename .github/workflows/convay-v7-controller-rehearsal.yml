@@ -142,6 +142,8 @@ jobs:
         run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/gateway_matrix.sql
       - name: Verify session workspace and archive confidentiality
         run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/projection_matrix.sql
+      - name: Exercise actual attendance RPC to voting and archive integration
+        run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/integrated_vertical.sql
       - name: Destroy disposable PostgreSQL
         if: always()
         run: docker rm -f convay-voting || true
