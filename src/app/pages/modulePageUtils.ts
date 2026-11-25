@@ -138,6 +138,8 @@ export interface PageCfg {
    *  Receives merged current+accumulated values and the existing draft ID (if any).
    *  Should return the saved meeting/draft ID (string) so subsequent saves can upsert instead of insert. */
   onSaveDraft?: (values: Record<string, unknown>, draftId?: string) => string | void | Promise<string | void>;
+  /** Read the current authorized draft and its relationships before opening the wizard. */
+  onResumeDraft?: (row: TableRow) => Promise<TableRow>;
   /** Contextual search placeholder text (e.g. "Search meetings", "Search agenda items"). Falls back to "Search {entity}". */
   searchPlaceholder?: string;
   /** Explicit drawer title. If absent, GenPage auto-detects from row field names. */

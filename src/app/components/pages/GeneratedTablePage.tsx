@@ -13,6 +13,7 @@ import { Button } from "../buttons/Button";
 import { AppTextArea } from "../forms/AppTextArea";
 import { EntryForm, type FormField, type EntryFormValue } from "../forms/EntryForm";
 import { buildInitialValuesFromRow } from "../forms/formInitialValues";
+import { readDraftWizardStep } from "../forms/draftWizardStep";
 import { UnifiedDataTable } from "../tables";
 import type { TabDef } from "../tables";
 import type { PageCfg, TableRow } from "../../pages/modulePageUtils";
@@ -379,6 +380,11 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const requestRevisionStatusField = cfg.requestRevisionStatusField ?? "approval_status";
   const [activeStatusTab, setActiveStatusTab] = useState("all");
   const [wizardDraftId, setWizardDraftId] = useState<string | null>(null);
+  const [resumePending, setResumePending] = useState(false);
+  const resumeEpoch = useRef(0);
+  const resumeInFlight = useRef(false);
+  const cancelDraftResume = useCallback(() => { resumeEpoch.current++; resumeInFlight.current = false; setResumePending(false); }, []);
+  useEffect(() => () => { resumeEpoch.current++; resumeInFlight.current = false; }, []);
   // Ref tracks latest allValues from the active EntryForm so Save Draft can read current state
   const latestEntryValues = useRef<Record<string, EntryFormValue>>({});
 
@@ -493,8 +499,8 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const handleFilterChange = useCallback((k: string, v: string) => setFVals(p => ({ ...p, [k]: v })), []);
   const handleFilterApply  = useCallback(() => { setApplied(fVals); setPage(1); }, [fVals]);
   const handleFilterReset  = useCallback(() => { setFVals({}); setApplied({}); }, []);
-  const handleRowClick     = useCallback((row: TableRow) => setDrawer(row), []);
-  const handleDrawerClose  = useCallback(() => setDrawer(null), []);
+  const handleRowClick     = useCallback((row: TableRow) => { cancelDraftResume(); setDrawer(row); }, [cancelDraftResume]);
+  const handleDrawerClose  = useCallback(() => { cancelDraftResume(); setDrawer(null); }, [cancelDraftResume]);
 
   const defaultEntryFields = useMemo(() => buildDefaultEntryFields(), []);
   const entryFields = cfg.formFields ?? defaultEntryFields;
@@ -517,13 +523,34 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
             toast.error("This draft has no meeting ID. Refresh and try again.");
             break;
           }
-          setDrawer(null);
-          setEditRow(null);
-          setStepValues(buildInitialValuesFromRow(row, entryFields));
-          setEntryStep(Number(row.draft_current_step) || 0);
-          setWizardDraftId(draftId);
-          latestEntryValues.current = {};
-          setModal("entry");
+          if (resumeInFlight.current) break;
+          const openDraft = (fresh: TableRow) => {
+            if (String(fresh.id ?? fresh.meeting_id ?? "").trim() !== draftId) throw new Error("The saved draft identity changed. Refresh and retry.");
+            const step = readDraftWizardStep(fresh.draft_current_step, cfg.formSteps?.length ?? 1);
+            if (step.recovered) toast.info("The saved step is invalid. Review Meeting Details before continuing.");
+            setDrawer(null);
+            setEditRow(null);
+            setStepValues(buildInitialValuesFromRow(fresh, entryFields));
+            setEntryStep(step.index);
+            setWizardDraftId(draftId);
+            latestEntryValues.current = {};
+            setModal("entry");
+          };
+          if (!cfg.onResumeDraft) { openDraft(row); break; }
+          const epoch = ++resumeEpoch.current;
+          const accessAtStart = readAccessSnapshot();
+          resumeInFlight.current = true;
+          setResumePending(true);
+          const current = () => resumeEpoch.current === epoch;
+          void cfg.onResumeDraft(row).then(fresh => {
+            if (!current()) return;
+            if (!accessAtStart.loaded || readAccessSnapshot() !== accessAtStart) throw new Error("Access changed. Reopen the draft after signing in.");
+            openDraft(fresh);
+          }).catch(error => {
+            if (current()) toast.error(error instanceof Error ? error.message : "Unable to resume draft. Retry.");
+          }).finally(() => {
+            if (current()) { resumeInFlight.current = false; setResumePending(false); }
+          });
           break;
         }
       case "delete":
@@ -927,7 +954,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
           </div>
           <div className="table-page__actions">
             {cfg.entryBtn && (
-              <Button type="button" variant="primary" size="lg" leadingIcon={Plus} disabled={Boolean(cfg.dataLoading || cfg.dataError)} onClick={() => cfg.onEntryBtnClick ? cfg.onEntryBtnClick() : setModal("entry")}>{cfg.entryBtn}</Button>
+              <Button type="button" variant="primary" size="lg" leadingIcon={Plus} disabled={Boolean(cfg.dataLoading || cfg.dataError)} onClick={() => { cancelDraftResume(); cfg.onEntryBtnClick ? cfg.onEntryBtnClick() : setModal("entry"); }}>{cfg.entryBtn}</Button>
             )}
             {cfg.extraBtns?.map((b) => {
               const Icon = b.icon;
@@ -1083,11 +1110,11 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 <SecondaryButton
                   key={action.id}
                   onClick={handleClick}
-                  disabled={action.enabled === false || Boolean(approvalDisabledReason) || Boolean(rejectionDisabledReason) || Boolean(revisionDisabledReason)}
+                  disabled={resumePending || action.enabled === false || Boolean(approvalDisabledReason) || Boolean(rejectionDisabledReason) || Boolean(revisionDisabledReason)}
                   title={approvalDisabledReason ?? rejectionDisabledReason ?? revisionDisabledReason ?? (action.enabled === false ? (action.disabledReason ?? undefined) : undefined)}
                   style={action.color ? { color: action.color, borderColor: action.color } : undefined}
                 >
-                  {action.label}
+                  {resumePending && action.id === "continue_setup" ? "Loading draft..." : action.label}
                 </SecondaryButton>
               );
             })}
