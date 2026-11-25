@@ -72,8 +72,9 @@ describe("LM-07/09/10 authoritative online attendance gate", () => {
   it("keeps online quorum fail-closed, while retaining legacy physical attendance", () => {
     expect(workspace).toContain("isOnlineMeeting ? {} : initSession.attendance");
     expect(workspace).toContain("serverQuorum?.met === true");
-    expect(workspace).toContain("await commitLiveAttendance(meetingId, id, status, mode)");
-    expect(workspace).toContain("applyVerifiedAttendance(saved)");
+    expect(workspace).toContain("await commitLiveAttendance(meetingId, id, status, mode,");
+    expect(workspace).toContain("() => activeAttendanceGate.current === gate");
+    expect(workspace).toContain("applyVerifiedAttendance(saved, ticket)");
     expect(workspace).toContain("// Preserve existing in-person/offline attendance behaviour unchanged.");
     const start = workspace.indexOf("const setAttendance = useCallback(");
     const onlineGuard = workspace.indexOf("if (isOnlineMeeting)", start);
@@ -156,5 +157,40 @@ describe("LM-07/09/10 authoritative online attendance gate", () => {
       vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async () => reply(snapshot));
       await expect(readLiveAttendance("MTG-1", "actor-1")).resolves.toEqual(snapshot);
     });
+
+  it("does not begin transport for a retired scope", async () => {
+    const request = vi.spyOn(convayAuth, "authenticatedRequest");
+    await expect(commitLiveAttendance("MTG-1", "actor-1", "Present", "Online", () => false))
+      .rejects.toThrow(/scope changed/);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("does not submit a write after the initial read has retired its scope", async () => {
+    let active = true;
+    const calls: string[] = [];
+    vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async (_path, init) => {
+      calls.push(JSON.parse(String(init?.body)).action);
+      active = false;
+      return reply(initial);
+    });
+    await expect(commitLiveAttendance("MTG-1", "actor-1", "Present", "Online", () => active))
+      .rejects.toThrow(/scope changed/);
+    expect(calls).toEqual(["readback"]);
+  });
+
+  it("does not read or publish success under a replacement scope after a committed ACK", async () => {
+    let active = true;
+    const calls: string[] = [];
+    vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async (_path, init) => {
+      const body = JSON.parse(String(init?.body));
+      calls.push(body.action);
+      if (body.action === "readback") return reply(initial);
+      active = false;
+      return reply({ ...receipt, requestId: body.requestId });
+    });
+    await expect(commitLiveAttendance("MTG-1", "actor-1", "Present", "Online", () => active))
+      .rejects.toThrow(/scope changed/);
+    expect(calls).toEqual(["readback", "commit"]);
+  });
 
 });
