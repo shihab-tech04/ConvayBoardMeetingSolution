@@ -66,3 +66,12 @@ describe("MT-CONFIG-01 immutable template revision readback", () => {
     await expect(readManagedTemplate(id)).resolves.toEqual(template);
   });
 });
+
+it("distinguishes a structured mutation rejection from a lost or failed readback",async()=>{
+ request.mockResolvedValueOnce(response({code:"40001",message:"Template changed; reload before editing"},409));
+ await expect(templateAction("revise",{})).rejects.toMatchObject({name:"TemplateMutationRejected"});
+ request.mockResolvedValueOnce(response({code:"42501",message:"Readback denied"},403));
+ await expect(templateAction("read",{})).rejects.not.toMatchObject({name:"TemplateMutationRejected"});
+ request.mockResolvedValueOnce(response({code:"42501",message:"Gateway failure"},502));
+ await expect(templateAction("create",{})).rejects.not.toMatchObject({name:"TemplateMutationRejected"});
+});
