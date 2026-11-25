@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useAuth } from "../../hooks/useAuth";
 import { toast } from "sonner";
 import { Button } from "../../components/buttons/Button";
 import { AppTextField } from "../../components/forms/AppTextField";
@@ -32,10 +33,22 @@ export function CompanyAdminWorkspacePage(){
   const access=useAccessSnapshot();
   const allowedIds=access.company_admin_tenant_ids??[];
   const allowedKey=[...allowedIds].sort().join(",");
+  const {isAuthenticated,userId}=useAuth();
+  const canUse=Boolean(isAuthenticated&&userId&&access.loaded&&!access.is_super_admin&&allowedIds.length);
+  // Reset local data even when two consecutive actors share the same tenant.
+  return <ScopedCompanyWorkspace key={JSON.stringify([userId,canUse,allowedKey])}
+    allowedIds={canUse?allowedIds:[]} allowedKey={canUse?allowedKey:""} canUse={canUse}/>;
+}
+function ScopedCompanyWorkspace({allowedIds,allowedKey,canUse}:{
+  allowedIds:string[];allowedKey:string;canUse:boolean;
+}){
+  const alive=useRef(false);
+  useLayoutEffect(()=>{alive.current=true;return ()=>{alive.current=false;};},[]);
   const [directory,setDirectory]=useState<CompanyDirectory|null>(null);
   const [selectedId,setSelectedId]=useState<string|null>(null);
   const [profile,setProfile]=useState<CompanyProfile|null>(null);
   const [loading,setLoading]=useState(true);
+  const [refreshRevision,setRefreshRevision]=useState(0);
   const [working,setWorking]=useState(false);
   const [error,setError]=useState("");
   const [email,setEmail]=useState("");
@@ -47,7 +60,7 @@ export function CompanyAdminWorkspacePage(){
   useEffect(()=>{
     let active=true;
     setDirectory(null);setProfile(null);setError("");
-    if(!access.loaded||access.is_super_admin||!allowedKey){
+    if(!canUse||!allowedKey){
       setLoading(false);setSelectedId(null);
       return ()=>{active=false;};
     }
@@ -67,14 +80,14 @@ export function CompanyAdminWorkspacePage(){
     return ()=>{active=false;};
   // Recheck membership whenever the server-derived scope changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[access.loaded,access.is_super_admin,allowedKey]);
+  },[canUse,allowedKey,refreshRevision]);
 
   useEffect(()=>{
     let active=true;
-    setProfile(null);setError("");
+    setProfile(null);
     if(!selectedId||!directory?.companies.some(x=>x.id===selectedId)
       ||!allowedIds.includes(selectedId))return ()=>{active=false;};
-    setLoading(true);
+    setError("");setLoading(true);
     void readCompany(selectedId).then(record=>{
       if(active&&record.company.id===selectedId)setProfile(record);
     }).catch(reason=>{
@@ -86,14 +99,37 @@ export function CompanyAdminWorkspacePage(){
 
   const reload=async(tenantId:string)=>{
     const [scope,details]=await Promise.all([listCompanies(),readCompany(tenantId)]);
-    if(!scope.companies.some(x=>x.id===tenantId)||!allowedIds.includes(tenantId)
-      ||details.company.id!==tenantId)
+    if(!alive.current)return false;
+    if(scope.companies.some(x=>!allowedIds.includes(x.id))||
+      !scope.companies.some(x=>x.id===tenantId)||!allowedIds.includes(tenantId)
+      ||details.company.id!==tenantId){
+      setDirectory(null);setProfile(null);
       throw new Error("Company permission no longer exists; refresh your account access");
-    setDirectory(scope);setProfile(details);
+    }
+    setDirectory(scope);setProfile(details);return true;
+  };
+  const selectCompany=(id:string)=>{
+    if(id===selectedId)return;
+    setSelectedId(id);setProfile(null);setError("");setEmail("");
+    setRequestId(crypto.randomUUID());setConfirmation(null);
+    setTemplateEditorOpen(false);setStagedDraftEditorOpen(false);
+  };
+  const refresh=()=>{
+    if(!canUse||working||loading)return;
+    setError("");
+    if(!selectedId||!directory?.companies.some(x=>x.id===selectedId)){
+      setRefreshRevision(value=>value+1);return;
+    }
+    setLoading(true);
+    void reload(selectedId).catch(e=>{
+      if(alive.current){setDirectory(null);setProfile(null);
+        setError(e instanceof Error?e.message:"Unable to refresh company");}
+    }).finally(()=>{if(alive.current)setLoading(false);});
   };
   const submit=async()=>{
     const action=confirmation;
-    if(!action||working||loading||!allowedIds.includes(action.tenantId))return;
+    if(!canUse||!action||working||loading||!allowedIds.includes(action.tenantId)
+      ||selectedId!==action.tenantId||profile?.company.id!==action.tenantId)return;
     setWorking(true);setError("");
     try{
       if(action.action==="assign"){
@@ -101,16 +137,15 @@ export function CompanyAdminWorkspacePage(){
       }else{
         await revokeCompanyMember(action.tenantId,action.userId,action.requestId);
       }
-      await reload(action.tenantId);
+      if(!alive.current||!await reload(action.tenantId))return;
       if(action.action==="assign"){setEmail("");setRequestId(crypto.randomUUID());}
       setConfirmation(null);
       toast.success(action.action==="assign"
         ?"Company member verified in SQL":"Company membership revocation verified in SQL");
     }catch(reason){
-      setError(reason instanceof Error?reason.message:"Company action could not be verified");
-    }finally{setWorking(false);}
+      if(alive.current)setError(reason instanceof Error?reason.message:"Company action could not be verified");
+    }finally{if(alive.current)setWorking(false);}
   };
-  const canUse=access.loaded&&!access.is_super_admin&&allowedIds.length>0;
 
   return <main className="table-page" aria-label="Company management">
     <div style={{marginBottom:18}}>
@@ -121,10 +156,8 @@ export function CompanyAdminWorkspacePage(){
     {canUse&&<section style={surface}>
       <div style={{display:"flex",alignItems:"center",gap:12,justifyContent:"space-between",flexWrap:"wrap"}}>
         <h2 style={{fontWeight:650,fontSize:17}}>Authorized companies</h2>
-        <Button variant="secondary" size="sm" disabled={loading||working||!selectedId}
-          onClick={()=>{if(!selectedId)return;setLoading(true);setError("");
-            void reload(selectedId).catch(e=>{setProfile(null);setError(e instanceof Error?e.message:"Unable to refresh company");})
-              .finally(()=>setLoading(false));}}>Refresh SQL</Button>
+        <Button variant="secondary" size="sm" disabled={loading||working}
+          onClick={refresh}>Refresh SQL</Button>
       </div>
       {loading&&<p role="status" style={{...note,marginTop:10}}>Verifying company data…</p>}
       {error&&<p role="alert" style={{...note,color:"#b91c1c",marginTop:10}}>{error}</p>}
@@ -132,7 +165,7 @@ export function CompanyAdminWorkspacePage(){
       <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:12}}>
         {directory?.companies.map(company=><Button key={company.id}
           variant={selectedId===company.id?"primary":"secondary"} size="sm"
-          disabled={working||loading} onClick={()=>setSelectedId(company.id)}>
+          disabled={working||loading} onClick={()=>selectCompany(company.id)}>
           {company.display_name}
         </Button>)}
       </div>
@@ -223,7 +256,7 @@ export function CompanyAdminWorkspacePage(){
           <CompanyMeetingDraftWizard key={profile.company.id} tenantId={profile.company.id}/>
         </div>}
       </section>}
-    {confirmation&&<SConfirmModal
+    {canUse&&confirmation&&profile?.company.id===confirmation.tenantId&&selectedId===confirmation.tenantId&&<SConfirmModal
       title={confirmation.action==="assign"?"Add company member?":"Revoke company membership?"}
       message={confirmation.action==="assign"
         ? `Assign ${confirmation.email} to this company? The account must already be verified and globally role-assigned. No paid workspace or meeting access will be activated.`
