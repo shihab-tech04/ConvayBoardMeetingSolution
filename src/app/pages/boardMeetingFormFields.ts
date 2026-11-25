@@ -123,6 +123,9 @@ export const MEETING_FORM_FIELDS: FormField[] = [
   { key: "selected_agenda_ids_json",    label: "", type: "readonly", step: 0, condition: { field: "__never__", value: "__never__" } },
   { key: "additional_doc_ids_json",     label: "", type: "readonly", step: 0, condition: { field: "__never__", value: "__never__" } },
   { key: "draft_current_step",          label: "", type: "readonly", step: 0, condition: { field: "__never__", value: "__never__" } },
+  // Canonical identity and revision are state carriers only, never editable controls.
+  { key: "meeting_id", label: "", type: "readonly", step: 0, condition: { field: "__never__", value: "__never__" } },
+  { key: "draft_revision", label: "", type: "readonly", step: 0, condition: { field: "__never__", value: "__never__" } },
 ];
 
 // ─── Meeting wizard section definitions ──────────────────────────────────────
