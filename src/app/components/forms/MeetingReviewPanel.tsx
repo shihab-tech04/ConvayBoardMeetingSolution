@@ -9,8 +9,6 @@ import {
   CheckCircle2, AlertTriangle, XCircle, Edit2, Clock, Video, MapPin,
 } from "lucide-react";
 import type { EntryFormValue } from "./EntryForm";
-import type { DraftParticipantLink } from "./ParticipantSelectorStep";
-import type { SelectedAgendaEntry, AdditionalDocEntry } from "./AgendaDocumentStep";
 import type {
   AgendaSubmission, AgendaDocumentLink, BoardDocument, DocumentVersion,
   GovernanceBody, QuorumRule,
@@ -23,9 +21,8 @@ import { normalizeMeetingIdentity, validateMeetingIdentity } from "../../pages/r
 import { normalizeMeetingSchedule, validateMeetingSchedule } from "../../pages/return-register/meetingSchedule";
 import { resolveMeetingLeadership, meetingLeadershipLabel } from "../../pages/return-register/meetingLeadership";
 import { validateLeadershipRoster } from "../../pages/return-register/leadershipRoster";
-import { liveMeetingUrl } from "../../utils/liveMeetingLink";
 import { readAttendanceRequirement, hasInvalidAttendanceRequirement } from "../../pages/return-register/attendanceRequirement";
-import { meetingAccessBlockers } from "../../pages/return-register/meetingAccess";
+import { meetingAccessBlockers, meetingWizardAccess } from "../../pages/return-register/meetingAccess";
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "../../pages/return-register/meetingAgendaSelection";
 
 // ── Props ──────────────────────────────────────────────────────────────────────
@@ -74,7 +71,7 @@ function Row({ label, value, warn }: { label: string; value: string; warn?: bool
   return (
     <div className="flex items-baseline gap-3">
       <span className="text-[11px] text-[var(--muted-foreground)] shrink-0 w-32 font-medium">{label}</span>
-      <span className={`text-xs font-semibold ${warn ? "text-amber-600 dark:text-amber-400" : "text-[var(--foreground)]"}`}>
+      <span className={`min-w-0 break-words text-xs font-semibold ${warn ? "text-amber-600 dark:text-amber-400" : "text-[var(--foreground)]"}`}>
         {value}
       </span>
     </div>
@@ -134,19 +131,6 @@ function findBody(
   );
 }
 
-function parseLinks(json: EntryFormValue): DraftParticipantLink[] {
-  try { return JSON.parse(String(json ?? "[]")) as DraftParticipantLink[]; }
-  catch { return []; }
-}
-function parseAgendaEntries(json: EntryFormValue): SelectedAgendaEntry[] {
-  try { return JSON.parse(String(json ?? "[]")) as SelectedAgendaEntry[]; }
-  catch { return []; }
-}
-function parseAdditionalDocs(json: EntryFormValue): AdditionalDocEntry[] {
-  try { return JSON.parse(String(json ?? "[]")) as AdditionalDocEntry[]; }
-  catch { return []; }
-}
-
 function durationLabel(minutes: number): string {
   if (minutes <= 0) return "—";
   const h = Math.floor(minutes / 60);
@@ -182,6 +166,7 @@ export function MeetingReviewPanel({
   const identity=normalizeMeetingIdentity(values);
   const schedule=normalizeMeetingSchedule(values);
   const leadership=resolveMeetingLeadership(values,bmsUsers);
+  const access=meetingWizardAccess(values,v(values,"meeting_id"));
   const documentPlan=useMemo(()=>buildMeetingDocumentPlan(agendaEntries,additionalDocs,allAgendas,agendaDocLinks,allDocuments,documentVersions,participants),
     [agendaEntries,additionalDocs,allAgendas,agendaDocLinks,allDocuments,documentVersions,participants]);
 
@@ -201,20 +186,17 @@ export function MeetingReviewPanel({
   // ── Agenda stats ───────────────────────────────────────────────────────────
   const agendaStats = useMemo(() => {
     const parentIds = agendaEntries.map(e => e.agenda_id);
-    const children = allAgendas.filter(a =>
-      a.parent_agenda_id != null && parentIds.includes(a.parent_agenda_id) && !a.archived_at,
-    );
+    const includedIds = new Set(documentPlan.agendas.map(a=>a.id));
+    const children = documentPlan.agendas.filter(a=>a.depth>0);
     const totalDuration = allAgendas
-      .filter(a => parentIds.includes(a.agenda_id ?? a.id) || (a.parent_agenda_id != null && parentIds.includes(a.parent_agenda_id)))
+      .filter(a => includedIds.has(a.agenda_id ?? a.id))
       .reduce((sum, a) => sum + (parseInt(String((a as {estimated_duration?: string}).estimated_duration ?? "0"), 10) || 0), 0);
     const votingCount = allAgendas.filter(a =>
-      parentIds.includes(a.agenda_id ?? a.id) &&
+      includedIds.has(a.agenda_id ?? a.id) &&
       ((a as {voting_required?: string}).voting_required === "Yes" || (a as {agenda_category?: string}).agenda_category === "For Decision"),
     ).length;
-    const allApproved = agendaEntries.length > 0 && agendaEntries.every(e => {
-      const agenda = allAgendas.find(a => (a.agenda_id ?? a.id) === e.agenda_id);
-      return agenda?.approval_status === "Approved";
-    });
+    const allApproved = agendaEntries.length > 0 && !documentPlan.errors.some(e=>e.startsWith("Selected agenda")) &&
+      documentPlan.agendas.every(e=>allAgendas.find(a=>(a.agenda_id??a.id)===e.id)?.approval_status==="Approved");
     const allMeetingReady = agendaEntries.length > 0 && agendaEntries.every(e => {
       const agenda = allAgendas.find(a => (a.agenda_id ?? a.id) === e.agenda_id);
       return agenda?.approval_status === "Approved" && (agenda as {meeting_readiness?: string}).meeting_readiness === "Meeting Ready";
@@ -224,7 +206,7 @@ export function MeetingReviewPanel({
       return ag && ag.approval_status !== "Approved";
     });
     return { parentCount: parentIds.length, childCount: children.length, totalDuration, votingCount, allApproved, allMeetingReady, draftAgendas };
-  }, [agendaEntries, allAgendas]);
+  }, [agendaEntries, allAgendas, documentPlan]);
 
   const docStats = {
     agendaDocCount:documentPlan.documents.filter(d=>d.source==="agenda").length,
@@ -244,7 +226,7 @@ export function MeetingReviewPanel({
     });
     const rule = result.selectedRule;
     const ruleSource = rule
-      ? `${rule.meeting_id ? "Meeting" : "Governance"} rule (${result.requiredPercent}% min)`
+      ? `${rule.meeting_id ? "Meeting" : "Governance"} rule`
       : result.status === "not_configured" ? "Not configured" : result.reasons.join("; ");
     const eligible = rule ? result.eligibleCount : new Set(participants.filter(p => p.quorum_eligible && p.user_id).map(p => p.user_id)).size;
     return { eligible, required: result.requiredCount, requiredPct: result.requiredPercent,
@@ -277,7 +259,7 @@ export function MeetingReviewPanel({
       relationshipState.error ? parseOptionalMeetingAgendas(values.selected_agenda_ids_json) : agendaEntries, allAgendas,
     ).forEach(label => out.push({ label, step: 2 }));
 
-    meetingAccessBlockers(values).forEach(label => out.push({ label, step: 3 }));
+    meetingAccessBlockers({...values,...access}).forEach(label => out.push({ label, step: 3 }));
 
     // Quorum is assessed at meeting time; an unconfigured or not-yet-met
     // projection is information, not a scheduling blocker.
@@ -290,7 +272,7 @@ export function MeetingReviewPanel({
 
   const isReady = blockers.length === 0;
   const scheduledMin = scheduledDuration(v(values, "start_time"), v(values, "end_time"));
-  const mode = v(values, "mode") || "Physical";
+  const mode = access.mode;
 
   return (
     <div className="space-y-4 pb-2">
@@ -434,10 +416,10 @@ export function MeetingReviewPanel({
           icon={mode === "Virtual" ? <Video size={13} strokeWidth={2} /> : <MapPin size={13} strokeWidth={2} />}
           title="Mode & Venue" step={3} onEdit={onGoToStep}
         >
-          <Row label="Mode"             value={mode} />
+          <Row label="Mode"             value={mode || "Not selected"} />
           {(mode === "Physical" || mode === "Hybrid") && <Row label="Venue"          value={v(values, "venue")}            warn={!v(values, "venue")} />}
           {(mode === "Virtual"  || mode === "Hybrid") && <Row label="Platform"       value="LiveKit" />}
-          {(mode === "Virtual" || mode === "Hybrid") && <Row label="LiveKit Join Link" value={v(values,"meeting_id") ? liveMeetingUrl(v(values,"meeting_id")) || "Assigned when saved" : "Assigned when saved"} />}
+          {(mode === "Virtual" || mode === "Hybrid") && <Row label="LiveKit Join Link" value={access.virtual_link || "Assigned when saved"} />}
           {v(values, "invitation_date")  && <Row label="Invitation Date" value={v(values, "invitation_date")} />}
           {v(values, "board_pack_date")  && <Row label="Board Pack Date" value={v(values, "board_pack_date")} />}
         </SummaryCard>
