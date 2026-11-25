@@ -150,8 +150,14 @@ async function confirmNotificationRule(
 }
 
 export function NotificationRulesPage() {
-  const registry = useNotificationRuleRegistry();
   const access = useAccessSnapshot();
+  if (!access.loaded || !access.is_super_admin || !hasAccess("admin_notifications", access)) return null;
+  return <NotificationRulesDraftPage />;
+}
+
+function NotificationRulesDraftPage() {
+  const access = useAccessSnapshot();
+  const registry = useNotificationRuleRegistry();
   const canManage = access.loaded && access.is_super_admin && hasAccess("admin_notifications", access);
   // A stale or denied read cannot authorize changes from an already-open drawer.
   const canEditDraft = canManage && !registry.loading && !registry.error;
@@ -159,19 +165,18 @@ export function NotificationRulesPage() {
   // Retain the original UUID after an ambiguous acknowledgement/readback.
   // A retry must recover that exact row or submit the same identity, never fork it.
   const pendingCreate = useRef<{ access: typeof access; record: NotificationRule } | null>(null);
-  const rows: TableRow[] = (canManage ? registry.items : []).map(rule => ({
+  const rows: TableRow[] = (canEditDraft ? registry.items : []).map(rule => ({
     ...rule,
     channel: rule.channels,
     audience: rule.recipients,
     delay_minutes: rule.timing,
-    committee: "",
   }));
-  const kpis: KpiDef[] = [
+  const kpis: KpiDef[] = canEditDraft ? [
     { label: "Total Rules", value: String(rows.length), tone: "primary" },
     { label: "Active", value: String(rows.filter(row => row.status === "Active").length), tone: "success" },
     { label: "Draft", value: String(rows.filter(row => row.status === "Draft").length), tone: "neutral" },
     { label: "Inactive", value: String(rows.filter(row => row.status === "Inactive").length), tone: "warning" },
-  ];
+  ] : [{ label: "Rule evidence", value: "Unverified", tone: "warning" }];
   const unavailable = "Delivery activation needs a verified event transport, policy and provider acknowledgement.";
   const cfg: PageCfg = {
     title: "Notification Rules",
@@ -214,7 +219,10 @@ export function NotificationRulesPage() {
     rows,
     dataLoading: registry.loading,
     dataError: registry.error,
-    onDataRetry: registry.refresh,
+    dataErrorTitle: "Notification rules could not be loaded",
+    onDataRetry: () => {
+      if (isCurrent()) void registry.refresh?.().catch(() => undefined);
+    },
     kpis,
     entryBtn: canEditDraft ? "Create Notification Rule" : undefined,
     formFields: RULE_FORM_FIELDS,
@@ -268,7 +276,7 @@ export function NotificationRulesPage() {
     },
     searchPlaceholder: "Search notification rules",
   };
-  return <GenPage cfg={cfg} />;
+  return <GenPage key={canEditDraft ? "verified-rules" : "unverified-rules"} cfg={cfg} />;
 }
 
 /**

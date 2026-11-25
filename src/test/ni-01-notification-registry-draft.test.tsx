@@ -134,9 +134,7 @@ describe("NI-01 SQL-backed rule draft page", () => {
   it("denies unauthorized draft creation and does not call SQL transport", async () => {
     state.authorized = false;
     render(<NotificationRulesPage />);
-    expect(state.cfg.entryBtn).toBeUndefined();
-    const result = await state.cfg.onRowCreate!(validRule);
-    expect(result).toBe(false);
+    expect(screen.queryByText("Notification Rules")).toBeNull();
     expect(state.add).not.toHaveBeenCalled();
   });
 
@@ -144,10 +142,7 @@ describe("NI-01 SQL-backed rule draft page", () => {
     state.access = { loaded: true, is_super_admin: false };
     state.rules = [{ id: "root-only", rule_id: "NR-1", ...validRule, status: "Draft" }];
     render(<NotificationRulesPage />);
-    expect(state.cfg.rows).toHaveLength(0);
-    expect(state.cfg.entryBtn).toBeUndefined();
-    expect(await state.cfg.onRowCreate!(validRule)).toBe(false);
-    expect(await state.cfg.onRowUpdate!("root-only", validRule)).toBe(false);
+    expect(screen.queryByText("Notification Rules")).toBeNull();
     expect(state.add).not.toHaveBeenCalled();
     expect(state.update).not.toHaveBeenCalled();
   });
@@ -228,6 +223,7 @@ describe("NI-01 SQL-backed rule draft page", () => {
     expect(state.cfg.dataLoading).toBe(true);
     expect(state.cfg.dataError).toBe("Permission denied");
     expect(state.cfg.rows).toHaveLength(0);
-    expect(state.cfg.onDataRetry).toBe(state.refresh);
+    state.cfg.onDataRetry?.();
+    expect(state.refresh).toHaveBeenCalledTimes(1);
   });
 });
