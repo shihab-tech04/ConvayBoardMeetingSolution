@@ -27,7 +27,9 @@ jobs:
           done
           exit 1
       - name: Verify tenant-scoped template and draft journey without cloud credentials
-        run: docker exec convay-phase2-resume psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_phase2 -f /workspace/supabase/tests/phase2_draft_resume/journey.psql
+        run: docker exec convay-phase2-resume psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_phase2 -v keep_concurrency_fixture=1 -f /workspace/supabase/tests/phase2_draft_resume/journey.psql
+      - name: Exercise two-session draft authority races (synthetic only)
+        run: bash supabase/tests/phase2_draft_resume/concurrency.sh
       - name: Destroy disposable database
         if: always()
         run: docker rm -f convay-phase2-resume || true
