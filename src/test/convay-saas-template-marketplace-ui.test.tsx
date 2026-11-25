@@ -122,7 +122,7 @@ describe("SQL-backed dynamic meeting templates UI",()=>{
     render(<MeetingTemplateMarketplace/>);
     await screen.findByText("Board Starter");
     fireEvent.change(screen.getByLabelText("Template owner"),{target:{value:ids.company}});
-    await screen.findByLabelText("Copy published Convay starter");
+    await waitFor(()=>expect(screen.getByLabelText("Copy published Convay starter")).toBeEnabled());
     fireEvent.change(screen.getByLabelText("Copy published Convay starter"),{target:{value:ids.starter}});
     fireEvent.change(screen.getByLabelText("Meeting type name"),{target:{value:"Alpha Board"}});
     fireEvent.change(screen.getByLabelText("Template key"),{target:{value:"alpha_board"}});
