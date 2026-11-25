@@ -5,6 +5,7 @@
  * roster deduplication and audit remain separate WS0/WS-F acceptance gates.
  */
 import type { ParticipantGroup } from "../../data/boardMeetingData";
+import type { GovernanceCreateAttempt } from "./governanceCreateRecovery";
 
 export interface ParticipantGroupGateway {
   list: () => Promise<ParticipantGroup[]>;
@@ -58,18 +59,14 @@ export async function createParticipantGroup(
   values: ParticipantGroupValues,
   identity: { id: string; created_at: string },
   gateway: ParticipantGroupGateway,
+  attempt?: GovernanceCreateAttempt,
 ): Promise<ParticipantGroup> {
   const patch = normalize(values);
   if (!identity.id?.trim() || !identity.created_at?.trim() ||
       !patch.group_name?.trim() || !patch.group_type?.trim()) {
     throw new Error("A stable ID, group name and group type are required.");
   }
-  const rows = await gateway.list();
-  if (rows.some(row => row.id === identity.id || row.group_id === identity.id ||
-      (stringKey(row.group_name) === stringKey(patch.group_name!) &&
-       stringKey(row.group_type) === stringKey(patch.group_type!)))) {
-    throw new Error("The participant group already exists. Refresh before retrying.");
-  }
+  attempt?.assertCurrent();
   const record: ParticipantGroup = {
     id: identity.id, group_id: identity.id,
     group_name: patch.group_name!, group_type: patch.group_type!,
@@ -81,10 +78,28 @@ export async function createParticipantGroup(
     ...(patch.meeting_role !== undefined ? { meeting_role: patch.meeting_role } : {}),
     ...(patch.voting_eligible !== undefined ? { voting_eligible: patch.voting_eligible } : {}),
   };
-  if ((await gateway.create(record)) !== true) {
+  const rows = await gateway.list();
+  attempt?.assertCurrent();
+  const collisions = rows.filter(row => row.id === identity.id || row.group_id === identity.id ||
+      (stringKey(row.group_name) === stringKey(record.group_name) &&
+       stringKey(row.group_type) === stringKey(record.group_type)));
+  if (collisions.length > 0) {
+    if (!attempt?.dispatched || collisions.length !== 1 || collisions[0].id !== identity.id ||
+        collisions[0].group_id !== identity.id)
+      throw new Error("The participant group already exists. Refresh before retrying.");
+    verifyReadback(collisions[0], record);
+    attempt.recovered = true;
+    return collisions[0];
+  }
+  if (attempt) attempt.dispatched = true;
+  const acknowledged = await gateway.create(record);
+  attempt?.assertCurrent();
+  if (acknowledged !== true) {
     throw new Error("Participant group create was not confirmed by SQL.");
   }
-  verifyReadback((await gateway.list()).find(row=>row.id===identity.id), record);
+  const readback = await gateway.list();
+  attempt?.assertCurrent();
+  verifyReadback(readback.find(row=>row.id===identity.id), record);
   return record;
 }
 export async function updateParticipantGroup(

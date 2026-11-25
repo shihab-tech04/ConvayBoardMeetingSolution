@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useGovernanceCreateRecovery } from "./governanceCreateRecovery";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
@@ -18,7 +18,7 @@ import { PARTICIPANT_GROUP_FORM_FIELDS } from "../boardMeetingFormFields";
 export function ParticipantGroupsPage() {
   const registry = useParticipantGroupRegistry();
   const govRegistry = useGovernanceRegistry();
-  const pendingCreate = useRef<{ signature: string; id: string; created_at: string } | null>(null);
+  const recovery = useGovernanceCreateRecovery();
   const gateway: ParticipantGroupGateway = {
     list: async () => (await convayAuth.registry<ParticipantGroup>("bms.partgroups", "list")).records.map(row => row.payload),
     create: async group => (await registry.add(group)) === true,
@@ -83,16 +83,11 @@ export function ParticipantGroupsPage() {
     formFields: dynamicFormFields,
     awaitCreateSave: true,
     async onRowCreate(values) {
-      const signature = JSON.stringify(values);
-      if (!pendingCreate.current || pendingCreate.current.signature !== signature) {
-        pendingCreate.current = {
-          signature,
-          id: generateId("PG", registry.items.map(g => g.group_id)),
-          created_at: new Date().toISOString(),
-        };
-      }
-      await createParticipantGroup(values, pendingCreate.current, gateway);
-      pendingCreate.current = null;
+      const attempt = recovery.begin(values, () => generateId("PG", registry.items.map(g => g.group_id)));
+      await createParticipantGroup(values, attempt, gateway, attempt);
+      attempt.assertCurrent();
+      if (attempt.recovered) await registry.refresh?.();
+      recovery.complete(attempt);
       return true;
     },
     async onRowUpdate(id, values) {
