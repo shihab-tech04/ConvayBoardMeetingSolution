@@ -5,43 +5,15 @@
  *  - DeliveryLogsPage
  */
 import {
-  Bell, MessageSquare, Mail, Smartphone, Monitor,
-  CheckCircle, XCircle, Pencil, Pause, Copy, Archive, Download,
-  AlertTriangle, RefreshCw,
+  MessageSquare, CheckCircle, Pencil, Pause, Copy, Archive, Download, RefreshCw,
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, KpiDef, ColDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA, dg } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS, dg } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { toast } from "sonner";
-
-// ─── Local sample data ────────────────────────────────────────────────────────
-
-const TRIGGER_EVENTS = [
-  "Meeting Scheduled", "Meeting Reminder (24h)", "Meeting Reminder (1h)",
-  "RSVP Deadline Approaching", "Agenda Published", "Board Pack Released",
-  "Minutes Available", "Action Item Due", "Quorum Not Met",
-  "Approval Required", "Resolution Passed", "Meeting Cancelled",
-];
-
-const CHANNELS = ["Email", "SMS", "System Notification", "Portal Alert"];
-const AUDIENCES = ["All Participants", "Quorum Members", "Board Directors", "Company Secretary", "Meeting Organizer"];
-const RULE_STATUSES = ["Active", "Inactive", "Draft"];
-
-const notifRuleRows: TableRow[] = gen(22, i => ({
-  rule_id:       `NR-${String(1000 + i).padStart(4, "0")}`,
-  rule_name:     `${TRIGGER_EVENTS[i % 12]} Notification`,
-  trigger_event: TRIGGER_EVENTS[i % 12],
-  channel:       CHANNELS[i % 4],
-  audience:      AUDIENCES[i % 5],
-  committee:     CIRCLES_DATA[i % 8],
-  delay_minutes: String([0, 5, 15, 30, 60, 1440][i % 6]),
-  template:      `${CHANNELS[i % 4]} Template ${i % 5 + 1}`,
-  status:        RULE_STATUSES[i % 3],
-  created_by:    ["Company Secretary", "System Admin"][i % 2],
-  created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description:   `Sends ${CHANNELS[i % 4].toLowerCase()} when ${TRIGGER_EVENTS[i % 12].toLowerCase()}.`,
-}));
+import { useNotificationRuleRegistry } from "../../data/boardMeetingData";
+import { hasAccess, readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 
 /**
  * NI-03 — Delivery logs must come from server-authoritative, provider-backed
@@ -117,16 +89,31 @@ const DELIVERY_LOG_DRAWER_COLS: ColDef[] = [
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
 export function NotificationRulesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Rules",  value: String(notifRuleRows.length),                                              tone: "primary"  },
-    { label: "Active",       value: String(notifRuleRows.filter(r => r.status === "Active").length),           tone: "success"  },
-    { label: "Draft",        value: String(notifRuleRows.filter(r => r.status === "Draft").length),            tone: "neutral"  },
-    { label: "Inactive",     value: String(notifRuleRows.filter(r => r.status === "Inactive").length),         tone: "warning"  },
-  ];
+  const access = useAccessSnapshot();
+  if (!access.loaded || !access.is_super_admin || !hasAccess("admin_notifications", access)) return null;
+  return <NotificationRulesReadOnly />;
+}
+
+// NI-01: read real records only. Write controls remain gated until the
+// independently reviewed server lifecycle and authorization migration is live.
+function NotificationRulesReadOnly() {
+  const access = useAccessSnapshot();
+  const registry = useNotificationRuleRegistry();
+  const readable = access.loaded && access.is_super_admin && hasAccess("admin_notifications", access) && !registry.loading && !registry.error;
+  const rows: TableRow[] = readable ? registry.items.map(rule => ({
+    ...rule, channel: rule.channels, audience: rule.recipients, delay_minutes: rule.timing,
+  })) : [];
+  const unavailable = "Notification rule changes require the verified server-side lifecycle and authorization policy.";
+  const kpis: KpiDef[] = readable ? [
+    { label: "Total Rules",  value: String(rows.length),                                              tone: "primary"  },
+    { label: "Active",       value: String(rows.filter(r => r.status === "Active").length),           tone: "success"  },
+    { label: "Draft",        value: String(rows.filter(r => r.status === "Draft").length),            tone: "neutral"  },
+    { label: "Inactive",     value: String(rows.filter(r => r.status === "Inactive").length),         tone: "warning"  },
+  ] : [{ label: "Rule evidence", value: "Unverified", tone: "warning" }];
 
   const cfg: PageCfg = {
     title: "Notification Rules",
-    desc:  "Configure automated notification rules that trigger communications based on meeting and governance events.",
+    desc:  "Review server-backed notification rules. Rule creation, editing and activation require the verified server-side lifecycle; delivery remains unverified.",
     cols: [
       fc("rule_id",       "Rule ID"),
       fc("rule_name",     "Rule Name"),
@@ -147,19 +134,26 @@ export function NotificationRulesPage() {
     drawerTitle:  "Notification Rule Details",
     drawerCols:   NOTIF_RULE_DRAWER_COLS,
     drawerActions: [
-      { id: "edit",       label: "Edit Rule",    icon: Pencil,      color: "#3b82f6" },
-      { id: "activate",   label: "Activate",     icon: CheckCircle, color: "#22c55e" },
-      { id: "deactivate", label: "Deactivate",   icon: Pause,       color: "#f59e0b" },
-      { id: "duplicate",  label: "Duplicate",    icon: Copy,        color: "#8b5cf6" },
-      { id: "archive",    label: "Archive",      icon: Archive,     color: "#ef4444" },
+      { id: "edit",       label: "Edit Rule",    icon: Pencil,      color: "#3b82f6", enabled: false, disabledReason: unavailable },
+      { id: "activate",   label: "Activate",     icon: CheckCircle, color: "#22c55e", enabled: false, disabledReason: unavailable },
+      { id: "deactivate", label: "Deactivate",   icon: Pause,       color: "#f59e0b", enabled: false, disabledReason: unavailable },
+      { id: "duplicate",  label: "Duplicate",    icon: Copy,        color: "#8b5cf6", enabled: false, disabledReason: unavailable },
+      { id: "archive",    label: "Archive",      icon: Archive,     color: "#ef4444", enabled: false, disabledReason: unavailable },
     ],
-    rows:      notifRuleRows,
+    rows,
+    dataLoading: registry.loading,
+    dataError: registry.error,
+    dataErrorTitle: "Notification rules could not be loaded",
+    onDataRetry: () => {
+      if (readAccessSnapshot() === access && access.is_super_admin) void registry.refresh?.().catch(() => undefined);
+    },
     kpis,
     entryBtn:  "Create Notification Rule",
+    onEntryBtnClick: () => { toast.info(unavailable); },
     searchPlaceholder: "Search notification rules",
   };
 
-  return <GenPage cfg={cfg} />;
+  return <GenPage key={readable ? "verified-rules" : "unverified-rules"} cfg={cfg} />;
 }
 
 /**
