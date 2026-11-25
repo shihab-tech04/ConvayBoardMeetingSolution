@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "../../components/buttons/Button";
 import { AppTextField } from "../../components/forms/AppTextField";
@@ -55,6 +55,9 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
+  const [pendingCreate,setPendingCreate]=useState(false);
+  const saveLock=useRef(false);
+  const formLocked=busy||pendingCreate;
   const [error,setError]=useState("");
   const [lastSaved,setLastSaved]=useState<StagedCompanyDraft|null>(null);
   const [inspected,setInspected]=useState<StagedCompanyDraft|null>(null);
@@ -66,7 +69,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     let active=true;
     setError("");setLoading(true);setSelectedId("");setTemplate(null);
     setDirectory([]);setOptions([]);setInspected(null);setLastSaved(null);
-    setEditing(null);setDiscardConfirmation(null);
+    setEditing(null);setDiscardConfirmation(null);setPendingCreate(false);
     void Promise.all([listManagedTemplates(tenantId),listStagedCompanyDrafts(tenantId)])
       .then(([all,drafts])=>{if(!active)return;
         setOptions(all.filter(t=>t.tenant_id===tenantId&&t.published_revision!==null));
@@ -98,7 +101,13 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
   },[selectedId,tenantId,options]);
 
   const change=(key:string,value:unknown)=>{
-    setValues(previous=>({...previous,[key]:value}));
+    if(formLocked)return;
+    setValues(previous=>{
+      const next={...previous};
+      if(value===undefined)delete next[key];
+      else next[key]=value;
+      return next;
+    });
     setRequestId(crypto.randomUUID());setError("");setLastSaved(null);
   };
   const current=template?.definition.steps[step];
@@ -114,13 +123,14 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     setError("");setStep(Math.min(step+1,template.definition.steps.length-1));
   };
   const save=async()=>{
-    if(!template||busy||loading)return;
+    if(!template||busy||loading||saveLock.current)return;
     const failure=firstError(template,values);
     if(failure){setError(failure);return;}
     if(title.trim().length<3||title.trim().length>160){
       setError("Enter a draft title between 3 and 160 characters.");return;
     }
-    setBusy(true);setError("");
+    saveLock.current=true;setBusy(true);setError("");
+    if(!editing)setPendingCreate(true);
     try{
       if(editing){
         const revised=await updateStagedCompanyDraft(tenantId,editing,title,values,requestId);
@@ -128,14 +138,24 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
         toast.success("Revised company draft verified in SQL; meeting remains unactivated.");
       }else{
         const saved=await saveStagedCompanyDraft(tenantId,template,title,values,requestId);
-        setLastSaved(saved.draft);
+        // A verified create becomes an edit of the same stable identity. Do
+        // not issue another create simply because the form remains open.
+        setEditing(saved.draft);setLastSaved(saved.draft);setPendingCreate(false);
         toast.success("Company template draft verified in SQL. No meeting was scheduled.");
       }
       setRequestId(crypto.randomUUID());
-      setDirectory(await listStagedCompanyDrafts(tenantId));
+      try{setDirectory(await listStagedCompanyDrafts(tenantId));}
+      catch{setError("Draft saved and verified in SQL. Unable to refresh the draft directory; reopen this workspace to refresh.");}
     }catch(e){
-      setError(e instanceof Error?e.message:"Unable to save company meeting draft");
-    }finally{setBusy(false);}
+      const message=e instanceof Error?e.message:"Unable to save company meeting draft";
+      if(!editing && (pendingCreate || !(e instanceof Error && e.name==="StagedDraftCreateRejected"))){
+        // Preserve the original request ID AND intent until SQL confirms it.
+        // Changing either could create a second draft after a lost response.
+        setError(message+" Retry the same save before editing or starting another draft.");
+      }else{
+        setPendingCreate(false);setError(message);
+      }
+    }finally{saveLock.current=false;setBusy(false);}
   };
   const inspect=async(draftId:string)=>{
     setBusy(true);setError("");
@@ -164,6 +184,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     finally{setBusy(false);}
   };
   const startNew=()=>{
+    if(pendingCreate)return;
     setEditing(null);setInspected(null);setLastSaved(null);setTitle("");setValues({});
     setTemplate(null);setSelectedId("");setStep(0);setError("");
     setRequestId(crypto.randomUUID());
@@ -198,16 +219,16 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     </p>;
     if(field.type==="select")return <AppSelectField id={id}
       label={field.label+(field.required?" *":"")} value={String(value??"")}
-      disabled={busy} onChange={v=>change(field.id,v)}
+      disabled={formLocked} onChange={v=>change(field.id,v)}
       options={[{value:"",label:"Select..."},...(field.options??[]).map(v=>({value:v,label:v}))]}/>;
     if(field.type==="checkbox")return <label htmlFor={id} style={{display:"flex",alignItems:"center",gap:10,fontSize:14}}>
-      <input id={id} type="checkbox" checked={value===true} disabled={busy}
+      <input id={id} type="checkbox" checked={value===true} disabled={formLocked}
         onChange={e=>change(field.id,e.target.checked)}/>{field.label}{field.required?" *":""}
     </label>;
     if(field.type==="multiselect")return <label htmlFor={id} style={{display:"grid",gap:7,fontSize:13}}>
       {field.label}{field.required?" *":""}
       <select id={id} multiple value={Array.isArray(value)?value.map(String):[]}
-        disabled={busy} style={{...input,minHeight:95}}
+        disabled={formLocked} style={{...input,minHeight:95}}
         onChange={e=>change(field.id,Array.from(e.target.selectedOptions,x=>x.value))}>
         {(field.options??[]).map(v=><option key={v} value={v}>{v}</option>)}
       </select>
@@ -216,15 +237,15 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     if(field.type==="textarea"||field.type==="resolution")return <label htmlFor={id}
       style={{display:"grid",gap:7,fontSize:13}}>
       {field.label}{field.required?" *":""}
-      <textarea id={id} rows={3} maxLength={5000} disabled={busy} value={String(value??"")}
+      <textarea id={id} rows={3} maxLength={5000} disabled={formLocked} value={String(value??"")}
         onChange={e=>change(field.id,e.target.value)} style={{...input,resize:"vertical"}}/>
     </label>;
     if(field.type==="text"||field.type==="meeting_room")return <AppTextField
-      id={id} label={field.label} required={field.required} disabled={busy}
+      id={id} label={field.label} required={field.required} disabled={formLocked}
       value={String(value??"")} onChange={v=>change(field.id,v)}/>;
     return <label htmlFor={id} style={{display:"grid",gap:7,fontSize:13}}>
       {field.label}{field.required?" *":""}
-      <input id={id} style={input} disabled={busy}
+      <input id={id} style={input} disabled={formLocked}
         type={field.type==="date"?"date":field.type==="datetime"?"datetime-local":"number"}
         value={typeof value==="number"?value:String(value??"")}
         onChange={e=>change(field.id,["number","duration","quorum"].includes(field.type)
@@ -248,7 +269,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     </p>}
     <div style={{maxWidth:520,marginBottom:12}}>
       <AppSelectField id="company-meeting-template" label="Published meeting type"
-        value={editing?.template_id??selectedId} disabled={busy||loading||!!editing}
+        value={editing?.template_id??selectedId} disabled={formLocked||loading||!!editing}
         onChange={setSelectedId}
         options={[{value:"",label:"Choose a published meeting type"},
           ...options.map(t=>({value:t.id,label:editing?.template_id===t.id
@@ -259,7 +280,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     </div>
     {template&&<div style={{display:"grid",gap:14}}>
       <AppTextField id="company-draft-title" label="Draft meeting title" required
-        value={title} disabled={busy} onChange={v=>{setTitle(v);setRequestId(crypto.randomUUID());setError("");setLastSaved(null);}}/>
+        value={title} disabled={formLocked} onChange={v=>{if(formLocked)return;setTitle(v);setRequestId(crypto.randomUUID());setError("");setLastSaved(null);}}/>
       <nav aria-label="Configured company meeting steps" style={{display:"flex",gap:8,flexWrap:"wrap"}}>
         {template.definition.steps.map((item,index)=><Button key={item.id} size="sm"
           variant={step===index?"primary":"secondary"} disabled={busy}
@@ -298,11 +319,11 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
         <div><strong style={{fontSize:13}}>{row.title}</strong>
           <p style={note}>Published template v{row.template_revision} · {row.status} · Edit #{row.edit_revision}</p></div>
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-          <Button variant="secondary" size="sm" disabled={busy}
+          <Button variant="secondary" size="sm" disabled={formLocked}
             onClick={()=>void inspect(row.draft_id)}>View SQL snapshot</Button>
-          <Button variant="secondary" size="sm" disabled={busy}
+          <Button variant="secondary" size="sm" disabled={formLocked}
             onClick={()=>void resume(row.draft_id)}>Resume and edit</Button>
-          <Button variant="tertiary" size="sm" disabled={busy}
+          <Button variant="tertiary" size="sm" disabled={formLocked}
             onClick={()=>void askDiscard(row.draft_id)}>Discard draft</Button>
         </div>
       </div>)}
