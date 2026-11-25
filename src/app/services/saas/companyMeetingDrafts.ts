@@ -1,6 +1,6 @@
 import { convayAuth } from "../supabase/convayAuth";
 import {
-  readManagedTemplate, type MeetingTemplateVersion,
+  readManagedTemplate, validateMeetingTemplateDefinition, type MeetingTemplateVersion,
 } from "./meetingTemplateControl";
 
 /**
@@ -59,7 +59,15 @@ async function draftRpc(action:"list"|"read"|"create"|"update"|"discard",tenantI
   if (!response.ok) {
     const message=object(data)&&typeof data.message==="string"
       ? data.message : "Unable to verify company meeting draft in SQL";
-    throw new Error(message);
+    const error=new Error(message);
+    // A structured SQL validation/authorization rejection of the CREATE itself
+    // is definitive. A lost ACK or any later readback failure is not.
+    if(action==="create" && response.status>=400 && response.status<500
+      && object(data) && typeof data.code==="string"
+      && ["22023","22P02","23514","42501","P0002"].includes(data.code)) {
+      error.name="StagedDraftCreateRejected";
+    }
+    throw error;
   }
   if (!object(data)||data.tenant_id!==tenantId||data.meeting_activation_enabled!==false) {
     throw new Error("Company draft SQL scope/activation did not match");
@@ -88,13 +96,15 @@ export async function readStagedCompanyDraft(tenantId:string,draftId:string):Pro
   if (!object(draft)||draft.draft_id!==draftId
     || draft.status!=="Staged Draft"
     || !UUID.test(String(draft.template_id))
-    || !Number.isSafeInteger(draft.template_revision)
+    || !Number.isSafeInteger(draft.template_revision)||Number(draft.template_revision)<1
+    || typeof draft.title!=="string" || typeof draft.created_at!=="string"
     || !object(draft.definition)||!Array.isArray(draft.definition.steps)
     || !object(draft.values)
     || !Number.isSafeInteger(draft.edit_revision)||Number(draft.edit_revision)<1
     || typeof draft.updated_at!=="string") {
     throw new Error("Company meeting draft SQL readback invalid");
   }
+  validateMeetingTemplateDefinition(draft.definition as unknown as MeetingTemplateVersion["definition"]);
   return draft as unknown as StagedCompanyDraft;
 }
 export async function saveStagedCompanyDraft(
@@ -106,7 +116,9 @@ export async function saveStagedCompanyDraft(
     || template.published_revision!==template.revision
     || !Number.isSafeInteger(template.revision)||template.revision<1
     || title.trim().length<3||title.trim().length>160||!object(values)) {
-    throw new Error("A published company template, valid title and request ID are required");
+    const error=new Error("A published company template, valid title and request ID are required");
+    error.name="StagedDraftCreateRejected";
+    throw error;
   }
   const response=await draftRpc("create",tenantId,{
     request_id:requestId,template_id:template.id,
