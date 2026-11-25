@@ -22,6 +22,8 @@ function getSdk(): Promise<Sdk> {
 
 interface Props {
   meetingId: string;
+  /** Only regular saved meetings provide the expected persisted session. */
+  expectedSessionId?: string;
   micOn: boolean;
   camOn: boolean;
   sharing: boolean;
@@ -40,10 +42,10 @@ interface Props {
   layout?: "speaker" | "gallery";
 }
 
-function savedMeetingAdmission(meetingId: string) {
+function savedMeetingAdmission(meetingId: string, expectedSessionId?: string) {
   return convayAuth.authenticatedRequest("/functions/v1/convay-livekit", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ meetingId }),
+    body: JSON.stringify({ meetingId, expectedSessionId }),
   });
 }
 
@@ -116,7 +118,7 @@ function RemoteAudioTracks({ member, refresh }: { member: any; refresh: number }
 }
 
 export function LiveMeetingMedia({
-  meetingId, micOn, camOn, sharing, onMicChange, onCamChange, onSharingChange,
+  meetingId, expectedSessionId, micOn, camOn, sharing, onMicChange, onCamChange, onSharingChange,
   onPresence, requestAdmission, onParticipants, initialMicDeviceId, initialCameraDeviceId, layout = "gallery",
 }: Props) {
   const [room, setRoom] = useState<any | null>(null);
@@ -156,12 +158,15 @@ export function LiveMeetingMedia({
       try {
         const sdk = await getSdk();
         if (ended) return;
-        const admission = await (callbacks.current.requestAdmission ?? savedMeetingAdmission)(meetingId);
+        const admission = await (callbacks.current.requestAdmission
+          ? callbacks.current.requestAdmission(meetingId)
+          : savedMeetingAdmission(meetingId, expectedSessionId));
         let responseStatus = 200;
         let responseOk = true;
         let access: {
           serverUrl?: string;
           participantToken?: string;
+          sessionId?: unknown;
           error?: unknown;
         };
         if (admission instanceof Response) {
@@ -181,6 +186,9 @@ export function LiveMeetingMedia({
             503: "The online meeting service is not yet configured.",
           };
           throw new Error(serverError || statusMessage[responseStatus] || "Unable to connect to the online meeting.");
+        }
+        if (expectedSessionId && access.sessionId !== expectedSessionId) {
+          throw new Error("The live session changed. Reopen the meeting.");
         }
         if (typeof access.serverUrl !== "string" || !access.serverUrl
           || typeof access.participantToken !== "string" || !access.participantToken) {
@@ -250,7 +258,7 @@ export function LiveMeetingMedia({
       if (nextRoom) void nextRoom.disconnect();
       if (connected) { connected = false; callbacks.current.onPresence(false, nextRoom.localParticipant?.identity); }
     };
-  }, [meetingId, attempt]);
+  }, [meetingId, expectedSessionId, attempt]);
 
   useEffect(() => {
     if (!room) return;

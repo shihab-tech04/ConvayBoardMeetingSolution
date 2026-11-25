@@ -65,7 +65,7 @@ beforeEach(()=>{
    description:"",revision:2,current_revision:2,published_revision:2,state:"published",
    source_template_id:null,published_at:draft.created_at,definition});
  state.save.mockResolvedValue({draft});
- state.drafts.mockResolvedValue(directory);
+ state.drafts.mockImplementation(async (_tenant:string,onProgressSupport?:(supported:boolean)=>void)=>{onProgressSupport?.(true);return directory;});
  state.inspect.mockResolvedValue(draft);
  state.update.mockResolvedValue({draft:{...draft,edit_revision:2,
    title:"Updated board review",values:{field_title:"Budget 2027"}}});
@@ -83,7 +83,7 @@ describe("TEN-MTG-02 complete staged draft recovery",()=>{
   fireEvent.click(screen.getByRole("button",{name:"Save revised draft in SQL"}));
   await waitFor(()=>expect(state.update).toHaveBeenCalledOnce());
   expect(state.update).toHaveBeenCalledWith(tenant,draft,
-   "Updated board review",{field_title:"Budget 2027"},expect.any(String));
+   "Updated board review",{field_title:"Budget 2027"},expect.any(String),{stepId:"step_details",partial:false});
   expect(await screen.findByText(/Revision 2. No meeting, invitation or room has been created/))
    .toBeInTheDocument();
   expect(state.save).not.toHaveBeenCalled();
@@ -131,7 +131,7 @@ describe("MT-03/11/14/27 staged company draft creation and recovery",()=>{
   fireEvent.change(screen.getByLabelText("Draft meeting title"),{target:{value:"Updated board review"}});
   fireEvent.change(screen.getByLabelText("Meeting title"),{target:{value:"Budget 2027"}});
   fireEvent.click(revise);
-  await waitFor(()=>expect(state.update).toHaveBeenCalledWith(tenant,draft,"Updated board review",{field_title:"Budget 2027"},expect.any(String)));
+  await waitFor(()=>expect(state.update).toHaveBeenCalledWith(tenant,draft,"Updated board review",{field_title:"Budget 2027"},expect.any(String),{stepId:"step_details",partial:false}));
   expect(await screen.findByText(/Revision 2. No meeting, invitation or room has been created/)).toBeInTheDocument();
   expect(state.save).toHaveBeenCalledOnce();
   state.inspect.mockResolvedValueOnce({...draft,edit_revision:2,title:"Updated board review",values:{field_title:"Budget 2027"}});
@@ -204,4 +204,49 @@ describe("TEN-MTG-02 SQL safeguards",()=>{
   expect(sql).toContain("FROM PUBLIC,anon,authenticated");
   expect(sql).toContain("TO authenticated");
  });
+});
+describe("MT-04/11/12 paired staged draft progress journey",()=>{
+ it("saves an incomplete second step, reopens the pinned snapshot, and recovers its exact step",async()=>{
+  const multi={steps:[...definition.steps,{id:"mode_quorum",title:"Meeting mode",fields:[
+    {id:"venue",label:"Venue",type:"text",required:true}
+  ]}]};
+  const saved={...draft,definition:multi,wizard_step_id:"mode_quorum",values:{field_title:"Budget 2026"}};
+  state.read.mockResolvedValue({id:templateId,tenant_id:tenant,title:"Board",template_key:"board",
+   description:"",revision:2,current_revision:2,published_revision:2,state:"published",
+   source_template_id:null,published_at:draft.created_at,definition:multi});
+  state.save.mockResolvedValue({draft:saved});
+  state.inspect.mockResolvedValue(saved);
+  const view=render(<CompanyMeetingDraftWizard tenantId={tenant}/>);
+  const selector=await screen.findByLabelText("Published meeting type");
+  await waitFor(()=>expect(selector).not.toBeDisabled());
+  fireEvent.change(selector,{target:{value:templateId}});
+  fireEvent.change(await screen.findByLabelText("Draft meeting title"),{target:{value:draft.title}});
+  fireEvent.change(screen.getByLabelText("Meeting title"),{target:{value:"Budget 2026"}});
+  fireEvent.click(screen.getByRole("button",{name:"Next step"}));
+  expect(await screen.findByLabelText("Venue")).toHaveValue("");
+  fireEvent.click(screen.getByRole("button",{name:"Save draft and continue later"}));
+  await waitFor(()=>expect(state.save).toHaveBeenCalledWith(tenant,expect.objectContaining({id:templateId}),
+    draft.title,{field_title:"Budget 2026"},expect.any(String),{stepId:"mode_quorum",partial:true}));
+  expect(await screen.findByText(/Saved and verified:/)).toBeInTheDocument();
+  view.unmount();
+  render(<CompanyMeetingDraftWizard tenantId={tenant}/>);
+  fireEvent.click(await screen.findByRole("button",{name:"Resume and edit"}));
+  expect(await screen.findByLabelText("Venue")).toHaveValue("");
+  expect(screen.getByRole("button",{name:"2. Meeting mode"})).toHaveAttribute("aria-current","step");
+  fireEvent.click(screen.getByRole("button",{name:"Previous step"}));
+  expect(await screen.findByDisplayValue("Budget 2026")).toBeInTheDocument();
+ });
+});
+
+it("keeps the existing complete save available when paired SQL progress is not advertised",async()=>{
+ state.drafts.mockImplementation(async (_tenant:string,onProgressSupport?:(supported:boolean)=>void)=>{onProgressSupport?.(false);return directory;});
+ render(<CompanyMeetingDraftWizard tenantId={tenant}/>);
+ const selector=await screen.findByLabelText("Published meeting type");
+ await waitFor(()=>expect(selector).not.toBeDisabled());
+ fireEvent.change(selector,{target:{value:templateId}});
+ fireEvent.change(await screen.findByLabelText("Draft meeting title"),{target:{value:draft.title}});
+ fireEvent.change(screen.getByLabelText("Meeting title"),{target:{value:"Budget 2026"}});
+ expect(screen.queryByRole("button",{name:"Save draft and continue later"})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole("button",{name:"Save staged draft in SQL"}));
+ await waitFor(()=>expect(state.save).toHaveBeenCalledWith(tenant,expect.objectContaining({id:templateId}),draft.title,{field_title:"Budget 2026"},expect.any(String)));
 });

@@ -1,0 +1,488 @@
+\set ON_ERROR_STOP on
+-- Run ONLY on a new disposable PostgreSQL 17 instance. Synthetic role claims;
+-- never point at hosted production or label as native restore/real Auth UAT.
+BEGIN;
+CREATE ROLE anon NOLOGIN;
+CREATE ROLE authenticated NOLOGIN;
+CREATE SCHEMA auth;
+CREATE SCHEMA convay_private;
+CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
+ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+GRANT USAGE ON SCHEMA auth,convay_private TO authenticated;
+CREATE TABLE public.user_profiles(user_id uuid primary key,display_name text,email text,phone text,employee_id text,user_type text,account_role text,account_status text,profile_data jsonb default '{}'::jsonb,updated_at timestamptz);
+CREATE TABLE public.convay_roles(id uuid primary key,name text,status text);
+CREATE TABLE public.convay_user_roles(user_id uuid,role_id uuid);
+CREATE TABLE public.convay_permissions(id text,status text);
+CREATE TABLE public.convay_role_permissions(role_id uuid,permission_id text);
+CREATE TABLE convay_private.tenants(id uuid primary key,lifecycle_state text);
+CREATE TABLE convay_private.tenant_memberships(tenant_id uuid,user_id uuid,membership_state text,revoked_at timestamptz);
+CREATE TABLE public.convay_entity_records(entity_key text,record_id text,tenant_id uuid,payload jsonb);
+CREATE TABLE convay_private.org_member_assignment_receipts(actor_id uuid,request_id uuid,member_id uuid,old_unit_id text,new_unit_id text,operation text,reason text,revision bigint,effective_date date,handover_user_id uuid,new_position text,receipt jsonb);
+CREATE FUNCTION convay_private.has_permission(permission_code text) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO '' AS $$
+ SELECT coalesce((select case when p.account_role='super_admin' then true else exists(select 1 from public.convay_user_roles ur join public.convay_roles r on r.id=ur.role_id join public.convay_role_permissions rp on rp.role_id=r.id join public.convay_permissions cp on cp.id=rp.permission_id where ur.user_id=p.user_id and r.status='Active' and cp.id=permission_code and cp.status='Active') end from public.user_profiles p where p.user_id=(select auth.uid()) and p.account_status='active'),false) $$;
+CREATE FUNCTION convay_private.legacy_unscoped_authorized() RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO '' AS $$
+ SELECT coalesce((select p.account_role='super_admin' OR NOT EXISTS(select 1 from convay_private.tenant_memberships m join convay_private.tenants t on t.id=m.tenant_id where m.user_id=p.user_id and m.membership_state='active' and m.revoked_at is null and t.lifecycle_state<>'offboarded') from public.user_profiles p where p.user_id=(select auth.uid()) and p.account_status='active'),false) $$;
+INSERT INTO public.user_profiles(user_id,display_name,email,phone,employee_id,user_type,account_role,account_status) VALUES
+ ('00000000-0000-4000-8000-000000000001','Root','root@example.invalid','01','R','staff','super_admin','active'),
+ ('00000000-0000-4000-8000-000000000002','Legacy','legacy@example.invalid','02','L','staff','user','active'),
+ ('00000000-0000-4000-8000-000000000003','Tenant A','a@example.invalid','03','A','staff','user','active'),
+ ('00000000-0000-4000-8000-000000000004','Tenant B','b@example.invalid','04','B','staff','user','active'),
+ ('00000000-0000-4000-8000-000000000005','Copied admin only','copy@example.invalid','05','C','staff','user','active'),
+ ('00000000-0000-4000-8000-000000000006','Suspended','suspended@example.invalid','06','S','staff','user','suspended');
+INSERT INTO public.convay_roles VALUES ('10000000-0000-4000-8000-000000000001','Governance','Active'),('10000000-0000-4000-8000-000000000002','Copied admin','Active');
+INSERT INTO public.convay_permissions VALUES ('gov_org_view','Active'),('gov_org_manage','Active'),('mtg_view','Active'),('admin_users','Active');
+INSERT INTO public.convay_role_permissions SELECT '10000000-0000-4000-8000-000000000001',id FROM public.convay_permissions;
+INSERT INTO public.convay_role_permissions VALUES ('10000000-0000-4000-8000-000000000002','admin_users');
+INSERT INTO public.convay_user_roles SELECT user_id,'10000000-0000-4000-8000-000000000001' FROM public.user_profiles WHERE display_name IN ('Legacy','Tenant A','Tenant B','Suspended');
+INSERT INTO public.convay_user_roles VALUES ('00000000-0000-4000-8000-000000000005','10000000-0000-4000-8000-000000000002');
+INSERT INTO convay_private.tenants VALUES ('20000000-0000-4000-8000-000000000001','provisioning'),('20000000-0000-4000-8000-000000000002','provisioning');
+INSERT INTO convay_private.tenant_memberships VALUES ('20000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000003','active',null),('20000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000004','active',null),('20000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000001','active',null);
+-- GV-360-01: immutable, SQL-backed unit member assignment and transfer history.
+-- Previous request-key-only "audit_event_id" did not refer to a stored audit event.
+CREATE TABLE IF NOT EXISTS convay_private.org_member_assignment_events (
+  event_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  actor_id uuid NOT NULL,
+  request_id uuid NOT NULL,
+  member_id uuid NOT NULL,
+  previous_unit_id text,
+  new_unit_id text NOT NULL,
+  operation text NOT NULL CHECK (operation IN ('assign','transfer')),
+  reason text NOT NULL DEFAULT '',
+  effective_date date NOT NULL,
+  designation text,
+  handover_user_id uuid,
+  revision bigint NOT NULL CHECK (revision > 0),
+  happened_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(actor_id, request_id)
+);
+ALTER TABLE convay_private.org_member_assignment_events ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON convay_private.org_member_assignment_events FROM PUBLIC, anon, authenticated;
+
+CREATE OR REPLACE FUNCTION convay_private.deny_org_member_event_mutation()
+RETURNS trigger LANGUAGE plpgsql SET search_path TO ''
+AS $guard$
+BEGIN
+  RAISE EXCEPTION 'Organization membership audit events are immutable'
+     USING ERRCODE='42501';
+END $guard$;
+REVOKE ALL ON FUNCTION convay_private.deny_org_member_event_mutation()
+  FROM PUBLIC, anon, authenticated;
+DROP TRIGGER IF EXISTS convay_org_member_events_immutable
+  ON convay_private.org_member_assignment_events;
+CREATE TRIGGER convay_org_member_events_immutable
+BEFORE UPDATE OR DELETE ON convay_private.org_member_assignment_events
+FOR EACH ROW EXECUTE FUNCTION convay_private.deny_org_member_event_mutation();
+
+
+-- GV-360-02: protect primary organization assignment in user_profiles itself,
+-- even when a privileged account/profile writer attempts to bypass the
+-- atomic, audited governance-member RPC. Never touch unrelated profile fields.
+CREATE OR REPLACE FUNCTION convay_private.guard_primary_org_assignment()
+RETURNS trigger LANGUAGE plpgsql SET search_path TO ''
+AS $guard$
+DECLARE change_detected boolean;
+BEGIN
+  IF tg_op='INSERT' THEN
+    IF NULLIF(NEW.profile_data->>'primary_org_unit_id','') IS NOT NULL
+      OR NULLIF(NEW.profile_data->>'branch_id','') IS NOT NULL
+      OR NULLIF(NEW.profile_data->>'division_id','') IS NOT NULL
+      OR NULLIF(NEW.profile_data->>'department_id','') IS NOT NULL
+      OR NULLIF(NEW.profile_data->>'org_assignment_revision','') IS NOT NULL THEN
+      RAISE EXCEPTION 'New profiles cannot self-assign an organization unit'
+        USING ERRCODE='42501';
+    END IF;
+    RETURN NEW;
+  END IF;
+  change_detected := (
+    NEW.profile_data->'primary_org_unit_id' IS DISTINCT FROM OLD.profile_data->'primary_org_unit_id'
+    OR NEW.profile_data->'branch_id' IS DISTINCT FROM OLD.profile_data->'branch_id'
+    OR NEW.profile_data->'division_id' IS DISTINCT FROM OLD.profile_data->'division_id'
+    OR NEW.profile_data->'department_id' IS DISTINCT FROM OLD.profile_data->'department_id'
+    OR NEW.profile_data->'org_assignment_revision' IS DISTINCT FROM OLD.profile_data->'org_assignment_revision'
+  );
+  IF change_detected AND (
+    (SELECT auth.uid()) IS NULL
+    OR current_user <> 'postgres'
+    OR current_setting('convay.gv04_actor',true)
+      IS DISTINCT FROM (SELECT auth.uid())::text
+  ) THEN
+    RAISE EXCEPTION 'Organization assignments require the authorized, audited SQL transaction'
+      USING ERRCODE='42501';
+  END IF;
+  RETURN NEW;
+END
+$guard$;
+REVOKE ALL ON FUNCTION convay_private.guard_primary_org_assignment()
+  FROM PUBLIC, anon, authenticated;
+DROP TRIGGER IF EXISTS convay_guard_primary_org_assignment
+  ON public.user_profiles;
+CREATE TRIGGER convay_guard_primary_org_assignment
+BEFORE INSERT OR UPDATE OF profile_data ON public.user_profiles
+FOR EACH ROW EXECUTE FUNCTION convay_private.guard_primary_org_assignment();
+
+
+INSERT INTO public.convay_entity_records VALUES
+ ('bms.orgunits','branch-global',NULL,'{"id":"branch-global","status":"Active","unit_type":"Branch"}'),
+ ('bms.orgunits','department-global',NULL,'{"id":"department-global","status":"Active","unit_type":"Department","parent_unit_id":"branch-global"}'),
+ ('bms.orgunits','branch-tenant','20000000-0000-4000-8000-000000000001','{"id":"branch-tenant","status":"Active","unit_type":"Branch"}');
+-- Original exact definitions bundled for reproduction.
+-- Least-privilege member directory. The public RPC exposes only permitted data.
+-- Contact and employee identifiers are private to their owner or to user administrators.
+-- No service-role credentials or user metadata are trusted for access decisions.
+create or replace function public.convay_member_directory()
+returns table (
+ user_id uuid,
+ display_name text,
+ email text,
+ phone text,
+ employee_id text,
+ user_type text,
+ role_ids uuid[],
+ role_names text[]
+)
+language plpgsql stable security definer set search_path='' as $directory$
+declare
+  v_actor uuid := (select auth.uid());
+  v_can_admin_users boolean;
+begin
+  if v_actor is null or not exists (
+    select 1 from public.user_profiles p
+    where p.user_id=v_actor and p.account_status='active'
+  ) then
+    raise exception 'Active sign-in required' using errcode='42501';
+  end if;
+  v_can_admin_users := convay_private.has_permission('admin_users');
+  if not (
+    v_can_admin_users
+    or convay_private.has_permission('mtg_view')
+    or convay_private.has_permission('mtg_create')
+    or convay_private.has_permission('gov_org_view')
+    or convay_private.has_permission('gov_group_view')
+  ) then
+    raise exception 'Member directory access denied' using errcode='42501';
+  end if;
+
+  return query
+  select p.user_id,
+         p.display_name,
+         case when v_can_admin_users or p.user_id=v_actor then coalesce(p.email,'') else '' end,
+         case when v_can_admin_users or p.user_id=v_actor then coalesce(p.phone,'') else '' end,
+         case when v_can_admin_users or p.user_id=v_actor then coalesce(p.employee_id,'') else '' end,
+         p.user_type,
+         coalesce((select array_agg(r.id order by r.name)
+           from public.convay_user_roles ur
+           join public.convay_roles r on r.id=ur.role_id
+           where ur.user_id=p.user_id and r.status='Active'),array[]::uuid[]),
+         coalesce((select array_agg(r.name order by r.name)
+           from public.convay_user_roles ur
+           join public.convay_roles r on r.id=ur.role_id
+           where ur.user_id=p.user_id and r.status='Active'),array[]::text[])
+  from public.user_profiles p
+  where p.account_status='active'
+  order by p.display_name;
+end
+$directory$;
+revoke all on function public.convay_member_directory() from public,anon;
+grant execute on function public.convay_member_directory() to authenticated;
+
+CREATE OR REPLACE FUNCTION public.convay_org_member_directory()
+RETURNS TABLE(user_id uuid,primary_org_unit_id text,branch_id text,division_id text,
+  department_id text,assignment_revision bigint, "position" text)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path TO ''
+AS $func$
+BEGIN
+  IF (SELECT auth.uid()) IS NULL OR NOT EXISTS(
+      SELECT 1 FROM public.user_profiles p
+      WHERE p.user_id=(SELECT auth.uid()) AND p.account_status='active'
+    ) OR NOT (convay_private.has_permission('gov_org_view')
+        OR convay_private.has_permission('gov_org_manage')
+        OR convay_private.has_permission('admin_users')
+    OR convay_private.has_permission('mtg_view')
+    OR convay_private.has_permission('mtg_create')
+    OR convay_private.has_permission('gov_group_view')) THEN
+    RAISE EXCEPTION 'Authorized organization directory access required' USING ERRCODE='42501';
+  END IF;
+  -- Only legacy/global profiles may be projected; never return tenant-scoped
+  -- assignments through a cross-tenant global member directory.
+  RETURN QUERY
+  SELECT p.user_id,p.profile_data->>'primary_org_unit_id',
+    p.profile_data->>'branch_id',p.profile_data->>'division_id',
+    p.profile_data->>'department_id',
+    COALESCE(NULLIF(p.profile_data->>'org_assignment_revision','')::bigint,0),
+    p.profile_data->>'position'
+  FROM public.user_profiles p
+  WHERE p.account_status='active'
+    AND NOT EXISTS (
+      SELECT 1 FROM convay_private.tenant_memberships m
+      WHERE m.user_id=p.user_id AND m.membership_state='active'
+    );
+END
+$func$;
+REVOKE ALL ON FUNCTION public.convay_org_member_directory() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.convay_org_member_directory() TO authenticated;
+
+
+CREATE OR REPLACE FUNCTION public.convay_assign_org_member(
+  p_member_id uuid,
+  p_expected_unit_id text,
+  p_new_unit_id text,
+  p_operation text,
+  p_request_id uuid,
+  p_reason text DEFAULT NULL,
+  p_position text DEFAULT NULL,
+  p_effective_date date DEFAULT CURRENT_DATE,
+  p_handover_user_id uuid DEFAULT NULL
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path TO ''
+AS $func$
+DECLARE
+ v_actor uuid := (SELECT auth.uid());
+ v_profile public.user_profiles%ROWTYPE;
+ v_target public.convay_entity_records%ROWTYPE;
+ v_original public.convay_entity_records%ROWTYPE;
+ v_prior convay_private.org_member_assignment_receipts%ROWTYPE;
+ v_old text;
+ v_revision bigint;
+ v_branch text; v_division text; v_department text;
+ v_receipt jsonb; v_event_id bigint;
+BEGIN
+ IF v_actor IS NULL OR NOT EXISTS(
+   SELECT 1 FROM public.user_profiles p
+   WHERE p.user_id=v_actor AND p.account_status='active'
+ ) OR NOT convay_private.has_permission('gov_org_manage') THEN
+   RAISE EXCEPTION 'Authorized governance administrator required' USING ERRCODE='42501';
+ END IF;
+ IF p_member_id IS NULL OR p_request_id IS NULL OR p_operation NOT IN ('assign','transfer')
+    OR p_new_unit_id IS NULL OR length(p_new_unit_id) NOT BETWEEN 1 AND 180
+    OR length(COALESCE(p_expected_unit_id,'')) > 180
+    OR length(COALESCE(p_reason,'')) > 1000
+    OR length(COALESCE(p_position,'')) > 100
+    OR p_effective_date IS NULL OR p_effective_date > CURRENT_DATE THEN
+   RAISE EXCEPTION 'Invalid organization assignment request' USING ERRCODE='22023';
+ END IF;
+ IF p_position IS NOT NULL AND btrim(p_position)<>'' AND
+    NOT convay_private.has_permission('admin_users') THEN
+   RAISE EXCEPTION 'Only authorized User Management may change designation' USING ERRCODE='42501';
+ END IF;
+ IF p_operation='transfer' AND length(btrim(COALESCE(p_reason,'')))<3 THEN
+   RAISE EXCEPTION 'A transfer reason is required' USING ERRCODE='22023';
+ END IF;
+ PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('convay-org-member-'||p_member_id::text));
+ SELECT * INTO v_prior FROM convay_private.org_member_assignment_receipts
+  WHERE actor_id=v_actor AND request_id=p_request_id;
+ IF FOUND THEN
+   IF v_prior.member_id<>p_member_id OR v_prior.operation<>p_operation
+      OR v_prior.old_unit_id IS DISTINCT FROM NULLIF(p_expected_unit_id,'')
+      OR v_prior.new_unit_id<>p_new_unit_id
+      OR COALESCE(v_prior.reason,'')<>btrim(COALESCE(p_reason,''))
+      OR v_prior.effective_date<>p_effective_date
+      OR v_prior.handover_user_id IS DISTINCT FROM p_handover_user_id
+      OR COALESCE(v_prior.new_position,'')<>btrim(COALESCE(p_position,'')) THEN
+     RAISE EXCEPTION 'Request ID reused for a different assignment' USING ERRCODE='23505';
+   END IF;
+   RETURN v_prior.receipt;
+ END IF;
+ SELECT * INTO v_profile FROM public.user_profiles
+  WHERE user_id=p_member_id AND account_status='active' FOR UPDATE;
+ IF NOT FOUND THEN
+   RAISE EXCEPTION 'Active member unavailable' USING ERRCODE='P0002';
+ END IF;
+ -- A global profile cannot be modified if any tenant membership currently
+ -- owns it; tenant-scoped assignments require a separate tenant context.
+ IF EXISTS(
+   SELECT 1 FROM convay_private.tenant_memberships
+   WHERE user_id=p_member_id AND membership_state='active'
+ ) THEN
+   RAISE EXCEPTION 'Tenant membership requires tenant-scoped assignment flow' USING ERRCODE='42501';
+ END IF;
+ v_old := NULLIF(v_profile.profile_data->>'primary_org_unit_id','');
+ IF v_old IS DISTINCT FROM NULLIF(p_expected_unit_id,'') THEN
+   RAISE EXCEPTION 'Member assignment has changed; refresh and retry' USING ERRCODE='40001';
+ END IF;
+ IF p_operation='assign' AND v_old IS NOT NULL THEN
+   RAISE EXCEPTION 'Member already has a primary unit; use Transfer' USING ERRCODE='23514';
+ END IF;
+ IF p_operation='transfer' AND v_old IS NULL THEN
+   RAISE EXCEPTION 'Member has no primary unit to transfer' USING ERRCODE='23514';
+ END IF;
+ IF v_old IS NOT DISTINCT FROM p_new_unit_id THEN
+   RAISE EXCEPTION 'The member is already in this unit' USING ERRCODE='23514';
+ END IF;
+ SELECT * INTO v_target FROM public.convay_entity_records
+ WHERE entity_key='bms.orgunits' AND record_id=p_new_unit_id FOR SHARE;
+ IF NOT FOUND OR v_target.tenant_id IS NOT NULL
+    OR v_target.payload->>'id' IS DISTINCT FROM p_new_unit_id
+    OR lower(COALESCE(v_target.payload->>'status',''))<>'active' THEN
+   RAISE EXCEPTION 'An active, authorized global organization unit is required' USING ERRCODE='42501';
+ END IF;
+ IF p_handover_user_id IS NOT NULL AND (p_handover_user_id=p_member_id OR
+    NOT EXISTS(SELECT 1 FROM public.user_profiles p
+               WHERE p.user_id=p_handover_user_id AND p.account_status='active'
+               AND NOT EXISTS(SELECT 1 FROM convay_private.tenant_memberships m
+                   WHERE m.user_id=p_handover_user_id AND m.membership_state='active'))) THEN
+   RAISE EXCEPTION 'An active, distinct legacy handover user is required' USING ERRCODE='23514';
+ END IF;
+ IF v_old IS NOT NULL THEN
+   SELECT * INTO v_original FROM public.convay_entity_records
+   WHERE entity_key='bms.orgunits' AND record_id=v_old FOR SHARE;
+   IF NOT FOUND OR v_original.tenant_id IS NOT NULL THEN
+     RAISE EXCEPTION 'Previous unit needs authorized reconciliation' USING ERRCODE='42501';
+   END IF;
+ END IF;
+ -- Derive every branch/division/department projection from SQL ancestor
+ -- relationships rather than trusting client-provided path IDs.
+ WITH RECURSIVE lineage(id,parent_id,unit_type,seen) AS (
+   SELECT r.record_id,NULLIF(r.payload->>'parent_unit_id',''),
+     r.payload->>'unit_type',ARRAY[r.record_id]::text[]
+   FROM public.convay_entity_records r
+   WHERE r.entity_key='bms.orgunits' AND r.record_id=p_new_unit_id AND r.tenant_id IS NULL
+   UNION ALL
+   SELECT r.record_id,NULLIF(r.payload->>'parent_unit_id',''),
+     r.payload->>'unit_type',lineage.seen||r.record_id
+   FROM lineage JOIN public.convay_entity_records r
+     ON r.entity_key='bms.orgunits' AND r.record_id=lineage.parent_id
+   WHERE r.tenant_id IS NULL AND NOT r.record_id=ANY(lineage.seen)
+     AND cardinality(lineage.seen)<100
+ )
+ SELECT max(id) FILTER(WHERE unit_type='Branch'),
+        max(id) FILTER(WHERE unit_type='Division'),
+        max(id) FILTER(WHERE unit_type='Department')
+ INTO v_branch,v_division,v_department FROM lineage;
+ IF v_target.payload->>'unit_type'='Branch' THEN v_branch:=p_new_unit_id; END IF;
+ IF v_target.payload->>'unit_type'='Division' THEN v_division:=p_new_unit_id; END IF;
+ IF v_target.payload->>'unit_type'='Department' THEN v_department:=p_new_unit_id; END IF;
+ v_revision:=COALESCE(NULLIF(v_profile.profile_data->>'org_assignment_revision','')::bigint,0)+1;
+ PERFORM pg_catalog.set_config('convay.gv04_actor',v_actor::text,true);
+ UPDATE public.user_profiles SET
+   profile_data=(v_profile.profile_data - 'primary_org_unit_id' - 'branch_id'
+     - 'division_id' - 'department_id' - 'org_assignment_revision')
+     || pg_catalog.jsonb_build_object(
+       'primary_org_unit_id',p_new_unit_id,
+       'org_assignment_revision',v_revision)
+     || CASE WHEN v_branch IS NULL THEN '{}'::jsonb
+         ELSE pg_catalog.jsonb_build_object('branch_id',v_branch) END
+     || CASE WHEN v_division IS NULL THEN '{}'::jsonb
+         ELSE pg_catalog.jsonb_build_object('division_id',v_division) END
+     || CASE WHEN v_department IS NULL THEN '{}'::jsonb
+         ELSE pg_catalog.jsonb_build_object('department_id',v_department) END
+     || CASE WHEN p_position IS NULL OR btrim(p_position)='' THEN '{}'::jsonb
+         ELSE pg_catalog.jsonb_build_object('position',btrim(p_position)) END,
+   updated_at=pg_catalog.now()
+ WHERE user_id=p_member_id;
+ PERFORM pg_catalog.set_config('convay.gv04_actor','',true);
+ insert into convay_private.org_member_assignment_events(
+    actor_id,request_id,member_id,previous_unit_id,new_unit_id,
+    operation,reason,effective_date,designation,handover_user_id,revision
+ ) values (
+    v_actor,p_request_id,p_member_id,v_old,p_new_unit_id,
+    p_operation,btrim(COALESCE(p_reason,'')),p_effective_date,
+    nullif(btrim(COALESCE(p_position,'')),''),p_handover_user_id,v_revision
+ ) returning event_id into v_event_id;
+ v_receipt:=pg_catalog.jsonb_build_object(
+    'member_id',p_member_id,'old_unit_id',v_old,'new_unit_id',p_new_unit_id,
+    'operation',p_operation,'revision',v_revision,
+    'effective_date',p_effective_date,'handover_user_id',p_handover_user_id,
+    'audit_event_id','org-member-'||v_event_id::text,'request_id',p_request_id);
+ INSERT INTO convay_private.org_member_assignment_receipts(
+    actor_id,request_id,member_id,old_unit_id,new_unit_id,operation,reason,revision,
+    effective_date,handover_user_id,new_position,receipt
+ ) VALUES(
+    v_actor,p_request_id,p_member_id,v_old,p_new_unit_id,
+    p_operation,btrim(COALESCE(p_reason,'')),v_revision,
+    p_effective_date,p_handover_user_id,btrim(COALESCE(p_position,'')),v_receipt);
+ RETURN v_receipt;
+END
+$func$;
+
+REVOKE ALL ON FUNCTION public.convay_assign_org_member(uuid,text,text,text,uuid,text,text,date,uuid) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.convay_assign_org_member(uuid,text,text,text,uuid,text,text,date,uuid) TO authenticated;
+
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000002',true);
+DO $$ BEGIN IF (SELECT count(*) FROM public.convay_member_directory() WHERE display_name IN ('Tenant A','Tenant B'))<>2 THEN RAISE EXCEPTION 'Original cross-company projection was not reproduced'; END IF; END $$;
+DO $$ BEGIN
+ BEGIN PERFORM public.convay_assign_org_member(NULL,NULL,NULL,NULL,NULL); RAISE EXCEPTION 'Original invalid input was accepted'; EXCEPTION WHEN invalid_parameter_value THEN NULL; END;
+END $$;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000003',true);
+DO $$ BEGIN IF (SELECT count(*) FROM public.convay_org_member_directory())<1 THEN RAISE EXCEPTION 'Original tenant actor legacy org read was not reproduced'; END IF; END $$;
+RESET ROLE;
+CREATE TEMP TABLE phase1_baseline AS SELECT p.oid,pg_get_functiondef(p.oid) AS definition,p.proacl AS acl FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname IN ('convay_member_directory','convay_org_member_directory','convay_assign_org_member');
+\ir migration_candidate.sql
+DO $$ BEGIN
+ IF (SELECT count(*) FROM phase1_baseline)<>3 OR EXISTS(SELECT 1 FROM phase1_baseline b JOIN pg_proc p ON p.oid=b.oid WHERE p.proacl IS DISTINCT FROM b.acl OR pg_get_functiondef(p.oid)=b.definition) THEN RAISE EXCEPTION 'Candidate definition or ACL mismatch'; END IF;
+END $$;
+\ir rollback_isolated.sql
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM phase1_baseline b JOIN pg_proc p ON p.oid=b.oid WHERE p.proacl IS DISTINCT FROM b.acl OR pg_get_functiondef(p.oid)<>b.definition) THEN RAISE EXCEPTION 'Rollback definition or ACL mismatch'; END IF;
+END $$;
+\ir migration_candidate.sql
+\echo 'Candidate apply, exact fixture rollback, reapply verified'
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000002',true);
+DO $$ BEGIN
+ IF (SELECT count(*) FROM public.convay_member_directory() WHERE display_name IN ('Tenant A','Tenant B','Suspended'))<>0 THEN RAISE EXCEPTION 'Foreign or suspended profile leaked'; END IF;
+ IF (SELECT email FROM public.convay_member_directory() WHERE display_name='Root')<>'' THEN RAISE EXCEPTION 'Copied admin grant exposed root contact'; END IF;
+ IF (SELECT email FROM public.convay_member_directory() WHERE display_name='Legacy')<>'legacy@example.invalid' THEN RAISE EXCEPTION 'Own profile projection broken'; END IF;
+ IF (SELECT count(*) FROM public.convay_org_member_directory())<1 THEN RAISE EXCEPTION 'Legacy organization projection broken'; END IF;
+ BEGIN PERFORM public.convay_assign_org_member(NULL,NULL,NULL,NULL,NULL); RAISE EXCEPTION 'Delegated assignment was not denied'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
+-- Two different tenant actors, both with matching global permission IDs.
+DO $$ DECLARE actor text; BEGIN FOREACH actor IN ARRAY ARRAY['00000000-0000-4000-8000-000000000003','00000000-0000-4000-8000-000000000004'] LOOP
+ PERFORM set_config('request.jwt.claim.sub',actor,true);
+ BEGIN PERFORM public.convay_member_directory(); RAISE EXCEPTION 'Tenant actor global member directory was not denied'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN PERFORM public.convay_org_member_directory(); RAISE EXCEPTION 'Tenant actor global org directory was not denied'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN PERFORM public.convay_assign_org_member(NULL,NULL,NULL,NULL,NULL); RAISE EXCEPTION 'Tenant actor global assignment was not denied'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ END LOOP; END $$;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000005',true);
+DO $$ BEGIN BEGIN PERFORM public.convay_member_directory(); RAISE EXCEPTION 'Copied admin-only permission granted global directory'; EXCEPTION WHEN insufficient_privilege THEN NULL; END; END $$;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000006',true);
+DO $$ BEGIN BEGIN PERFORM public.convay_member_directory(); RAISE EXCEPTION 'Suspended profile global read accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END; END $$;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000001',true);
+DO $$ BEGIN
+ IF (SELECT email FROM public.convay_member_directory() WHERE display_name='Legacy')<>'legacy@example.invalid' THEN RAISE EXCEPTION 'Authorized root read broken'; END IF;
+ IF (SELECT count(*) FROM public.convay_member_directory() WHERE display_name IN ('Tenant A','Tenant B'))<>0 THEN RAISE EXCEPTION 'Global root roster includes tenant profiles'; END IF;
+ -- Invalid input must reach existing validation, not deny root. Full root write
+ -- requires full migration fixture; this is only the entry guard.
+ BEGIN PERFORM public.convay_assign_org_member(NULL,NULL,NULL,NULL,NULL); RAISE EXCEPTION 'Missing input validation'; EXCEPTION WHEN invalid_parameter_value THEN NULL; END;
+END $$;
+DO $$ DECLARE receipt jsonb; replay jsonb; transfer_receipt jsonb; BEGIN
+ receipt := public.convay_assign_org_member('00000000-0000-4000-8000-000000000002',NULL,'branch-global','assign','30000000-0000-4000-8000-000000000001');
+ replay := public.convay_assign_org_member('00000000-0000-4000-8000-000000000002',NULL,'branch-global','assign','30000000-0000-4000-8000-000000000001');
+ IF receipt IS DISTINCT FROM replay OR receipt->>'revision' IS DISTINCT FROM '1' THEN RAISE EXCEPTION 'Root assignment replay failed'; END IF;
+ BEGIN PERFORM public.convay_assign_org_member('00000000-0000-4000-8000-000000000002',NULL,'department-global','assign','30000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'Conflicting replay accepted'; EXCEPTION WHEN unique_violation THEN NULL; END;
+ transfer_receipt := public.convay_assign_org_member('00000000-0000-4000-8000-000000000002','branch-global','department-global','transfer','30000000-0000-4000-8000-000000000002','Approved transfer');
+ IF transfer_receipt->>'revision' IS DISTINCT FROM '2' THEN RAISE EXCEPTION 'Root transfer revision failed'; END IF;
+ IF NOT EXISTS (SELECT 1 FROM public.convay_org_member_directory() WHERE user_id='00000000-0000-4000-8000-000000000002' AND primary_org_unit_id='department-global' AND branch_id='branch-global' AND department_id='department-global' AND assignment_revision=2) THEN RAISE EXCEPTION 'SQL hierarchy readback failed'; END IF;
+ BEGIN PERFORM public.convay_assign_org_member('00000000-0000-4000-8000-000000000002','department-global','branch-tenant','transfer','30000000-0000-4000-8000-000000000003','Denied foreign unit'); RAISE EXCEPTION 'Foreign unit accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN PERFORM public.convay_assign_org_member('00000000-0000-4000-8000-000000000003',NULL,'branch-global','assign','30000000-0000-4000-8000-000000000004'); RAISE EXCEPTION 'Tenant member accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
+RESET ROLE;
+DO $$ BEGIN
+ IF (SELECT count(*) FROM convay_private.org_member_assignment_events)<>2 OR (SELECT count(*) FROM convay_private.org_member_assignment_receipts)<>2 THEN RAISE EXCEPTION 'Audit or replay count incorrect'; END IF;
+ BEGIN UPDATE convay_private.org_member_assignment_events SET reason='tampered'; RAISE EXCEPTION 'Audit event mutable'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
+UPDATE convay_private.tenant_memberships SET membership_state='revoked', revoked_at=now() WHERE user_id='00000000-0000-4000-8000-000000000003';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000003',true);
+DO $$ BEGIN
+ IF NOT convay_private.legacy_unscoped_authorized() THEN RAISE EXCEPTION 'Original revoked fallback not reproduced'; END IF;
+ BEGIN PERFORM public.convay_member_directory(); RAISE EXCEPTION 'Revoked actor member read accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN PERFORM public.convay_org_member_directory(); RAISE EXCEPTION 'Revoked actor org read accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000001',true);
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM public.convay_member_directory() WHERE display_name='Tenant A') OR EXISTS (SELECT 1 FROM public.convay_org_member_directory() WHERE user_id='00000000-0000-4000-8000-000000000003') THEN RAISE EXCEPTION 'Revoked tenant profile projected globally'; END IF;
+ BEGIN PERFORM public.convay_assign_org_member('00000000-0000-4000-8000-000000000003',NULL,'branch-global','assign','30000000-0000-4000-8000-000000000005'); RAISE EXCEPTION 'Revoked tenant assignment accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
+RESET ROLE;
+DO $$ BEGIN
+ IF has_function_privilege('anon','public.convay_member_directory()','EXECUTE') OR has_function_privilege('anon','public.convay_org_member_directory()','EXECUTE') OR has_function_privilege('anon','public.convay_assign_org_member(uuid,text,text,text,uuid,text,text,date,uuid)','EXECUTE') THEN RAISE EXCEPTION 'Anonymous grant leaked'; END IF;
+ IF (SELECT count(*) FROM convay_private.org_member_assignment_events)<>2 OR (SELECT count(*) FROM convay_private.org_member_assignment_receipts)<>2 THEN RAISE EXCEPTION 'Denied request changed audit counts'; END IF;
+END $$;
+\echo 'Revoked actor, target, anonymous and audit denial passed (synthetic)'
+\if :{?keep_concurrency_fixture}
+COMMIT;
+\else
+ROLLBACK;
+\endif
+\echo 'Synthetic directory/assignment guard rehearsal passed; not hosted Auth or native restore.'
