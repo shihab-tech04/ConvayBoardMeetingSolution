@@ -10,7 +10,7 @@ describe("Live Meeting responsive reference adaptation", () => {
   it("keeps the current production meeting, LiveKit and quorum contracts", () => {
     expect(source).toContain("convayAuth.forceStartMeeting(meetingId)");
     expect(source).toContain("buildMeetingStartBatch(");
-    expect(source).toContain("LiveMeetingMedia meetingId={meetingId}");
+    expect(source).toContain("LiveMeetingMedia key={JSON.stringify([meetingId, onlineSessionId, currentUser.id])} meetingId={meetingId} expectedSessionId={onlineSessionId}");
     expect(source).toContain("commitVerifiedMinutesCapture(");
     expect(source).toContain("serverQuorum");
     expect(source).toContain("canPublishMedia && myMicOn");
