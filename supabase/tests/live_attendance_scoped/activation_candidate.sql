@@ -31,6 +31,30 @@ create table convay_private.live_attendance_session_history(
 alter table convay_private.live_attendance_session_history enable row level security;
 revoke all on convay_private.live_attendance_session_history from public,anon,authenticated,service_role;
 
+-- Company activation is independently disabled by default. Preserve the existing
+-- legacy release switch; the company gate never turns off the write guard.
+create table convay_private.live_attendance_company_gate (
+  singleton boolean primary key default true check(singleton),
+  enabled boolean not null default false
+);
+alter table convay_private.live_attendance_company_gate enable row level security;
+revoke all on convay_private.live_attendance_company_gate from public,anon,authenticated,service_role;
+insert into convay_private.live_attendance_company_gate(singleton,enabled) values(true,false);
+
+-- Fail-closed suspension retains all receipts/history and invalidates current
+-- company quorum evidence. No destructive down migration or legacy reset.
+create function convay_private.suspend_company_attendance_quorum() returns trigger
+language plpgsql security definer set search_path='' as $$begin
+  if old.enabled and not new.enabled then
+    update convay_private.live_quorum_snapshots set met=false,revision=revision+1,updated_at=clock_timestamp()
+      where tenant_id is not null and met=true;
+  end if;
+  return new;
+end$$;
+revoke all on function convay_private.suspend_company_attendance_quorum() from public,anon,authenticated,service_role;
+create trigger suspend_company_attendance_quorum after update of enabled on convay_private.live_attendance_company_gate
+for each row execute function convay_private.suspend_company_attendance_quorum();
+
 -- Private resolver: exact SQL tenant and current persisted session. The
 -- service-only caller establishes auth.uid from the verified actor first.
 -- Lock the meeting and active session so authorization and persistence use
@@ -221,10 +245,15 @@ begin
   -- CALLER TRUST: this RPC has EXECUTE only for service_role. Edge verifies the
   -- Supabase Auth JWT, project account state and actual LiveKit participant.
   -- Never grant this RPC to authenticated/anon.
-  if (select enabled from convay_private.live_attendance_release_gate
-      where singleton=true) is distinct from true then
-    raise exception 'Authoritative live attendance has not been activated'
-      using errcode='42501';
+  -- Hold both release rows until commit so suspension cannot race a write.
+  perform 1 from convay_private.live_attendance_release_gate where singleton=true and enabled=true for share;
+  if not found then
+    raise exception 'Authoritative live attendance has not been activated' using errcode='42501';
+  end if;
+  if p_tenant_id is not null then
+    perform 1 from convay_private.live_attendance_company_gate where singleton=true and enabled=true for share;
+    if not found then raise exception 'Company attendance has not been activated' using errcode='42501'; end if;
+    if p_session_id is null then raise exception 'Explicit company session required' using errcode='22023'; end if;
   end if;
   if p_actor_id is null or p_meeting_id !~ '^[A-Za-z0-9_-]{1,180}$'
     or p_participant_id !~ '^[A-Za-z0-9_-]{1,180}$'
@@ -648,7 +677,7 @@ begin
     'status',v_status,'attendanceId',coalesce(v_row.record_id,''),
     'attendanceRevision',coalesce(v_row.revision,0),
     'quorum',v_quorum,'attendanceMap',v_attendees,
-    'releaseEnabled',coalesce((select enabled from convay_private.live_attendance_release_gate where singleton=true),false)
+    'releaseEnabled',coalesce((select enabled from convay_private.live_attendance_release_gate where singleton=true),false) and (p_tenant_id is null or coalesce((select enabled from convay_private.live_attendance_company_gate where singleton=true),false))
   );
 end;
 $$;
