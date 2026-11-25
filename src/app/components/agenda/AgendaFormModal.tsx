@@ -33,11 +33,17 @@ import { StatusBadge } from "../badges/StatusBadge";
 import { UnifiedDocumentViewer } from "../documents/UnifiedDocumentViewer";
 import { DocumentComposerModal } from "../documents/DocumentComposerModal";
 import { agendaReference, validateCompleteAgenda } from "./agendaCreationFields";
+import { saveAgendaChildWithAck } from "./agendaChildPersistence";
+import { requireAgendaDocumentLinkAck } from "./agendaDocumentLinkConfirmation";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { readAccessSnapshot } from "../../services/supabase/convayAccess";
+import { finalizeOwnSuperAdminContent } from "../../services/supabase/convaySuperAdminAutoApproval";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PURPOSES    = ["For Information", "For Discussion", "For Review", "For Approval", "For Decision"];
 const CONFIDENTIAL = ["Public", "Internal", "Confidential", "Restricted"];
+const EDITABLE_STATUSES = new Set(["Draft", "Incomplete", "Reopened", "Revision Requested"]);
 
 // ── Duration helpers ──────────────────────────────────────────────────────────
 
@@ -303,6 +309,9 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   const [cErr,       setCErr]       = useState<Partial<Record<string, string>>>({});
   const [childMode,  setChildMode]  = useState(false); // true = child form visible
   const [saving,     setSaving]     = useState(false);
+  // Locks the entire child save/auto-draft journey until the SQL registry ACK.
+  const childWriteInFlight = useRef(false);
+  const [documentLinkBusy, setDocumentLinkBusy] = useState(false);
 
   // Document picker / uploader
   const [pickerOpen,   setPickerOpen]   = useState(false);
@@ -493,6 +502,10 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
     const existing = parentId ? agendaReg.items.find(a => a.id === parentId) : null;
     const id = existing?.id ?? generateId("AGD", agendaReg.items.map(a => a.agenda_id));
     const metadata = parentMetadata(id);
+    if (existing && !EDITABLE_STATUSES.has(existing.approval_status)) {
+      toast.error("Reopen this agenda before changing approved or submitted content.");
+      return null;
+    }
     const saved = existing
       ? await agendaReg.update(id, { ...metadata, approval_status: existing.approval_status, updated_at: now } as never)
       : await agendaReg.add({
@@ -514,81 +527,172 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Persist child ─────────────────────────────────────────────────────────
 
-  function persistChild(pid: string): string {
-    const now = new Date().toISOString();
-    const dur = `${parseInt(cf.duration_mins, 10)} min`;
-    if (cf.id && agendaReg.items.find(a => a.id === cf.id)) {
-      agendaReg.update(cf.id, {
-        agenda_title: cf.title.trim(), description: cf.details, purpose: cf.purpose,
-        presenter_user_id: cf.presenter_user_id, estimated_duration: dur, updated_at: now,
-      } as never);
-      return cf.id;
+  async function persistChild(pid: string): Promise<string | null> {
+    if (saving || childWriteInFlight.current) return null;
+    if (savedParent && !EDITABLE_STATUSES.has(savedParent.approval_status)) {
+      toast.error("Reopen the parent agenda before editing children."); return null;
     }
-    const sibs = agendaReg.items.filter(a => a.parent_agenda_id === pid);
-    const id = generateId("AGD", agendaReg.items.map(a => a.agenda_id));
-    agendaReg.add({
-      id, agenda_id: id, agenda_title: cf.title.trim(), agenda_reference: id,
-      description: cf.details,
-      meeting_id: "", meeting_title: "", committee: "", meeting_type: "",
-      agenda_category: "Governance", submitted_by: currentUser.name,
-      owner_user_id: savedParent?.owner_user_id ?? "",
-      presenter_user_id: cf.presenter_user_id,
-      submitting_division: "", purpose: cf.purpose, proposed_decision: "", priority: "Normal",
-      confidentiality: savedParent?.confidentiality ?? "Internal",
-      estimated_duration: dur, voting_required: "No", financial_impact: "",
-      submission_date: now.slice(0, 10), approval_status: "Draft", created_at: now,
-      parent_agenda_id: pid, agenda_level: 2, display_order: sibs.length + 1,
-    } as never);
-    return id;
+    if (cf.id && !EDITABLE_STATUSES.has(agendaReg.items.find(a => a.id === cf.id)?.approval_status ?? "")) {
+      toast.error("Reopen this child agenda before editing its approved content."); return null;
+    }
+    childWriteInFlight.current = true;
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const dur = `${parseInt(cf.duration_mins, 10)} min`;
+      if (cf.id) {
+        // Never silently create a new child if an edit points at a stale/missing row.
+        if (!agendaReg.items.some(a => a.id === cf.id)) {
+          throw new Error("Agenda item no longer exists. Refresh and try again.");
+        }
+        return await saveAgendaChildWithAck(cf.id, () => agendaReg.update(cf.id!, {
+          agenda_title: cf.title.trim(), description: cf.details, purpose: cf.purpose,
+          presenter_user_id: cf.presenter_user_id, estimated_duration: dur, updated_at: now,
+        } as never));
+      }
+      const sibs = agendaReg.items.filter(a => a.parent_agenda_id === pid);
+      const id = generateId("AGD", agendaReg.items.map(a => a.agenda_id));
+      return await saveAgendaChildWithAck(id, () => agendaReg.add({
+        id, agenda_id: id, agenda_title: cf.title.trim(), agenda_reference: id,
+        description: cf.details,
+        meeting_id: "", meeting_title: "", committee: "", meeting_type: "",
+        agenda_category: "Governance", submitted_by: currentUser.name,
+        owner_user_id: savedParent?.owner_user_id ?? "",
+        presenter_user_id: cf.presenter_user_id,
+        submitting_division: "", purpose: cf.purpose, proposed_decision: "", priority: "Normal",
+        confidentiality: savedParent?.confidentiality ?? "Internal",
+        estimated_duration: dur, voting_required: "No", financial_impact: "",
+        submission_date: now.slice(0, 10), approval_status: "Draft", created_at: now,
+        parent_agenda_id: pid, agenda_level: 2, display_order: sibs.length + 1,
+      } as never));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to save agenda item. Retry.");
+      return null;
+    } finally {
+      childWriteInFlight.current = false;
+      setSaving(false);
+    }
   }
 
   // ── Document link helpers ─────────────────────────────────────────────────
 
-  function linkDoc(docId: string, childAgendaId: string) {
-    if (linkReg.items.some(l => l.agenda_id === childAgendaId && l.document_id === docId)) return;
+  async function linkDoc(docId: string, childAgendaId: string, reportError = true): Promise<boolean> {
+    if (linkReg.items.some(l => l.agenda_id === childAgendaId && l.document_id === docId)) return true;
+    if (documentLinkBusy) return false;
     const existing = linkReg.items.filter(l => l.agenda_id === childAgendaId);
     const lid = generateId("ADL", linkReg.items.map(l => l.id));
-    linkReg.add({
-      id: lid, agenda_id: childAgendaId, document_id: docId,
-      linked_at: new Date().toISOString(), linked_by: currentUser.name,
-      is_primary: existing.length === 0, display_order: existing.length + 1,
-    } as AgendaDocumentLink);
+    setDocumentLinkBusy(true);
+    try {
+      const saved = await linkReg.add({
+        id: lid, agenda_id: childAgendaId, document_id: docId,
+        linked_at: new Date().toISOString(), linked_by: currentUser.name,
+        is_primary: existing.length === 0, display_order: existing.length + 1,
+      } as AgendaDocumentLink);
+      if (saved !== true) throw new Error("Document link was not saved in SQL.");
+      await linkReg.refresh?.();
+      toast.success("Document linked.");
+      return true;
+    } catch (error) {
+      if (reportError) toast.error(error instanceof Error ? error.message : "Unable to link document.");
+      await linkReg.refresh?.().catch(() => undefined);
+      return false;
+    } finally { setDocumentLinkBusy(false); }
   }
 
-  function unlinkDoc(docId: string, childAgendaId: string) {
-    const l = linkReg.items.find(x => x.agenda_id === childAgendaId && x.document_id === docId);
-    if (l) linkReg.remove(l.id);
+  async function unlinkDoc(docId: string, childAgendaId: string) {
+    if (documentLinkBusy) return;
+    const link = linkReg.items.find(x => x.agenda_id === childAgendaId && x.document_id === docId);
+    if (!link) return;
+    setDocumentLinkBusy(true);
+    try {
+      const removed = await linkReg.remove(link.id);
+      if (removed !== true) throw new Error("Document was not unlinked in SQL.");
+      await linkReg.refresh?.();
+      toast.success("Document unlinked.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to unlink document.");
+      await linkReg.refresh?.().catch(() => undefined);
+    } finally { setDocumentLinkBusy(false); }
   }
 
   function toggleDocLink(docId: string) {
     const cid = cf.id ?? pendingChildIdRef.current;
-    if (!cid) return;
+    if (!cid || documentLinkBusy) return;
     if (linkReg.items.some(l => l.agenda_id === cid && l.document_id === docId))
-      unlinkDoc(docId, cid);
+      void unlinkDoc(docId, cid);
     else
-      linkDoc(docId, cid);
+      void linkDoc(docId, cid);
   }
 
   // ── Child reorder / remove ────────────────────────────────────────────────
 
-  function moveChild(id: string, dir: "up" | "down") {
+  async function moveChild(id: string, dir: "up" | "down") {
+    if (saving) return;
     const sibs = [...children];
     const idx = sibs.findIndex(c => c.id === id);
     const swi = dir === "up" ? idx - 1 : idx + 1;
     if (swi < 0 || swi >= sibs.length) return;
-    agendaReg.update(id,         { display_order: swi + 1 } as never);
-    agendaReg.update(sibs[swi].id, { display_order: idx + 1 } as never);
+    setSaving(true);
+    try {
+      const firstRevision = agendaReg.getRevision?.(id);
+      const secondRevision = agendaReg.getRevision?.(sibs[swi].id);
+      if (!Number.isSafeInteger(firstRevision) || !Number.isSafeInteger(secondRevision)
+        || (firstRevision ?? 0) < 1 || (secondRevision ?? 0) < 1) {
+        throw new Error("Agenda order is stale. Refresh before reordering.");
+      }
+      await convayAuth.applyAgendaBatch([
+        { entity_key: "bms.agenda", action: "update", record_id: id,
+          expected_revision: firstRevision!, payload: { display_order: swi + 1 } },
+        { entity_key: "bms.agenda", action: "update", record_id: sibs[swi].id,
+          expected_revision: secondRevision!, payload: { display_order: idx + 1 } },
+      ]);
+      await agendaReg.refresh?.();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Reorder was not saved.");
+      await agendaReg.refresh?.().catch(() => undefined);
+    } finally { setSaving(false); }
   }
 
-  function removeChild(id: string) {
-    linkReg.items.filter(l => l.agenda_id === id).forEach(l => linkReg.remove(l.id));
-    agendaReg.remove(id);
-    if (cf.id === id) { setCf({ ...EMPTY_CHILD }); setChildMode(false); setCDirty(false); }
+  async function removeChild(id: string) {
+    if (saving) return;
+    const child = agendaReg.items.find(a => a.id === id);
+    if (!child || !EDITABLE_STATUSES.has(child.approval_status)
+      || (savedParent && !EDITABLE_STATUSES.has(savedParent.approval_status))) {
+      toast.error("Only editable draft/reopened child agendas may be removed.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const linked = linkReg.items.filter(link =>
+        link.agenda_id === id || link.agenda_id === child.agenda_id);
+      const childRevision = agendaReg.getRevision?.(id);
+      const linkRevisions = linked.map(link => ({
+        recordId: link.id, expectedRevision: linkReg.getRevision?.(link.id),
+      }));
+      if (!Number.isSafeInteger(childRevision) || (childRevision ?? 0) < 1 ||
+        linkRevisions.some(link => !Number.isSafeInteger(link.expectedRevision) ||
+          (link.expectedRevision ?? 0) < 1)) {
+        throw new Error("Agenda child or links are stale. Refresh before removing.");
+      }
+      await convayAuth.deleteAgendaChild(id, childRevision!, linkRevisions.map(link => ({
+        recordId: link.recordId, expectedRevision: link.expectedRevision!,
+      })));
+      await Promise.all([agendaReg.refresh?.(), linkReg.refresh?.()]);
+      if (cf.id === id) { setCf({ ...EMPTY_CHILD }); setChildMode(false); setCDirty(false); }
+      toast.success("Child agenda removed.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Child agenda was not removed.");
+      await Promise.all([
+        agendaReg.refresh?.().catch(() => undefined),
+        linkReg.refresh?.().catch(() => undefined),
+      ]);
+    } finally { setSaving(false); }
   }
 
   // ── Guard child dirty ─────────────────────────────────────────────────────
 
   function withGuard(action: () => void) {
+    if (saving || childWriteInFlight.current) return;
     if (cDirty) setPendingFn(() => action);
     else        action();
   }
@@ -597,30 +701,37 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   // Returns the child ID (existing or newly created draft). Returns null when
   // validation fails so the caller can abort.
 
-  function ensureChildDraft(): string | null {
-    if (cf.id) return cf.id;
+  async function ensureChildDraft(): Promise<string | null> {
+    if (cf.id) {
+      if (!agendaReg.items.some(a => a.id === cf.id)) {
+        toast.error("Agenda item could not be found. Refresh before attaching documents.");
+        return null;
+      }
+      return cf.id;
+    }
     if (!parentId) return null;
     if (!cf.title.trim()) {
       setCErr(e => ({ ...e, title: "Enter a title before attaching documents." }));
       return null;
     }
-    // Auto-save as Draft — synchronous registry add, no async required
-    const cid = persistChild(parentId);
+    // Auto-draft is not real until the SQL-backed registry confirms persistence.
+    const cid = await persistChild(parentId);
+    if (!cid) return null;
     setCf(p => ({ ...p, id: cid }));
     setCDirty(false);
     pendingChildIdRef.current = cid;
     return cid;
   }
 
-  function handleOpenUploader() {
-    const cid = ensureChildDraft();
+  async function handleOpenUploader() {
+    const cid = await ensureChildDraft();
     if (!cid) return;
     pendingChildIdRef.current = cid;
     setUploaderOpen(true);
   }
 
-  function handleOpenPicker() {
-    const cid = ensureChildDraft();
+  async function handleOpenPicker() {
+    const cid = await ensureChildDraft();
     if (!cid) return;
     pendingChildIdRef.current = cid;
     setPickerOpen(p => !p);
@@ -670,25 +781,24 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   // ── Child actions ─────────────────────────────────────────────────────────
 
-  function doSaveChild(pid: string): string | null {
-    if (!validateChild()) return null;
-    setSaving(true);
-    const cid = persistChild(pid);
-    setSaving(false); setCDirty(false); setCErr({});
+  async function doSaveChild(pid: string): Promise<string | null> {
+    if (saving || childWriteInFlight.current || !validateChild()) return null;
+    const cid = await persistChild(pid);
+    if (cid) { setCDirty(false); setCErr({}); }
     return cid;
   }
 
-  function handleSaveChild() {
+  async function handleSaveChild() {
     if (!parentId) return;
-    const cid = doSaveChild(parentId);
+    const cid = await doSaveChild(parentId);
     if (cid) { setCf(p => ({ ...p, id: cid })); }
   }
 
-  function handleSaveAndAddAnother() {
+  async function handleSaveAndAddAnother() {
     if (!parentId) return;
-    const cid = doSaveChild(parentId);
+    const cid = await doSaveChild(parentId);
     if (!cid) return;
-    // Stay in child mode but reset to blank
+    // Preserve the current editor until the server acknowledges the child save.
     setCf({ ...EMPTY_CHILD }); setCDirty(false); setCErr({}); setPickerOpen(false);
   }
 
@@ -720,6 +830,9 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
   async function handleSaveAgenda() {
     if (saving) return;
     if (!parentId || !pf.title.trim()) { setPErr({ title: "Title is required." }); return; }
+    if (savedParent && !EDITABLE_STATUSES.has(savedParent.approval_status)) {
+      toast.error("Reopen this agenda before changing submitted or approved content."); return;
+    }
     if (children.length === 0) {
       toast.error("Add at least one child agenda before saving.");
       return;
@@ -739,20 +852,33 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
       return;
     }
     setSaving(true);
-    let didSave = false;
     try {
-      didSave = (await agendaReg.update(parentId, {
+      const access = readAccessSnapshot();
+      if (!access.loaded || access.error) {
+        throw new Error("Agenda permissions are not ready. Refresh and retry.");
+      }
+      const saved = await agendaReg.update(parentId, {
         ...parentMetadata(parentId), updated_at: new Date().toISOString(),
-      } as never)) === true;
-    } finally { setSaving(false); }
-    if (!didSave) {
-      toast.error("Agenda was not saved. Check permissions or connection and retry.");
-      return;
+      } as never);
+      if (saved !== true) throw new Error("Agenda was not saved. Check permissions or connection and retry.");
+      let savedStatus = agendaReg.items.find(a => a.id === parentId)?.approval_status ?? "Draft";
+      if (access.is_super_admin) {
+        // The server independently verifies actual actor, creator, complete
+        // hierarchy and explicit approval-history transitions.
+        const confirmed = await finalizeOwnSuperAdminContent("agenda",parentId);
+        savedStatus = confirmed.status;
+        toast.success("Agenda and child items automatically approved by SQL.");
+      }
+      await agendaReg.refresh?.();
+      setPDirty(false);
+      onSaved?.({ agendaId: parentId, status: savedStatus });
+      onClose();
+    } catch(error) {
+      toast.error(error instanceof Error ? error.message : "Agenda approval was not confirmed. Refresh and retry.");
+      await agendaReg.refresh?.().catch(() => undefined);
+    } finally {
+      setSaving(false);
     }
-    setPDirty(false);
-    const savedStatus = agendaReg.items.find(a => a.id === parentId)?.approval_status ?? "Pending Approval";
-    onSaved?.({ agendaId: parentId, status: savedStatus });
-    onClose();
   }
 
   // ── Close guard ───────────────────────────────────────────────────────────
@@ -778,7 +904,7 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
 
   const footerChild = (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 8 }}>
-      <Button variant="ghost" size="sm" onClick={() => withGuard(handleBackToBuilder)}>← Back</Button>
+      <Button variant="ghost" size="sm" onClick={() => withGuard(handleBackToBuilder)} disabled={saving}>← Back</Button>
       <div style={{ display: "flex", gap: 8, paddingRight: 52 }}>
         <Button variant="secondary" size="sm" onClick={handleSaveChild} disabled={saving}>Save</Button>
         <Button variant="primary" size="sm" onClick={handleSaveAndAddAnother} disabled={saving}>Save & Add Another</Button>
@@ -1097,7 +1223,7 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
                 </div>
                 {children.length === 0 && (
                   <Button type="button" variant="primary" size="md" leadingIcon={Plus}
-                    onClick={() => openChildForm(null)}>
+                    onClick={() => withGuard(() => openChildForm(null))}>
                     Add Child Agenda
                   </Button>
                 )}
@@ -1231,11 +1357,11 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
                             Documents {linkedDocIds.length > 0 && <span style={{ fontWeight: 400, color: "var(--color-text-secondary)" }}>({linkedDocIds.length})</span>}
                           </span>
                           <div style={{ display: "flex", gap: 6 }}>
-                            <button type="button" onClick={handleOpenUploader}
+                            <button type="button" onClick={handleOpenUploader} disabled={saving}
                               style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-card)", cursor: "pointer", fontSize: "0.78rem", fontWeight: 500, color: "var(--color-foreground)" }}>
                               <Upload size={12} /> Upload
                             </button>
-                            <button type="button" onClick={handleOpenPicker}
+                            <button type="button" onClick={handleOpenPicker} disabled={saving}
                               style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 6, border: `1px solid ${pickerOpen ? "var(--color-primary)" : "var(--color-border)"}`, background: pickerOpen ? "color-mix(in srgb, var(--color-primary) 6%, var(--color-card))" : "var(--color-card)", cursor: "pointer", fontSize: "0.78rem", fontWeight: 500, color: pickerOpen ? "var(--color-primary)" : "var(--color-foreground)" }}>
                               <BookOpen size={12} /> Library
                             </button>
@@ -1317,10 +1443,16 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
       initialSource="upload"
       sourceModule="agenda"
       initialAgendaId={cf.id ?? null}
-      onCreated={docId => {
-        const cid = cf.id ?? pendingChildIdRef.current;
-        if (cid) linkDoc(docId, cid);
-        setUploaderOpen(false);
+      onCreated={async docId => {
+        try {
+          const cid = cf.id ?? pendingChildIdRef.current;
+          await requireAgendaDocumentLinkAck(docId, cid, (documentId, agendaId) =>
+            linkDoc(documentId, agendaId, false));
+        } finally {
+          // A successfully saved document stays in the library even if linking
+          // fails; closing the composer exposes the existing retry picker.
+          setUploaderOpen(false);
+        }
       }}
     />
 
@@ -1386,7 +1518,15 @@ export function AgendaFormModal({ open, onClose, agendaId, initialChildId, onSav
               Discard Changes
             </Button>
             <Button variant="primary" size="sm"
-              onClick={() => { if (parentId) { doSaveChild(parentId); } const fn = pendingFn; setPendingFn(null); fn(); }}>
+              disabled={saving}
+              onClick={async () => {
+                if (!parentId) return;
+                const cid = await doSaveChild(parentId);
+                if (!cid) return; // Stay on this item and preserve unsaved edits.
+                const fn = pendingFn;
+                setPendingFn(null);
+                fn?.();
+              }}>
               Save and Continue
             </Button>
           </div>

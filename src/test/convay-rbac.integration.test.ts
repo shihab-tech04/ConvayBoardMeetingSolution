@@ -60,6 +60,7 @@ describe("Convay SQL-backed role permissions in frontend", () => {
     expect(mayVisitPath("/decisions-followup/decisions")).toBe(false);
     expect(mayVisitPath("/administration/roles-permissions/roles")).toBe(false);
     expect(mayVisitPath("/governance-org/users-assignments")).toBe(false);
+    expect(mayVisitPath("/subscribers/overview")).toBe(false);
   });
   it("removes a feature after the server stops granting its permission", async () => {
     mockAccess(["home_dashboard", "mtg_view"]);
@@ -78,7 +79,7 @@ describe("Convay SQL-backed role permissions in frontend", () => {
     expect(readAccessSnapshot().is_super_admin).toBe(true);
     expect(getVisibleNav().map(x => x.id)).toEqual([
       "home", "meetings", "agenda-documents", "decisions-followup",
-      "governance-org", "archive-reports", "administration",
+      "governance-org", "archive-reports", "subscribers", "administration",
     ]);
   });
   it("covers every visible navigation leaf with a real permission code", () => {

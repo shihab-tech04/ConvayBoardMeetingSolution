@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveDashboardMeetingDestination as destination } from "../app/pages/dashboard/dashboardContextActions";
+import { meetingRecordPath, resolveDashboardMeetingDestination as destination } from "../app/pages/dashboard/dashboardContextActions";
 
 describe("HM-08 dashboard contextual action destinations", () => {
   it.each([
@@ -37,6 +37,13 @@ describe("HM-08 dashboard contextual action destinations", () => {
     expect(destination("create_next_meeting", "MTG-01")).toMatchObject({
       kind: "route", path: "/meetings/all-meetings?create=1",
     });
+  });
+
+  it("preserves the selected Full Record ID, including Unicode and reserved characters", () => {
+    expect(meetingRecordPath("  M/বাংলা &  ")).toBe(
+      "/meetings/M%2F%E0%A6%AC%E0%A6%BE%E0%A6%82%E0%A6%B2%E0%A6%BE%20%26/record"
+    );
+    expect(meetingRecordPath("   ")).toBe("/meetings/all-meetings");
   });
 
   it("does not invent a live meeting context for an empty meeting ID", () => {

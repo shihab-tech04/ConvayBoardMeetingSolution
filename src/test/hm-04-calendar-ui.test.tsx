@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { calendarDateWindows } from "../app/pages/dashboard/calendarDateWindows";
 
@@ -8,11 +8,12 @@ const state = vi.hoisted(() => ({
   loading: false,
   error: null as string | null,
   retries: 0,
+  navigate: vi.fn(),
 }));
 
 vi.mock("react-router", async original => {
   const mod = await original<typeof import("react-router")>();
-  return { ...mod, useNavigate: () => () => undefined };
+  return { ...mod, useNavigate: () => state.navigate };
 });
 vi.mock("../app/hooks/useCurrentUser", () => ({ useCurrentUser: () => state.user }));
 vi.mock("../app/actions/useResolvedActions", () => ({
@@ -55,7 +56,10 @@ beforeEach(() => {
   state.loading = false;
   state.error = null;
   state.retries = 0;
+  state.navigate.mockClear();
 });
+
+afterEach(() => vi.useRealTimers());
 
 describe("HM-04 personal calendar", () => {
   it("displays only events matching the signed-in member identity", () => {
@@ -92,5 +96,100 @@ describe("HM-04 personal calendar", () => {
     render(<CombinedDashboardPage />);
     expect(screen.getByText("Meetings This Month: 0")).toBeInTheDocument();
     expect(screen.getByText("Upcoming Deadlines: 0")).toBeInTheDocument();
+  });
+
+  it("features the earliest future meeting today instead of a past or later meeting", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 22, 8, 30, 0));
+    const today = calendarDateWindows(new Date()).today;
+    state.data.meetings = [
+      { ...includedMeeting(), id: "later", meeting_title: "Later meeting", meeting_date: today, start_time: "11:00", approval_status: "Published" },
+      { ...includedMeeting(), id: "past", meeting_title: "Past meeting", meeting_date: today, start_time: "07:45", approval_status: "Scheduled" },
+      { ...includedMeeting(), id: "next", meeting_title: "Next meeting at nine", meeting_date: today, start_time: "09:00", approval_status: "Ready to Start" },
+    ];
+
+    const { container } = render(<CombinedDashboardPage />);
+    const featured = container.querySelector(".cal-featured");
+    expect(featured).toHaveTextContent("Next meeting at nine");
+    expect(featured).toHaveTextContent("Starting soon");
+    expect(featured).not.toHaveTextContent("Past meeting");
+  });
+
+  it("labels a paused meeting from its persisted status instead of calling it live or starting soon", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 22, 8, 30, 0));
+    const today = calendarDateWindows(new Date()).today;
+    state.data.meetings = [
+      { ...includedMeeting(), id: "paused", meeting_title: "Paused meeting", meeting_date: today, start_time: "08:00", approval_status: "On Break" },
+    ];
+
+    const { container } = render(<CombinedDashboardPage />);
+    const featured = container.querySelector(".cal-featured");
+    expect(featured).toHaveTextContent("On break");
+    expect(featured).not.toHaveTextContent("Live now");
+    expect(featured).not.toHaveTextContent("Starting soon");
+  });
+
+  it("keeps on-hold lifecycle language distinct from upcoming and live", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 22, 8, 30, 0));
+    const today = calendarDateWindows(new Date()).today;
+    state.data.meetings = [
+      { ...includedMeeting(), id: "on-hold", meeting_title: "On hold meeting", meeting_date: today, start_time: "08:00", approval_status: "On Hold" },
+    ];
+
+    const { container } = render(<CombinedDashboardPage />);
+    const featured = container.querySelector(".cal-featured");
+    expect(featured).toHaveTextContent("On hold");
+    expect(featured).not.toHaveTextContent("Live now");
+    expect(featured).not.toHaveTextContent("Starting soon");
+  });
+
+  it("does not route a stale In Progress calendar record into the live workspace", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 22, 8, 30, 0));
+    const yesterday = calendarDateWindows(new Date(2026, 10, 21, 8, 30, 0)).today;
+    state.data.meetings = [
+      { ...includedMeeting(), id: "stale-live", meeting_title: "Stale In Progress Calendar Meeting", meeting_date: yesterday, approval_status: "In Progress" },
+    ];
+
+    render(<CombinedDashboardPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Saturday 21 November/ }));
+    fireEvent.click(screen.getAllByText("Stale In Progress Calendar Meeting")[0]);
+
+    expect(state.navigate).toHaveBeenCalledWith("/meetings/stale-live/record");
+    expect(state.navigate).not.toHaveBeenCalledWith("/meetings/stale-live/live");
+  });
+
+  it("opens the exact encoded personal calendar meeting record without promoting it to live", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 22, 8, 30, 0));
+    state.data.meetings = [
+      { ...includedMeeting(), id: "m/7 &b", meeting_title: "Selected meeting",
+        meeting_date: calendarDateWindows(new Date()).today, start_time: "10:00",
+        approval_status: "Published" },
+    ];
+    const { container } = render(<CombinedDashboardPage />);
+    const featured = container.querySelector(".cal-featured");
+    expect(featured).toHaveTextContent("Selected meeting");
+    fireEvent.click(featured!);
+    expect(state.navigate).toHaveBeenCalledWith("/meetings/m%2F7%20%26b/record");
+    expect(state.navigate).not.toHaveBeenCalledWith("/meetings/m/7 &b/live");
+  });
+
+  it("keeps the next-seven-days KPI date-based while featured selection filters actual starts", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 22, 8, 30, 0));
+    const today = calendarDateWindows(new Date()).today;
+    state.data.meetings = [
+      { ...includedMeeting(), id: "past", meeting_title: "Past meeting", meeting_date: today, start_time: "07:45", approval_status: "Scheduled" },
+      { ...includedMeeting(), id: "next", meeting_title: "Next meeting", meeting_date: today, start_time: "09:00", approval_status: "Ready to Start" },
+      { ...includedMeeting(), id: "cancelled", meeting_title: "Cancelled meeting", meeting_date: today, start_time: "10:00", approval_status: "Cancelled" },
+      { ...includedMeeting(), id: "live", meeting_title: "Live meeting", meeting_date: today, start_time: "08:00", approval_status: "In Progress" },
+      { ...includedMeeting(), id: "tomorrow", meeting_title: "Tomorrow meeting", meeting_date: "2026-11-23", start_time: "08:00", approval_status: "Published" },
+    ];
+
+    render(<CombinedDashboardPage scope="meetings" title="Meeting Calendar" />);
+    expect(screen.getByText("Meetings Next 7 Days: 5")).toBeInTheDocument();
   });
 });

@@ -28,6 +28,12 @@ const LIVE_ENTRIES: Record<string, { entryAction: LiveMeetingEntryAction; label:
   resume_adjourned_meeting: { entryAction: "continue_meeting", label: "Resume adjourned meeting" },
 };
 
+/** Exact existing meeting record, with a safe list fallback for an absent ID. */
+export function meetingRecordPath(meetingId: string): string {
+  const id = meetingId.trim();
+  return id ? `/meetings/${encodeURIComponent(id)}/record` : "/meetings/all-meetings";
+}
+
 export function resolveDashboardMeetingDestination(
   actionId: string,
   meetingId: string,
@@ -35,7 +41,7 @@ export function resolveDashboardMeetingDestination(
   const live = LIVE_ENTRIES[actionId];
   if (live && meetingId.trim()) return { kind: "live", ...live };
 
-  const recordPath = `/meetings/${encodeURIComponent(meetingId)}/record`;
+  const recordPath = meetingRecordPath(meetingId);
   switch (actionId) {
     case "prepare_minutes":
     case "review_minutes":

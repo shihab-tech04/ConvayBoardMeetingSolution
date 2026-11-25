@@ -18,13 +18,23 @@ export function resolveMeetingDraftTarget(
   const requestedId = String(draftId ?? "").trim();
   if (!requestedId) return null;
 
-  const meeting = meetings.find(item => item.id === requestedId || item.meeting_id === requestedId);
-  if (!meeting) {
+  // MT-14: a human meeting ID and a registry record ID are alternate
+  // references to the same record, never permission to select the first
+  // ambiguous hit. Prevent unintended overwrite when IDs collide.
+  const matches = meetings.filter(item =>
+    item.id === requestedId || item.meeting_id === requestedId,
+  );
+  if (matches.length === 0) {
     throw new Error("This draft is no longer available. Refresh the meeting register and try again.");
   }
-
-  const status = String(meeting.approval_status ?? meeting.status ?? "").trim().toLowerCase();
-  if (status !== "draft") {
+  if (matches.length !== 1) {
+    throw new Error("The meeting identifier is ambiguous. Refresh the register and resolve duplicate meeting IDs.");
+  }
+  const meeting = matches[0];
+  const approval = String(meeting.approval_status ?? "").trim().toLowerCase();
+  const lifecycle = String(meeting.status ?? "").trim().toLowerCase();
+  const status = approval || lifecycle;
+  if (status !== "draft" || (lifecycle !== "" && lifecycle !== "draft")) {
     throw new Error("Only a meeting in Draft status can be continued.");
   }
 

@@ -15,14 +15,15 @@
  *  - Creates audit event
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X, GitBranch, ArrowRight, AlertTriangle, Search, CheckCircle, Users } from "lucide-react";
 
 import type { OrgUnit } from "../../../data/boardMeetingData";
-import { useOrgUnitRegistry, useAuditEventRegistry, generateId } from "../../../data/boardMeetingData";
+
 import { useBmsUserRegistry } from "../../../data/bmsUsers";
-import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { convayAuth } from "../../../services/supabase/convayAuth";
+import { commitAtomicUnitMove } from "./atomicUnitMove";
 import {
   buildPathLabel,
   detectCycle,
@@ -30,7 +31,6 @@ import {
   findChildren,
   findDescendants,
   resolveDescendantUsers,
-  recalculateDescendantPaths,
   VALID_PARENT_TYPES,
 } from "../../../utils/orgHierarchy";
 
@@ -46,10 +46,7 @@ interface Props {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function MoveUnitModal({ unit, allUnits, onClose, onSuccess }: Props) {
-  const orgReg      = useOrgUnitRegistry();
   const bmsUsers    = useBmsUserRegistry();
-  const auditReg    = useAuditEventRegistry();
-  const currentUser = useCurrentUser();
 
   const [step, setStep]             = useState<"select" | "impact" | "confirm">("select");
   const [newParentId, setNewParentId] = useState("");
@@ -121,50 +118,53 @@ export function MoveUnitModal({ unit, allUnits, onClose, onSuccess }: Props) {
     setStep("confirm");
   }
 
+  // A unit move affects the entire descendant tree and must be one server
+  // transaction. Never issue registry.update in a loop or forge a local audit.
+  const saveInFlight = useRef(false);
+  const requestId = useRef<string | null>(null);
   async function handleConfirm() {
-    if (!newParent) return;
+    if (saveInFlight.current || !newParent) return;
+    saveInFlight.current = true;
     setSaving(true);
-    const now = new Date().toISOString();
-
-    // Update unit's parent
-    const newParentName = newParent.unit_name;
-    orgReg.update(unit.id, {
-      parent_unit_id: newParentId,
-      parent_unit:    newParentName,
-      updated_at:     now,
-      updated_by:     currentUser?.id,
-    });
-
-    // Recalculate paths after the parent update (we need a synthetic updated list)
-    // Build updated list in memory for path recalculation
-    const updatedUnits = allUnits.map((u) =>
-      u.id === unit.id
-        ? { ...u, parent_unit_id: newParentId, parent_unit: newParentName }
-        : u,
-    );
-    const pathUpdates = recalculateDescendantPaths(unit.id, updatedUnits);
-    for (const { id, path_ids, path_label } of pathUpdates) {
-      orgReg.update(id, { path_ids, path_label, updated_at: now });
+    setError("");
+    try {
+      const receipt = await commitAtomicUnitMove({
+        unit_id: unit.id,
+        expected_parent_id: currentParentId ?? null,
+        new_parent_id: newParentId,
+        effective_date: effectiveDate,
+        reason,
+        request_id: requestId.current ?? (requestId.current = crypto.randomUUID()),
+      }, {
+        send: async (payload) => {
+          const response = await convayAuth.authenticatedRequest("/rest/v1/rpc/convay_move_org_unit", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              p_unit_id: payload.unit_id,
+              p_expected_parent_id: payload.expected_parent_id,
+              p_new_parent_id: payload.new_parent_id,
+              p_effective_date: payload.effective_date,
+              p_reason: payload.reason,
+              p_request_id: payload.request_id,
+            }),
+          });
+          return response.json();
+        },
+        read: async (id) => {
+          const result = await convayAuth.registry<OrgUnit>("bms.orgunits", "list");
+          const entry = result.records.find((record) => record.payload.id === id);
+          return entry ? { parent_unit_id: entry.payload.parent_unit_id ?? null, revision: entry.revision } : null;
+        },
+      });
+      if (receipt.unit_id !== unit.id) throw new Error("Unit move confirmation did not match the selected unit.");
+      onSuccess?.();
+      onClose();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Unable to verify the unit move. Reopen and retry.");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
     }
-
-    auditReg.add({
-      id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-      created_at:      now,
-      event_id:        `AUDIT-MOVE-${Date.now()}`,
-      entity_type:     "OrgUnit",
-      entity_id:       unit.id,
-      action:          "org_unit_moved",
-      actor:           currentUser?.name ?? "System",
-      actor_role:      currentUser?.designation ?? "",
-      timestamp:       now,
-      ip_address:      "",
-      details:         `Unit moved from "${currentPath}" to "${proposedPath}". Reason: ${reason}. ${descendants.length} descendant(s) paths recalculated.`,
-      approval_status: "Approved",
-    });
-
-    setSaving(false);
-    onSuccess?.();
-    onClose();
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -223,7 +223,7 @@ export function MoveUnitModal({ unit, allUnits, onClose, onSuccess }: Props) {
                 {candidateParents.map((u) => (
                   <button
                     key={u.id}
-                    onClick={() => { setNewParentId(u.id); setError(""); }}
+                    onClick={() => { setNewParentId(u.id); requestId.current = null; setError(""); }}
                     className={`w-full text-left flex items-center gap-3 px-3 py-2.5 hover:bg-muted/40 transition-colors text-sm ${newParentId === u.id ? "bg-primary/5" : ""}`}
                   >
                     <div className="flex-1 min-w-0">
@@ -294,12 +294,12 @@ export function MoveUnitModal({ unit, allUnits, onClose, onSuccess }: Props) {
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1.5">Effective Date <span className="text-destructive">*</span></label>
-                  <input type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)}
+                  <input type="date" value={effectiveDate} onChange={(e) => { setEffectiveDate(e.target.value); requestId.current = null; }}
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30" />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1.5">Reason <span className="text-destructive">*</span></label>
-                  <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3}
+                  <textarea value={reason} onChange={(e) => { setReason(e.target.value); requestId.current = null; }} rows={3}
                     placeholder="Reason for moving this unit…"
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none" />
                 </div>

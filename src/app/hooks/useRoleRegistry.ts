@@ -6,6 +6,8 @@ import { useCallback, useMemo } from "react";
 import type { SystemRole } from "../data/mockData";
 import { convayAuth } from "../services/supabase/convayAuth";
 import { useAccessSnapshot, reloadAccessSnapshot } from "../services/supabase/convayAccess";
+import { requireRoleMutationReadback, requireRoleDeletionReadback } from "./accessMutationReadback";
+import { requireRoleUnassigned } from "./roleDeletionImpact";
 
 export const ROLE_STORAGE_KEY = "nbr.roleRegistry.customRoles";
 export const ROLE_EVENT = "nbr:roles-updated";
@@ -23,24 +25,37 @@ export function useRoleRegistry() {
   const activeRoles = useMemo(() => roles.filter(r => r.status === "Active"), [roles]);
 
   const addRole = useCallback(async (role: SystemRole): Promise<SystemRole> => {
-    const result = await convayAuth.access<{ id: string }>("role_save", {
+    const result = await convayAuth.access<unknown>("role_save", {
       name: role.name, description: role.description, level: role.level,
       status: role.status, permission_ids: role.permissions,
     });
-    await reloadAccessSnapshot();
-    return { ...role, id: result.id, usersCount: 0 };
+    const verified = await reloadAccessSnapshot();
+    const id = requireRoleMutationReadback(result, verified, {
+      name: role.name, description: role.description ?? "", level: role.level,
+      status: role.status, permission_ids: role.permissions,
+    });
+    return { ...role, id, usersCount: 0 };
   }, []);
   const updateRole = useCallback(async (role: SystemRole): Promise<SystemRole> => {
-    await convayAuth.access("role_save", {
+    const result = await convayAuth.access<unknown>("role_save", {
       id: role.id, name: role.name, description: role.description, level: role.level,
       status: role.status, permission_ids: role.permissions,
     });
-    await reloadAccessSnapshot();
+    const verified = await reloadAccessSnapshot();
+    requireRoleMutationReadback(result, verified, {
+      id: role.id, name: role.name, description: role.description ?? "",
+      level: role.level, status: role.status, permission_ids: role.permissions,
+    });
     return role;
   }, []);
   const deleteRole = useCallback(async (id: string): Promise<void> => {
-    await convayAuth.access("role_delete", { id });
-    await reloadAccessSnapshot();
+    // Re-read the authoritative server snapshot at the point of deletion.
+    // The Edge function and SQL FK RESTRICT must independently enforce it.
+    const before = await reloadAccessSnapshot();
+    requireRoleUnassigned(before, id);
+    const result = await convayAuth.access<unknown>("role_delete", { id });
+    const verified = await reloadAccessSnapshot();
+    requireRoleDeletionReadback(result, verified, id);
   }, []);
   const duplicateRole = useCallback(async (source: SystemRole): Promise<SystemRole> => {
     return addRole({

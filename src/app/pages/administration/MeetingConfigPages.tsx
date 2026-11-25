@@ -10,92 +10,33 @@ import {
   CheckCircle, Pencil, Pause, Copy, Archive, Download,
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
-import type { PageCfg, TableRow, KpiDef } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS, gen, CIRCLES_DATA } from "../modulePageUtils";
+import type { PageCfg } from "../modulePageUtils";
+import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import {
-  QUORUM_RULE_DRAWER_COLS,
   VOTING_METHOD_DRAWER_COLS,
 } from "../boardMeetingDrawerSchemas";
 import { dg } from "../modulePageUtils";
 import type { ColDef } from "../modulePageUtils";
 import {
-  useGovernanceRegistry,
   useQuorumRuleRegistry,
+  useGovernanceRegistry, generateId,
+  useVotingMethodRegistry,
 } from "../../data/boardMeetingData";
+import { unverifiedMeetingTypesView } from "./meetingTypesEvidence";
+import { MeetingTemplateMarketplace } from "../subscribers/MeetingTemplateMarketplace";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { hasAccess, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { activeMeetingGovernanceOptions } from "../return-register/meetingCreatePrerequisites";
+import { useRef, useState } from "react";
+import { toast } from "sonner";
+import { SConfirmModal } from "../../components/modals/SConfirmModal";
+import { createVersionedQuorumRule, deactivateQuorumRule, type VersionedQuorumRule, type QuorumRuleGateway } from "./quorumRulePersistence";
+import { unverifiedVotingMethodsView } from "./votingMethodsEvidence";
+import { unverifiedStatusConfigurationView } from "./statusConfigurationEvidence";
+import { unverifiedNumberingConfigurationView } from "./numberingConfigurationEvidence";
 
-// ─── Local sample data ────────────────────────────────────────────────────────
-
-const MEETING_TYPE_NAMES = [
-  "Annual General Meeting", "Extraordinary General Meeting", "Board Meeting",
-  "Executive Committee Meeting", "Audit Committee Meeting", "Risk Committee Meeting",
-  "Shariah Committee Meeting", "Nomination & Remuneration Committee Meeting",
-  "Special Board Session", "Emergency Board Meeting",
-];
-
-const meetingTypeRows: TableRow[] = gen(18, i => ({
-  type_id:       `MT-${String(100 + i).padStart(3, "0")}`,
-  type_name:     MEETING_TYPE_NAMES[i % 10],
-  category:      ["Board", "Committee", "Special", "Emergency"][i % 4],
-  committee:     CIRCLES_DATA[i % 8],
-  frequency:     ["Monthly", "Quarterly", "Annual", "As Required"][i % 4],
-  notice_days:   String([7, 14, 21, 3][i % 4]),
-  quorum_rule:   ["50%+1", "Two-Thirds", "Majority", "Three-Quarters"][i % 4],
-  voting_method: ["Simple Majority", "Consensus", "Show of Hands", "Secret Ballot"][i % 4],
-  status:        ["Active", "Inactive", "Draft"][i % 3],
-  created_by:    ["Company Secretary", "System Admin"][i % 2],
-  created_at:    `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description:   `Standard ${MEETING_TYPE_NAMES[i % 10]} procedures as per governance charter.`,
-}));
-
-const VOTING_METHOD_NAMES = [
-  "Simple Majority", "Two-Thirds Majority", "Unanimous Consent",
-  "Show of Hands", "Secret Ballot", "Written Resolution",
-  "Casting Vote (Chairman)", "Proxy Voting", "Electronic Voting",
-];
-
-const votingMethodRows: TableRow[] = gen(16, i => ({
-  method_id:      `VM-${String(200 + i).padStart(3, "0")}`,
-  method_name:    VOTING_METHOD_NAMES[i % 9],
-  method_type:    ["Simple", "Supermajority", "Consensus", "Proxy"][i % 4],
-  majority_rule:  ["50%+1", "Two-Thirds", "Three-Quarters", "Unanimous"][i % 4],
-  applicable_to:  ["All Meetings", "Board Meetings", "Committee Meetings", "AGM"][i % 4],
-  eligible_voters: ["All Members", "Voting Members Only", "Board Directors"][i % 3],
-  status:         ["Active", "Inactive", "Draft"][i % 3],
-  committee:      CIRCLES_DATA[i % 8],
-  created_by:     ["Company Secretary", "System Admin"][i % 2],
-  created_at:     `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  particulars:    VOTING_METHOD_NAMES[i % 9],
-  reference:      ["Simple", "Supermajority", "Consensus"][i % 3],
-  name:           ["All Meetings", "Board Only", "Committees Only"][i % 3],
-  debit:          ["50%+1", "Two-Thirds", "Unanimous"][i % 3],
-  credit:         ["All Members", "Voting Members"][i % 2],
-  balance:        ["Active", "Inactive", "Draft"][i % 3],
-  transaction_date: `2026-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-}));
-
-const STATUS_ENTITY_TYPES = ["Meeting", "Agenda", "Document", "Resolution", "Minutes", "Action Item"];
-const STATUS_NAMES = [
-  "Draft", "Submitted", "Under Review", "Pending Approval",
-  "Approved", "Rejected", "In Progress", "Completed",
-  "Archived", "Cancelled", "Published", "Signed",
-];
-
-const statusRows: TableRow[] = gen(24, i => ({
-  config_id:    `SC-${String(300 + i).padStart(3, "0")}`,
-  status_name:  STATUS_NAMES[i % 12],
-  entity_type:  STATUS_ENTITY_TYPES[i % 6],
-  color_code:   ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#6b7280"][i % 6],
-  is_terminal:  i % 5 === 0 ? "Yes" : "No",
-  sort_order:   String(i + 1),
-  prefix:       ["MTG", "AGD", "DOC", "RES", "MIN", "ACT"][i % 6],
-  sequence_from: String(1000 + i * 100),
-  format:       [`${["MTG", "AGD", "DOC", "RES"][i % 4]}-{YYYY}-{NNN}`, `{PREFIX}-{YY}-{NNNN}`][i % 2],
-  status:       ["Active", "Inactive"][i % 2],
-  created_by:   ["System Admin", "Company Secretary"][i % 2],
-  created_at:   `2024-0${(i % 9) + 1}-${String((i % 28) + 1).padStart(2, "0")}`,
-  description:  `${STATUS_NAMES[i % 12]} state for ${STATUS_ENTITY_TYPES[i % 6]} records.`,
-}));
+// ─── Status and numbering drawer schema ──────────────────────────────────────
 
 const STATUS_NUMBERING_DRAWER_COLS: ColDef[] = [
   dg("Status Configuration", [
@@ -143,16 +84,31 @@ const MEETING_TYPE_DRAWER_COLS: ColDef[] = [
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
 export function MeetingTypesPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Types",  value: String(meetingTypeRows.length),                                          tone: "primary"  },
-    { label: "Active",       value: String(meetingTypeRows.filter(r => r.status === "Active").length),       tone: "success"  },
-    { label: "Draft",        value: String(meetingTypeRows.filter(r => r.status === "Draft").length),        tone: "neutral"  },
-    { label: "Inactive",     value: String(meetingTypeRows.filter(r => r.status === "Inactive").length),     tone: "warning"  },
-  ];
+  // The platform-controlled versioned template registry is live in SQL.
+  // Keep the existing fail-closed view for roles that cannot administer the
+  // platform-wide marketplace. Neither route enables meeting-template runtime.
+  const access = useAccessSnapshot();
+  if (access.loaded && access.is_super_admin) {
+    return (
+      <main className="p-6" aria-label="Meeting type configuration">
+        <h1 className="text-2xl font-semibold mb-2">Meeting Types</h1>
+        <p className="mb-5 text-sm text-[var(--text-secondary,#64748b)]">
+          Configure and publish versioned meeting types in Supabase SQL. Published
+          templates are not yet enabled in the meeting creation wizard, and no
+          company workspace is activated by editing them.
+        </p>
+        <MeetingTemplateMarketplace />
+      </main>
+    );
+  }
+  const evidence = unverifiedMeetingTypesView();
 
   const cfg: PageCfg = {
     title: "Meeting Types",
-    desc:  "Configure types of meetings, their default rules, notice periods, and governance settings.",
+    desc:  evidence.description,
+    dataError: evidence.unavailableReason,
+    dataErrorTitle: "Meeting type configuration is unavailable",
+    dataErrorDescription: evidence.unavailableReason,
     cols: [
       fc("type_id",      "Type ID"),
       fc("type_name",    "Meeting Type"),
@@ -179,8 +135,7 @@ export function MeetingTypesPage() {
       { id: "duplicate",  label: "Duplicate",    icon: Copy,        color: "#8b5cf6" },
       { id: "archive",    label: "Archive",      icon: Archive,     color: "#ef4444" },
     ],
-    rows:      meetingTypeRows,
-    kpis,
+    rows:      evidence.rows,
     entryBtn:  "Create Meeting Type",
     searchPlaceholder: "Search meeting types",
   };
@@ -189,102 +144,126 @@ export function MeetingTypesPage() {
 }
 
 export function QuorumRulesPage() {
-  const { items: quorumRules } = useQuorumRuleRegistry();
-  const { items: govBodies }   = useGovernanceRegistry();
-
-  const rows: TableRow[] = quorumRules.map(r => ({
-    ...r,
-    id:          r.id,
-    governance_body_name: govBodies.find(g => g.id === r.governance_body_id || g.body_id === r.governance_body_id)?.body_name ?? r.governance_body_name ?? r.governance_body_id,
-    name:        r.governance_body_name ?? r.governance_body_id,
-    agenda_no:   `QR-${r.id?.padStart?.(4, "0") ?? r.id}`,
-    agenda_date: r.quorum_type ?? "Percentage",
-    meeting_type: r.meeting_type ?? "All",
-    committee:    r.governance_body_name ?? "",
-    approved_amount: String(r.minimum_members ?? "—"),
-    disbursed_amount: r.quorum_percent ? `${r.quorum_percent}%` : "—",
-    outstanding:  r.effective_date ?? "—",
-    approval_status: (r as { status?: string }).status ?? "Active",
-    status:      (r as { status?: string }).status ?? "Active",
-  }));
-
-  const fallbackRows: TableRow[] = gen(16, i => ({
-    quorum_id:      `QR-${String(400 + i).padStart(4, "0")}`,
-    governance_body_name: CIRCLES_DATA[i % 8],
-    quorum_type:    ["Percentage", "Fixed Count", "Role-Based"][i % 3],
-    minimum_members: String([3, 4, 5, 6, 7][i % 5]),
-    quorum_percent:  `${[50, 60, 67, 75][i % 4]}%`,
-    meeting_type:    ["All Meetings", "Regular", "Extraordinary"][i % 3],
-    required_roles:  ["Chairperson", "Chairperson + Secretary", "Any Voting Member"][i % 3],
-    effective_date:  `2024-0${(i % 9) + 1}-01`,
-    status:         ["Active", "Inactive", "Draft"][i % 3],
-    committee:      CIRCLES_DATA[i % 8],
-    agenda_no:      `QR-${String(400 + i).padStart(4, "0")}`,
-    agenda_date:    ["Percentage", "Fixed Count", "Role-Based"][i % 3],
-    meeting_type2:  ["All Meetings", "Regular"][i % 2],
-    approved_amount: String([3, 4, 5, 6][i % 4]),
-    disbursed_amount: `${[50, 67, 75][i % 3]}%`,
-    outstanding:    `2024-0${(i % 9) + 1}-01`,
-    approval_status: ["Active", "Inactive", "Draft"][i % 3],
-    name:           CIRCLES_DATA[i % 8],
-  }));
-
-  const displayRows = rows.length > 0 ? rows : fallbackRows;
-
-  const kpis: KpiDef[] = [
-    { label: "Total Rules",  value: String(displayRows.length),                                                         tone: "primary"  },
-    { label: "Active",       value: String(displayRows.filter(r => r.status === "Active" || r.approval_status === "Active").length), tone: "success"  },
-    { label: "Governance Bodies", value: String(new Set(displayRows.map(r => r.governance_body_name || r.committee)).size), tone: "neutral" },
+  const access = useAccessSnapshot();
+  const canManageQuorum = hasAccess("admin_config", access);
+  const registry = useQuorumRuleRegistry();
+  const governance = useGovernanceRegistry();
+  const [confirmDeactivation, setConfirmDeactivation] = useState<string | null>(null);
+  const pendingCreate = useRef<{ signature: string; id: string; created_at: string } | null>(null);
+  const gateway: QuorumRuleGateway = {
+    list: async () => (await convayAuth.registry<VersionedQuorumRule>("bms.quorumrules", "list")).records.map(r => r.payload),
+    create: async rule => await registry.add(rule),
+    update: async (id, patch) => await registry.update(id, patch),
+  };
+  const bodies = activeMeetingGovernanceOptions(governance.items);
+  const fields = [
+    { key: "rule_name", label: "Rule Name", type: "text", required: true, span: true },
+    { key: "governance_body_id", label: "Board / Committee", type: "select", required: true, options: bodies },
+    { key: "rule_type", label: "Quorum Type", type: "select", required: true,
+      options: [{ value: "percentage", label: "Percentage" }, { value: "fixed_number", label: "Fixed Number" }], defaultValue: "percentage" },
+    { key: "minimum_members_count", label: "Minimum Members", type: "number", defaultValue: "0", placeholder: "0" },
+    { key: "minimum_percentage", label: "Minimum Percentage (%)", type: "number", defaultValue: "50", placeholder: "50" },
+    { key: "count_virtual_attendance", label: "Count Virtual Attendance", type: "toggle", defaultValue: true },
+    { key: "count_alternate_members", label: "Count Alternate Members", type: "toggle", defaultValue: false },
+    { key: "exclude_recused_members", label: "Exclude Recused Members", type: "toggle", defaultValue: true },
   ];
-
+  const rows = registry.items.map(rule => ({ ...rule, id: rule.id }));
   const cfg: PageCfg = {
     title: "Quorum Rules",
-    desc:  "Define quorum requirements for each governance body, including minimum attendance thresholds and role requirements.",
+    desc: "Manage versioned quorum policies for verified governance bodies. Changes require administrator authorization and independent SQL readback.",
     cols: [
-      fc("agenda_no",             "Rule ID"),
-      fc("governance_body_name",  "Governance Body"),
-      fc("quorum_type",           "Quorum Type"),
-      fc("minimum_members",       "Min. Members"),
-      fc("quorum_percent",        "Min. Percentage"),
-      fc("meeting_type",          "Meeting Type"),
-      BADGE("approval_status",    "Status"),
+      fc("rule_id", "Rule ID"),
+      fc("body_name", "Governance Body"),
+      fc("rule_type", "Quorum Type"),
+      fc("minimum_members", "Min. Members"),
+      fc("quorum_percent", "Min. Percentage"),
+      fc("policy_version", "Version"),
+      BADGE("status", "Status"),
     ],
     mobileCardMapping: {
-      primary:    "governance_body_name",
-      identifier: "agenda_no",
-      meta:       ["quorum_type", "minimum_members", "meeting_type"],
-      status:     "approval_status",
+      primary: "body_name", identifier: "rule_id", meta: ["rule_type", "minimum_members", "quorum_percent"], status: "status",
     },
-    filters:      BASE_FILTERS,
-    actions:      ROW_VIEW,
-    drawerTitle:  "Quorum Rule Details",
-    drawerCols:   QUORUM_RULE_DRAWER_COLS,
-    drawerActions: [
-      { id: "edit",       label: "Edit Rule",    icon: Pencil,      color: "#3b82f6" },
-      { id: "activate",   label: "Activate",     icon: CheckCircle, color: "#22c55e" },
-      { id: "deactivate", label: "Deactivate",   icon: Pause,       color: "#f59e0b" },
-      { id: "download",   label: "Export",       icon: Download,    color: "#6b7280" },
+    filters: BASE_FILTERS,
+    actions: ROW_VIEW,
+    drawerTitle: "Quorum Rule Details",
+    drawerCols: [
+      dg("Policy", [
+        { key: "rule_name", label: "Rule Name" },
+        { key: "rule_id", label: "Rule ID" },
+        { key: "body_name", label: "Governance Body" },
+        { key: "rule_type", label: "Quorum Type" },
+        { key: "policy_version", label: "Version" },
+        { key: "status", label: "Status", badge: true },
+      ]),
+      dg("Thresholds", [
+        { key: "minimum_members", label: "Minimum Members" },
+        { key: "quorum_percent", label: "Percentage" },
+        { key: "created_at", label: "Created At" },
+      ]),
     ],
-    rows:      displayRows,
-    kpis,
-    entryBtn:  "Create Quorum Rule",
-    searchPlaceholder: "Search quorum rules",
+    drawerActionsResolver: row => canManageQuorum && String(row.status) === "Active"
+      ? [{ id: "deactivate", label: "Deactivate Rule", icon: Pause, color: "#b45309" }]
+      : [],
+    onCustomAction: (action, row) => {
+      if (action === "deactivate") setConfirmDeactivation(String(row.id ?? ""));
+    },
+    rows,
+    formFields: fields,
+    entryBtn: bodies.length > 0 && canManageQuorum ? "Create Quorum Rule" : undefined,
+    awaitCreateSave: true,
+    dataLoading: registry.loading || governance.loading,
+    dataError: registry.error ?? governance.error,
+    onDataRetry: async () => { await Promise.all([registry.refresh?.(), governance.refresh?.()]); },
+    searchPlaceholder: "Search quorum policies",
+    async onRowCreate(values) {
+      const signature = JSON.stringify(values);
+      if (!pendingCreate.current || pendingCreate.current.signature !== signature) {
+        pendingCreate.current = {
+          signature, id: generateId("QR", registry.items.map(rule => rule.rule_id)), created_at: new Date().toISOString(),
+        };
+      }
+      await createVersionedQuorumRule(values, pendingCreate.current, governance.items, gateway);
+      pendingCreate.current = null;
+      await registry.refresh?.();
+      return true;
+    },
   };
-
-  return <GenPage cfg={cfg} />;
+  return (
+    <>
+      {bodies.length === 0 && !governance.loading && !governance.error && (
+        <div role="status" className="mx-6 my-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm">
+          An active Board / Committee must exist before its quorum policy can be configured.
+          <a className="font-semibold underline text-[var(--primary)]" href={`${import.meta.env.BASE_URL}governance-org/governance-bodies`}>
+            Open Governance Bodies
+          </a>
+        </div>
+      )}
+      <GenPage cfg={cfg} />
+      {confirmDeactivation && <SConfirmModal
+        title="Deactivate quorum rule?"
+        message="This is a versioned policy. Deactivation is denied while scheduled or active meetings rely on it; after deactivation you can create a new version."
+        confirmLabel="Deactivate Rule"
+        danger
+        onClose={() => setConfirmDeactivation(null)}
+        onConfirm={() => {
+          const id = confirmDeactivation;
+          setConfirmDeactivation(null);
+          void deactivateQuorumRule(id, gateway)
+            .then(async () => { await registry.refresh?.(); toast.success("Quorum rule deactivated. You can create a new version."); })
+            .catch(err => toast.error(err instanceof Error ? err.message : "Could not deactivate the rule."));
+        }}
+      />}
+    </>
+  );
 }
 
 export function VotingMethodsPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Methods",  value: String(votingMethodRows.length),                                           tone: "primary"  },
-    { label: "Active",         value: String(votingMethodRows.filter(r => r.status === "Active").length),        tone: "success"  },
-    { label: "Draft",          value: String(votingMethodRows.filter(r => r.status === "Draft").length),         tone: "neutral"  },
-    { label: "Inactive",       value: String(votingMethodRows.filter(r => r.status === "Inactive").length),      tone: "warning"  },
-  ];
+  const registry = useVotingMethodRegistry();
+  const evidence = unverifiedVotingMethodsView();
 
   const cfg: PageCfg = {
     title: "Voting Methods",
-    desc:  "Configure voting methods including majority rules, eligible voters, and applicable meeting types.",
+    desc:  evidence.description,
     cols: [
       fc("method_id",      "Method ID"),
       fc("method_name",    "Voting Method"),
@@ -311,8 +290,12 @@ export function VotingMethodsPage() {
       { id: "duplicate",  label: "Duplicate",    icon: Copy,        color: "#8b5cf6" },
       { id: "archive",    label: "Archive",      icon: Archive,     color: "#ef4444" },
     ],
-    rows:      votingMethodRows,
-    kpis,
+    rows:      evidence.rows,
+    dataLoading: registry.loading,
+    dataError: registry.error ?? (registry.loading ? null : evidence.unavailableReason),
+    dataErrorTitle: "Voting method configuration is unavailable",
+    dataErrorDescription: evidence.description,
+    onDataRetry: registry.refresh,
     entryBtn:  "Create Voting Method",
     searchPlaceholder: "Search voting methods",
   };
@@ -321,16 +304,13 @@ export function VotingMethodsPage() {
 }
 
 export function StatusesNumberingPage() {
-  const kpis: KpiDef[] = [
-    { label: "Total Configs",  value: String(statusRows.length),                                          tone: "primary"  },
-    { label: "Active",         value: String(statusRows.filter(r => r.status === "Active").length),       tone: "success"  },
-    { label: "Entity Types",   value: String(new Set(statusRows.map(r => r.entity_type)).size),           tone: "neutral"  },
-    { label: "Inactive",       value: String(statusRows.filter(r => r.status === "Inactive").length),     tone: "warning"  },
-  ];
+  const evidence = unverifiedStatusConfigurationView();
+  const numbering = unverifiedNumberingConfigurationView();
+  const unavailableReason = `${evidence.unavailableReason} ${numbering.unavailableReason}`;
 
   const cfg: PageCfg = {
     title: "Statuses & Numbering",
-    desc:  "Configure status definitions, display colors, terminal states, and reference number formats for all entity types.",
+    desc:  `${evidence.description} ${numbering.description}`,
     cols: [
       fc("config_id",    "Config ID"),
       fc("entity_type",  "Entity Type"),
@@ -355,8 +335,10 @@ export function StatusesNumberingPage() {
       { id: "toggle",  label: "Toggle Active", icon: CheckCircle, color: "#22c55e" },
       { id: "archive", label: "Archive",       icon: Archive,     color: "#ef4444" },
     ],
-    rows:      statusRows,
-    kpis,
+    rows:      evidence.rows,
+    dataError: unavailableReason,
+    dataErrorTitle: "Status and numbering configuration are unavailable",
+    dataErrorDescription: unavailableReason,
     entryBtn:  "Add Status Config",
     searchPlaceholder: "Search statuses and numbering",
   };

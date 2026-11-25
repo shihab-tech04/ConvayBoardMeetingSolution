@@ -22,6 +22,10 @@ import {
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { normalizeBoardDocument } from "../../utils/normalizeBoardDocument";
 import { normalizeDocumentPage } from "./documentLibraryPageNumber";
+import { matchesDocumentGovernanceBody, type GovernanceMeeting } from "./documentLibraryGovernanceFilter";
+import { matchesDocumentWorkflowStatus, matchesAnyDocumentWorkflowStatus } from "./documentLibraryWorkflowFilter";
+import { matchesExactDocumentLinkReference } from "../../components/documents/documentLinkedRecordReference";
+import { matchesSelectedDocumentMeeting } from "./documentLibraryMeetingFilter";
 import type { ColDef, FilterDef, RowAction, TableRow } from "../modulePageUtils";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -74,19 +78,18 @@ function matchesFilters(
   row: BoardDocument,
   applied: Record<string, string>,
   user?: { name?: string; employeeId?: string },
+  meetings: readonly GovernanceMeeting[] = [],
 ): boolean {
   if (applied.doc_type && applied.doc_type !== "All Types" && row.doc_type !== applied.doc_type) return false;
+  if (applied.governance_body && !matchesDocumentGovernanceBody(row.related_meeting, applied.governance_body, meetings)) return false;
   if (applied.file_format && applied.file_format !== "All") {
     const ext = String(row.file_name ?? row.file_format ?? "").toLowerCase().split(".").pop() ?? "";
     if (ext.toUpperCase() !== applied.file_format) return false;
   }
-  if (applied.related_meeting && applied.related_meeting !== "All") {
-    const id = applied.related_meeting.split(" — ")[0];
-    if (!row.related_meeting.startsWith(id)) return false;
-  }
+  if (!matchesSelectedDocumentMeeting(row.related_meeting, applied.related_meeting)) return false;
   if (applied.owner && !String(row.owner).toLowerCase().includes(applied.owner.toLowerCase())) return false;
   if (applied.confidentiality && applied.confidentiality !== "All" && row.confidentiality !== applied.confidentiality) return false;
-  if (applied.workflow_status && applied.workflow_status !== "All" && row.approval_status !== applied.workflow_status) return false;
+  if (!matchesDocumentWorkflowStatus(row, applied.workflow_status ?? "")) return false;
   if (applied.access && applied.access !== "All Accessible" && user) {
     const isOwned = isOwnDocument(row, user);
     if (applied.access === "Owned by Me"   &&  isOwned === false) return false;
@@ -122,9 +125,9 @@ function matchesTab(
     case "unassigned":      return !isLinked;
     case "linked-agenda":   return isLinked;
     case "my-documents":    return isOwnDocument(row, user);
-    case "needs-attention": return row.approval_status === "Under Review" || row.approval_status === "Changes Requested";
-    case "published":       return row.approval_status === "Published";
-    case "archived":        return row.approval_status === "Archived";
+    case "needs-attention": return matchesAnyDocumentWorkflowStatus(row, ["Under Review", "Changes Requested"]);
+    case "published":       return matchesDocumentWorkflowStatus(row, "Published");
+    case "archived":        return matchesDocumentWorkflowStatus(row, "Archived");
     default:                return true;
   }
 }
@@ -173,8 +176,8 @@ function MeetingCell({
   const mtgId = String(row.related_meeting ?? "");
   const agdId = String(row.related_agenda  ?? "");
 
-  const meeting = mtgId ? meetingItems.find(m => m.meeting_id === mtgId || mtgId.startsWith(m.meeting_id)) : undefined;
-  const agenda  = agdId ? agendaItems.find(a => a.agenda_id  === agdId  || agdId.startsWith(a.agenda_id))  : undefined;
+  const meeting = mtgId ? meetingItems.find(m => matchesExactDocumentLinkReference(mtgId, m.meeting_id)) : undefined;
+  const agenda  = agdId ? agendaItems.find(a => matchesExactDocumentLinkReference(agdId, a.agenda_id)) : undefined;
 
   const mtgLabel = meeting?.meeting_title ?? mtgId ?? "—";
   const agdLabel = agenda?.agenda_title   ?? (agdId || null);
@@ -248,8 +251,8 @@ export function DocumentLibraryPage() {
 
   // Stage 1: search + filter (no tab) — used for tab counts
   const searchFiltered = useMemo(
-    () => items.filter(d => matchesSearch(d, q) && matchesFilters(d, appliedFilters, currentUser)),
-    [items, q, appliedFilters, currentUser],
+    () => items.filter(d => matchesSearch(d, q) && matchesFilters(d, appliedFilters, currentUser, meetingReg.items)),
+    [items, q, appliedFilters, currentUser, meetingReg.items],
   );
 
   // Stage 2: apply active tab
@@ -309,8 +312,8 @@ export function DocumentLibraryPage() {
 
   // ── Summary card counts ──
   const totalCount          = searchFiltered.length;
-  const needsAttentionCount = searchFiltered.filter(d => d.approval_status === "Under Review" || d.approval_status === "Changes Requested").length;
-  const publishedCount      = searchFiltered.filter(d => d.approval_status === "Published").length;
+  const needsAttentionCount = searchFiltered.filter(d => matchesAnyDocumentWorkflowStatus(d, ["Under Review", "Changes Requested"])).length;
+  const publishedCount      = searchFiltered.filter(d => matchesDocumentWorkflowStatus(d, "Published")).length;
   const commentCount        = searchFiltered.reduce((s, d) => s + (d.unresolved_comment_count ?? 0), 0);
 
   // ── Tab definitions (7 primary tabs) ──
@@ -321,9 +324,9 @@ export function DocumentLibraryPage() {
       { id: "unassigned",      label: "Unassigned",         count: cnt(d => !linkedDocIds.has(d.doc_id ?? d.id)) },
       { id: "linked-agenda",   label: "Attached to Agenda", count: cnt(d => linkedDocIds.has(d.doc_id ?? d.id)) },
       { id: "my-documents",    label: "My Documents",       count: cnt(d => isOwnDocument(d, currentUser)) },
-      { id: "needs-attention", label: "Needs My Attention", count: cnt(d => d.approval_status === "Under Review" || d.approval_status === "Changes Requested") },
-      { id: "published",       label: "Published",          count: cnt(d => d.approval_status === "Published") },
-      { id: "archived",        label: "Archived",           count: cnt(d => d.approval_status === "Archived") },
+      { id: "needs-attention", label: "Needs My Attention", count: cnt(d => matchesAnyDocumentWorkflowStatus(d, ["Under Review", "Changes Requested"])) },
+      { id: "published",       label: "Published",          count: cnt(d => matchesDocumentWorkflowStatus(d, "Published")) },
+      { id: "archived",        label: "Archived",           count: cnt(d => matchesDocumentWorkflowStatus(d, "Archived")) },
     ];
   }, [searchFiltered, linkedDocIds]);
 

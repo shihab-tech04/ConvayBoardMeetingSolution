@@ -66,15 +66,33 @@ export async function persistNotificationRead(id: string, recipientUserId: strin
   }
 }
 
-export async function persistAllNotificationsRead(recipientUserId: string): Promise<void> {
+/**
+ * Return only SQL-confirmed read receipts. An HTTP 204/200 alone does not
+ * establish which rows passed RLS or whether concurrent inbox rows changed.
+ */
+export async function persistAllNotificationsRead(recipientUserId: string): Promise<string[]> {
   if (!recipientUserId) throw new Error("A signed-in user is required to update notifications.");
-  await convayAuth.authenticatedRequest(
-    "/rest/v1/convay_user_notifications?is_read=eq.false&recipient_user_id=eq." + encodeURIComponent(recipientUserId), {
-
-    method: "PATCH",
-    headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
-    body: JSON.stringify({ is_read: true }),
-  });
+  const response = await convayAuth.authenticatedRequest(
+    "/rest/v1/convay_user_notifications?is_read=eq.false&recipient_user_id=eq."
+      + encodeURIComponent(recipientUserId) + "&select=id,recipient_user_id,is_read", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Prefer: "return=representation" },
+      body: JSON.stringify({ is_read: true }),
+    },
+  );
+  const rows: unknown = await response.json();
+  if (!Array.isArray(rows)) throw new Error("Invalid notification acknowledgement. Refresh your inbox.");
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (!row || typeof row !== "object"
+      || typeof row.id !== "string" || !row.id
+      || row.recipient_user_id !== recipientUserId || row.is_read !== true
+      || ids.has(row.id)) {
+      throw new Error("Notification acknowledgement does not match this account. Refresh your inbox.");
+    }
+    ids.add(row.id);
+  }
+  return [...ids];
 }
 
 /** Navigation is restricted to existing internal app roots; never trust arbitrary URLs from records. */

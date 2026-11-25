@@ -1,0 +1,57 @@
+name: Convay WS-F TEN-03 — disposable PostgreSQL 17 tenant RLS matrix
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/convay-wsf-ten-isolation-isolated.yml'
+      - 'supabase/tests/wsf_ten_isolation/**'
+      - 'supabase/tests/wsf_ten_foundation/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ten-isolation-disposable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Start disposable PostgreSQL 17 with no production connection
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-wsf-ten03-db \
+            -e POSTGRES_PASSWORD=isolated-ci-fixture-only \
+            -e POSTGRES_DB=convay_wsf_ten03_fixture \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            postgres:17-alpine
+          for attempt in $(seq 1 45); do
+            if docker exec convay-wsf-ten03-db pg_isready -U postgres -d convay_wsf_ten03_fixture >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs convay-wsf-ten03-db
+          exit 1
+
+      - name: Install only the synthetic legacy registry/Auth fixture
+        run: |
+          docker exec convay-wsf-ten03-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsf_ten03_fixture \
+            -f /workspace/supabase/tests/wsf_ten_foundation/bootstrap.sql
+
+      - name: Test real PostgreSQL tenant RLS and direct authenticated roles with transaction rollback
+        run: |
+          docker exec convay-wsf-ten03-db psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d convay_wsf_ten03_fixture \
+            -f /workspace/supabase/tests/wsf_ten_isolation/matrix.psql
+
+      - name: Destroy synthetic database
+        if: always()
+        run: docker rm -f convay-wsf-ten03-db || true

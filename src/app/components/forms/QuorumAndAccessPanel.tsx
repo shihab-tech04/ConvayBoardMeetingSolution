@@ -5,7 +5,9 @@
  * and quorum settings filled in the form below, plus document access warnings.
  * Read-only: does not write any values back.
  */
-import React, { useMemo, useEffect, useCallback } from "react";
+import React, { useMemo, useEffect } from "react";
+import { calculateMeetingQuorum } from "../../utils/quorumCalculation";
+import { liveMeetingUrl } from "../../utils/liveMeetingLink";
 import {
   ShieldCheck, AlertTriangle, CheckCircle2, XCircle,
   Lock, Info,
@@ -23,25 +25,10 @@ export interface QuorumAndAccessPanelProps {
   governanceBodies: GovernanceBody[];
   quorumRules: QuorumRule[];
   allDocuments: BoardDocument[];
+  onRefreshQuorumRules?: () => Promise<unknown> | void;
 }
 
-// ── Convay link generator ─────────────────────────────────────────────────────
-
-function djb2(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); h = h | 0; }
-  return Math.abs(h);
-}
-
-export function generateConvayMeeting(seed: string) {
-  const h = djb2(seed || "convay-default");
-  const meetingId = String(h).padStart(12, "0").slice(0, 12);
-  const password  = String(h % 1000000).padStart(6, "0");
-  const pwd       = (h * 31337).toString(16).padStart(32, "a").slice(0, 32);
-  const link      = `https://app.convay.com/m/j/${meetingId}?pwd=${pwd}`;
-  const invite    = `Please join Convay meeting now.\n\nMeeting ID: ${meetingId}\nPassword: ${password}\nMeeting link: ${link}`;
-  return { meetingId, password, link, invite };
-}
+// LiveKit links are generated from the actual saved SQL meeting ID, not title hashes.
 
 type QuorumStatus = "met" | "at_risk" | "not_met" | "not_configured";
 
@@ -60,18 +47,6 @@ function parseAgendaEntries(json: EntryFormValue): SelectedAgendaEntry[] {
 function parseAdditionalDocs(json: EntryFormValue): AdditionalDocEntry[] {
   try { return JSON.parse(String(json ?? "[]")) as AdditionalDocEntry[]; }
   catch { return []; }
-}
-
-function quorumStatus(eligible: number, total: number, required: number, requiredPct: number): QuorumStatus {
-  if (required === 0 && requiredPct === 0) return "not_configured";
-  const meetsFixed = required > 0 ? eligible >= required : true;
-  const meetsPct   = requiredPct > 0 && total > 0 ? (eligible / total * 100) >= requiredPct : true;
-  if (meetsFixed && meetsPct) return "met";
-  // At risk: within 1 member / 5% of threshold
-  const closeFixed = required > 0 ? eligible >= required - 1 : true;
-  const closePct   = requiredPct > 0 && total > 0 ? (eligible / total * 100) >= requiredPct - 5 : true;
-  if (closeFixed && closePct) return "at_risk";
-  return "not_met";
 }
 
 // Simplified access rule: Observers/Invitees don't see Strictly Confidential docs
@@ -93,73 +68,48 @@ const STATUS_CONFIG: Record<QuorumStatus, { label: string; icon: React.ElementTy
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies, quorumRules, allDocuments }: QuorumAndAccessPanelProps) {
+export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies, quorumRules, allDocuments, onRefreshQuorumRules }: QuorumAndAccessPanelProps) {
 
   // ── Participant data from Step 1 ─────────────────────────────────────────
   const allLinks  = useMemo(() => parseLinks(values.participant_links_json), [values.participant_links_json]);
-  const quorumEligible = useMemo(() => allLinks.filter(l => l.quorum_eligible), [allLinks]);
+  const quorumEligible = useMemo(() => Array.from(new Set(allLinks.filter(l => l.quorum_eligible && l.user_id).map(l => l.user_id))), [allLinks]);
 
   const committeeValue = String(values.committee ?? "");
 
-  // Governance-body default rule (source of truth — manual quorum fields removed from form)
-  const govRule = useMemo(() => {
-    const body = governanceBodies.find(
-      b => b.id === committeeValue || b.body_id === committeeValue || b.body_name === committeeValue,
-    );
-    if (!body) return null;
-    return quorumRules.find(r =>
-      (r.governance_body_id === body.id || r.governance_body_id === body.body_id) && r.status === "Active",
-    ) ?? null;
-  }, [governanceBodies, committeeValue, quorumRules]);
-
-  const effectiveRequired = govRule ? parseInt(govRule.minimum_members, 10) || 0 : 0;
-  const effectivePct      = govRule ? parseFloat(govRule.quorum_percent) || 0 : 0;
-
-  const status = useMemo(
-    () => quorumStatus(quorumEligible.length, allLinks.length, effectiveRequired, effectivePct),
-    [quorumEligible.length, allLinks.length, effectiveRequired, effectivePct],
-  );
+  const policyMeetingId = String(values.meeting_id || values._draft_meeting_id || "").trim();
+  const projection = useMemo(() => calculateMeetingQuorum({
+    boardCommitteeId: committeeValue,
+    meetingId: policyMeetingId,
+    draftLinks: allLinks,
+    governanceBodies,
+    quorumRules,
+  }), [committeeValue, policyMeetingId, allLinks, governanceBodies, quorumRules]);
+  const govRule = projection.selectedRule;
+  const effectiveRequired = projection.requiredCount;
+  const effectivePct = projection.requiredPercent;
+  const status: QuorumStatus = projection.status === "expected" ? "met"
+    : projection.status === "not_expected" ? "not_met" : projection.status;
 
   const sc = STATUS_CONFIG[status];
   const Icon = sc.icon;
 
-  // ── Convay meeting generation ──────────────────────────────────────────────
+  // ── Real LiveKit link ──────────────────────────────────────────────────────
   const mode = String(values.mode ?? "Physical");
   const isVirtual = mode === "Virtual" || mode === "Hybrid";
-  const convayMeeting = useMemo(() => {
-    if (!isVirtual) return null;
-    const seed = String(values.meeting_title ?? "") + String(values.meeting_date ?? "") + String(values.committee ?? "");
-    return generateConvayMeeting(seed);
-  }, [isVirtual, values.meeting_title, values.meeting_date, values.committee]);
+  const savedId = String(values.meeting_id || values._draft_meeting_id || "").trim();
+  const savedLiveUrl = isVirtual && savedId ? liveMeetingUrl(savedId) ?? "" : "";
 
   useEffect(() => {
     if (!onValuesChange) return;
-    if (convayMeeting) {
-      onValuesChange({ virtual_link: convayMeeting.link, virtual_platform: "Convay" });
-    } else {
-      onValuesChange({ virtual_link: "", virtual_platform: "" });
-    }
+    onValuesChange(isVirtual
+      ? { virtual_link: savedLiveUrl, virtual_platform: "LiveKit" }
+      : { virtual_link: "", virtual_platform: "" });
+  // Only synchronize when meeting identity or mode actually changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [convayMeeting?.link]);
+  }, [isVirtual, savedLiveUrl]);
 
-  const copyToClipboard = useCallback((text: string) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
-  }, []);
-
-  // Required roles come from the governance rule (not manual form fields)
-  const requiredRoles: string[] = useMemo(() => {
-    if (!govRule) return [];
-    const rv = (govRule as {required_roles?: string | string[]}).required_roles;
-    if (!rv) return [];
-    if (Array.isArray(rv)) return rv as string[];
-    if (typeof rv === "string" && rv) return rv.split(",").map(s => s.trim()).filter(Boolean);
-    return [];
-  }, [govRule]);
-
-  const missingRoles = useMemo(
-    () => requiredRoles.filter(role => !allLinks.some(l => l.participant_type === role)),
-    [requiredRoles, allLinks],
-  );
+  // Required roles and status are derived from the same forecast.
+  const missingRoles = projection.missingRoles;
 
   // ── Document access check ─────────────────────────────────────────────────
   const selectedAgendaIds = useMemo(
@@ -265,10 +215,13 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
           {/* Governance rule source */}
           {govRule && (
             <div className="text-[10px] text-[var(--muted-foreground)] italic">
-              Using governance rule: {govRule.body_name} — {govRule.quorum_percent}% minimum
+              Using {govRule.meeting_id ? "meeting" : "governance"} rule: {govRule.body_name} — {effectivePct}% minimum
             </div>
           )}
 
+          {!govRule && status === "not_met" && (
+            <div role="status" className="text-[11px] text-[var(--muted-foreground)]">{projection.reasons.join("; ")}</div>
+          )}
           {/* Missing required roles */}
           {missingRoles.length > 0 && (
             <div className="flex flex-col gap-0.5">
@@ -282,8 +235,22 @@ export function QuorumAndAccessPanel({ values, onValuesChange, governanceBodies,
           )}
 
           {status === "not_configured" && (
-            <div className="text-[10px] text-[var(--muted-foreground)] italic">
-              Set quorum rules in the form below to see projected status.
+            <div role="status" className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-3 space-y-2">
+              <p className="text-xs font-semibold text-[var(--foreground)]">No active quorum rule is configured for this Board / Committee</p>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                You can continue and schedule this meeting without a quorum rule. Quorum cannot be verified until an authorized administrator configures the governance policy; no threshold will be assumed.
+              </p>
+              <div className="flex flex-wrap gap-3 text-xs font-semibold text-[var(--primary)]">
+                <a href={`${import.meta.env.BASE_URL}administration/meeting-configuration/quorum-rules`}
+                   target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+                  View Quorum Rules
+                </a>
+                {onRefreshQuorumRules && <button type="button"
+                  onClick={() => { void Promise.resolve(onRefreshQuorumRules()).catch(() => {}); }}
+                  className="underline underline-offset-2">
+                  Refresh quorum status
+                </button>}
+              </div>
             </div>
           )}
         </div>

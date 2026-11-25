@@ -1,13 +1,22 @@
+import { useRef } from "react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW, EDIT } from "../../data/modulePageConfigs";
 import { GOV_BODY_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
-import { useGovernanceRegistry, generateId } from "../../data/boardMeetingData";
+import { useGovernanceRegistry, generateId, type GovernanceBody } from "../../data/boardMeetingData";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { createGovernanceBody, updateGovernanceBody, type GovernanceBodyGateway } from "./governanceBodyPersistence";
 import { GOVERNANCE_BODY_FORM_FIELDS } from "../boardMeetingFormFields";
 
 export function InvalidListPage() {
   const registry = useGovernanceRegistry();
+  const pendingCreate = useRef<{ signature: string; id: string; created_at: string } | null>(null);
+  const gateway: GovernanceBodyGateway = {
+    list: async () => (await convayAuth.registry<GovernanceBody>("bms.govbodies", "list")).records.map(row => row.payload),
+    create: async body => (await registry.add(body)) === true,
+    update: async (id, patch) => (await registry.update(id, patch)) === true,
+  };
 
   const rows: TableRow[] = registry.items.map(g => ({ ...g, id: g.id }));
 
@@ -19,6 +28,7 @@ export function InvalidListPage() {
 
   const cfg: PageCfg = {
     title: "Governance Bodies",
+    entityPlural: "governance bodies",
     titleKey: "invalidList.title",
     desc: "Manage governance bodies, their membership, quorum rules, and meeting configuration.",
     descKey: "invalidList.desc",
@@ -47,37 +57,25 @@ export function InvalidListPage() {
     kpis,
     entryBtn:      "Add Governance Body",
     formFields:    GOVERNANCE_BODY_FORM_FIELDS,
-    onRowUpdate(id, values) {
-      registry.update(id, {
-        body_name:          values.body_name          != null ? String(values.body_name)          : undefined,
-        body_type:          values.body_type          != null ? String(values.body_type)          : undefined,
-        chairperson:        values.chairperson        != null ? String(values.chairperson)        : undefined,
-        secretary:          values.secretary          != null ? String(values.secretary)          : undefined,
-        member_count:       values.member_count       != null ? String(values.member_count)       : undefined,
-        quorum_requirement: values.quorum_requirement != null ? String(values.quorum_requirement) : undefined,
-        voting_method:      values.voting_method      != null ? String(values.voting_method)      : undefined,
-        establishment_date: values.establishment_date != null ? String(values.establishment_date) : undefined,
-        mandate:            values.mandate            != null ? String(values.mandate)            : undefined,
-        status:             values.status             != null ? String(values.status)             : undefined,
-      } as never);
+    awaitCreateSave: true,
+    // The shared GenPage awaits these promises. Do not let a modal close
+    // before the server acknowledges and an independent SQL readback agrees.
+    async onRowUpdate(id, values) {
+      return updateGovernanceBody(id, values, gateway);
     },
-    onRowCreate(values) {
-      const gbId = generateId("GB", registry.items.map(g => g.body_id));
-      registry.add({
-        id:                 gbId,
-        body_id:            gbId,
-        body_name:          String(values.body_name ?? ""),
-        body_type:          String(values.body_type ?? ""),
-        chairperson:        String(values.chairperson ?? ""),
-        secretary:          String(values.secretary ?? ""),
-        member_count:       String(values.member_count ?? "0"),
-        quorum_requirement: String(values.quorum_requirement ?? ""),
-        voting_method:      String(values.voting_method ?? ""),
-        establishment_date: String(values.establishment_date ?? ""),
-        mandate:            String(values.mandate ?? ""),
-        status:             String(values.status ?? "Active"),
-        created_at:         new Date().toISOString(),
-      });
+    async onRowCreate(values) {
+      const signature = JSON.stringify(values);
+      if (!pendingCreate.current || pendingCreate.current.signature !== signature) {
+        pendingCreate.current = {
+          signature,
+          id: generateId("GB", registry.items.map(g => g.body_id)),
+          created_at: new Date().toISOString(),
+        };
+      }
+      const identity = pendingCreate.current;
+      await createGovernanceBody(values, identity, gateway);
+      pendingCreate.current = null;
+      return true;
     },
   };
   return <GenPage cfg={cfg} />;

@@ -1,0 +1,34 @@
+name: Convay LM — disposable tenant and session attendance SQL matrix
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/tests/live_attendance_scoped/**'
+      - '.github/workflows/convay-live-attendance-scoped-isolated.yml'
+      - 'supabase/migrations/20261122173000_convay_authoritative_live_attendance.sql'
+      - 'supabase/migrations/20261123101000_convay_quorum_snapshot_safeupdate.sql'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scoped-attendance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start isolated PostgreSQL 17
+        run: |
+          docker run -d --name convay-scoped-attendance -e POSTGRES_PASSWORD=isolated-fixture-only -e POSTGRES_DB=fixture -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for n in $(seq 1 45); do docker exec convay-scoped-attendance pg_isready -U postgres -d fixture && exit 0; sleep 2; done
+          exit 1
+      - name: Apply synthetic baseline, original SQL and scoped candidate
+        run: |
+          set -euo pipefail
+          for f in supabase/tests/live_attendance_scoped/bootstrap.sql supabase/migrations/20261122173000_convay_authoritative_live_attendance.sql supabase/migrations/20261123101000_convay_quorum_snapshot_safeupdate.sql supabase/tests/live_attendance_scoped/activation_candidate.sql supabase/tests/live_attendance_scoped/matrix.sql; do
+            docker exec convay-scoped-attendance psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f "/workspace/$f"
+          done
+      - name: Destroy disposable PostgreSQL
+        if: always()
+        run: docker rm -f convay-scoped-attendance || true

@@ -37,3 +37,30 @@ export function collectAgendaRegisterDescendants<T extends AgendaRegisterNode>(
   visit(parentId);
   return result;
 }
+
+
+/**
+ * Return the canonical parent chain, closest parent first.
+ * Corrupt/self-referential cycles fail closed with no ancestor writes:
+ * publishing a partially recomputed status would misrepresent the hierarchy.
+ */
+export function collectAgendaRegisterAncestors<T extends AgendaRegisterNode>(
+  itemId: string,
+  items: readonly T[],
+): T[] {
+  const byId = new Map<string, T>();
+  for (const item of items) if (!byId.has(item.id)) byId.set(item.id, item);
+  const seen = new Set<string>([itemId]);
+  const ancestors: T[] = [];
+  let current = byId.get(itemId);
+  while (current?.parent_agenda_id) {
+    const parentId = current.parent_agenda_id;
+    if (seen.has(parentId)) return [];
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    seen.add(parentId);
+    ancestors.push(parent);
+    current = parent;
+  }
+  return ancestors;
+}

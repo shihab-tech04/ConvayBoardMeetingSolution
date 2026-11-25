@@ -1,0 +1,24 @@
+name: Convay LM-04 — pinned server recording provider typecheck
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/functions/convay-livekit/recordingProvider.ts'
+      - 'supabase/functions/convay-livekit/livekitRecordingEgress.ts'
+      - '.github/workflows/convay-lm04-egress-check.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  egress-deno-typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Check actual pinned SDK types without provider credentials
+        run: deno check --no-lock --node-modules-dir=auto supabase/functions/convay-livekit/livekitRecordingEgress.ts

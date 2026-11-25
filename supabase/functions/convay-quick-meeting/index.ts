@@ -5,6 +5,8 @@ import {
   checkQuickGuestAdmission,
   checkQuickMeetingLink,
   isQuickMeetingSessionId,
+  isQuickMeetingActive,
+  quickMeetingTokenLifetimeSeconds,
   normalizeQuickParticipantName,
   type QuickMeetingAccessRecord,
   type QuickMeetingLinkAccessRecord,
@@ -37,6 +39,7 @@ type QuickMeetingRow = QuickMeetingAccessRecord & {
   room_name: string;
   created_at: string;
   ended_at: string | null;
+  tenant_id: string | null;
 };
 type QuickLinkRow = QuickMeetingLinkAccessRecord & {
   id: string;
@@ -170,11 +173,17 @@ async function requireHostUser(req: Request): Promise<HostIdentity> {
     is_super_admin?: boolean;
     effective_permissions?: string[];
   }>("/functions/v1/convay-access", jwt, { method: "POST", body: JSON.stringify({ action: "snapshot" }) });
+  const isSuperAdmin = snapshot.is_super_admin === true;
+  const permissions = Array.isArray(snapshot.effective_permissions) ? snapshot.effective_permissions : [];
+  // Re-check current grants for every host operation, not only meeting creation.
+  if (!canCreateQuickMeeting(isSuperAdmin, permissions)) {
+    throw new HttpError(403, "You need Quick Meeting creation permission.");
+  }
   return {
     id: user.id,
     name: profiles[0].display_name,
-    isSuperAdmin: snapshot.is_super_admin === true,
-    permissions: Array.isArray(snapshot.effective_permissions) ? snapshot.effective_permissions : [],
+    isSuperAdmin,
+    permissions,
   };
 }
 
@@ -233,11 +242,19 @@ function cleanSessionId(value: unknown): string {
 
 async function meetingById(id: string): Promise<QuickMeetingRow | null> {
   const query = new URLSearchParams({
-    select: "id,owner_id,title,meeting_kind,access_mode,status,room_name,admission_locked,max_participants,created_at,expires_at,ended_at",
+    select: "id,owner_id,tenant_id,title,meeting_kind,access_mode,status,room_name,admission_locked,max_participants,created_at,expires_at,ended_at",
     id: `eq.${id}`,
     limit: "1",
   });
   return (await serviceJson<QuickMeetingRow[]>(`/rest/v1/convay_quick_meetings?${query}`))[0] ?? null;
+}
+
+async function assertMeetingOwnerScope(meeting: QuickMeetingRow): Promise<void> {
+  if (!Object.prototype.hasOwnProperty.call(meeting, "tenant_id")) {
+    throw new HttpError(503, "Quick Meeting company scope is unavailable.");
+  }
+  const valid = await postRpc<boolean>("convay_quick_meeting_scope_valid", { p_meeting_id: meeting.id });
+  if (valid !== true) throw new HttpError(403, "Quick Meeting host authorization is no longer active.");
 }
 
 async function ownedMeeting(id: string, host: HostIdentity): Promise<QuickMeetingRow> {
@@ -263,6 +280,7 @@ async function requireGuestLink(secret: string): Promise<{ meeting: QuickMeeting
   if (!link) throw new HttpError(404, "This quick meeting link is unavailable.");
   const meeting = await meetingById(link.meeting_id);
   if (!meeting) throw new HttpError(404, "This quick meeting link is unavailable.");
+  await assertMeetingOwnerScope(meeting);
   const decision = checkQuickMeetingLink(meeting, link);
   if (!decision.allowed) throw new HttpError(decision.status, decision.error);
   return { meeting, link };
@@ -280,7 +298,7 @@ async function allRoomParticipants(meeting: QuickMeetingRow): Promise<LivePartic
 }
 
 async function ensureLiveRoom(meeting: QuickMeetingRow) {
-  if (meeting.status !== "active" || Date.parse(meeting.expires_at) <= Date.now()) {
+  if (!isQuickMeetingActive(meeting)) {
     throw new HttpError(410, "This quick meeting has ended or expired.");
   }
   const service = roomService();
@@ -307,13 +325,23 @@ async function closeLiveRoom(roomName: string): Promise<boolean> {
   }
 }
 
-function issueRoomToken(identity: string, name: string, room: string): Promise<string> {
+async function issueRoomToken(
+  identity: string,
+  name: string,
+  meeting: QuickMeetingRow,
+  linkExpiresAt?: string,
+): Promise<{ participantToken: string; expiresIn: number }> {
+  await assertMeetingOwnerScope(meeting);
+  const ttl = quickMeetingTokenLifetimeSeconds(meeting.expires_at, Date.now(), TOKEN_TTL_SECONDS, linkExpiresAt);
+  if (ttl === null || !isQuickMeetingActive(meeting)) {
+    throw new HttpError(410, "This quick meeting has ended or expired.");
+  }
   const key = Deno.env.get("LIVEKIT_API_KEY") ?? "";
   const secret = Deno.env.get("LIVEKIT_API_SECRET") ?? "";
-  const token = new AccessToken(key, secret, { identity, name, ttl: TOKEN_TTL_SECONDS });
+  const token = new AccessToken(key, secret, { identity, name, ttl });
   token.addGrant({
     roomJoin: true,
-    room,
+    room: meeting.room_name,
     canPublish: true,
     canSubscribe: true,
     canPublishData: false,
@@ -321,7 +349,7 @@ function issueRoomToken(identity: string, name: string, room: string): Promise<s
     roomCreate: false,
     roomList: false,
   });
-  return token.toJwt();
+  return { participantToken: await token.toJwt(), expiresIn: ttl };
 }
 
 async function hasRoomIdentity(participants: LiveParticipant[], identity: string): Promise<boolean> {
@@ -428,6 +456,8 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
     if (!canCreateQuickMeeting(host.isSuperAdmin, host.permissions)) {
       throw new HttpError(403, "You need Quick Meeting creation permission.");
     }
+    const scope = await postRpc<{allowed: boolean; tenant_id: string | null}>("convay_quick_host_scope", { p_owner_id: host.id });
+    if (scope?.allowed !== true) throw new HttpError(403, "An unambiguous active Quick Meeting host scope is required.");
     const requestedTitle = normalizeQuickParticipantName(body.title);
     const title = requestedTitle ?? "Quick Meeting";
     if (typeof body.title === "string" && body.title.trim() && !requestedTitle) {
@@ -459,6 +489,9 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
 
   const meetingId = cleanMeetingId(body.meetingId);
   const meeting = await ownedMeeting(meetingId, host);
+  // Ending an owned room is cleanup-only and remains available to a verified
+  // host even when the company is no longer active. No new admission is issued.
+  if (action !== "end" && action !== "host-leave") await assertMeetingOwnerScope(meeting);
   if (action === "state") {
     if (meeting.status === "ended") {
       const query = new URLSearchParams({
@@ -576,7 +609,7 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
   }
 
   if (action === "host-join") {
-    if (meeting.status !== "active" || Date.parse(meeting.expires_at) <= Date.now()) {
+    if (!isQuickMeetingActive(meeting)) {
       throw new HttpError(410, "This quick meeting has ended or expired.");
     }
     await ensureLiveRoom(meeting);
@@ -585,8 +618,8 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
     if (!participants.some(item => item.identity === identity) && participants.length >= meeting.max_participants) {
       throw new HttpError(409, "This quick meeting is full.");
     }
-    const participantToken = await issueRoomToken(identity, host.name, meeting.room_name);
-    return { serverUrl: livekitServerUrl(), participantToken, expiresIn: TOKEN_TTL_SECONDS };
+    const minted = await issueRoomToken(identity, host.name, meeting);
+    return { serverUrl: livekitServerUrl(), ...minted };
   }
 
   if (action === "confirm-host-join" || action === "host-leave") {
@@ -612,7 +645,7 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
   }
 
   if (action === "rotate-link") {
-    if (meeting.status !== "active" || Date.parse(meeting.expires_at) <= Date.now()) {
+    if (!isQuickMeetingActive(meeting)) {
       throw new HttpError(410, "This quick meeting has ended or expired.");
     }
     const secret = await newShareSecret();
@@ -717,8 +750,8 @@ async function guestAction(body: JsonObject): Promise<JsonObject> {
     const name = normalizeQuickParticipantName(body.displayName);
     if (!name) throw new HttpError(400, "Enter a display name between 2 and 80 characters.");
     await ensureLiveRoom(meeting);
-    const participantToken = await issueRoomToken(identity, name, meeting.room_name);
-    return { serverUrl: livekitServerUrl(), participantToken, expiresIn: TOKEN_TTL_SECONDS, identity };
+    const minted = await issueRoomToken(identity, name, meeting, link.expires_at);
+    return { serverUrl: livekitServerUrl(), ...minted, identity };
   }
 
   if (action === "confirm-guest-join" || action === "guest-leave") {

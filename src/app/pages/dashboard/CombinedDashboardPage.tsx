@@ -32,6 +32,9 @@ import {
 } from "./homeWorkspaceUtils";
 import { friendlyDate, friendlyTime } from "./dateUtils";
 import { calendarDateWindows } from "./calendarDateWindows";
+import { resolveFeaturedMeetings } from "./featuredMeetingSelection";
+import { resolveLifecycleStage } from "./meetingLifecycleStatus";
+import { actionItemDetailsPath } from "./actionItemDetailsPath";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -88,6 +91,7 @@ const IMMEDIATE_IDS = new Set([
 interface FeaturedMeetingCardProps {
   event: CalEvent | null;
   isLive: boolean;
+  today: string;
   immediateLabel: string | null;
   onAction: () => void;
   onCardClick: () => void;
@@ -96,6 +100,7 @@ interface FeaturedMeetingCardProps {
 function FeaturedMeetingCard({
   event,
   isLive,
+  today,
   immediateLabel,
   onAction,
   onCardClick,
@@ -109,13 +114,24 @@ function FeaturedMeetingCard({
     );
   }
 
+  const isTodayMeeting = event.date.slice(0, 10) === today;
+  const normalizedStatus = event.status.trim().toLocaleLowerCase();
+  const isPaused = ["paused", "on break", "on hold"].includes(normalizedStatus);
   const statusLabel = isLive
     ? "Live now"
-    : event.date === new Date().toISOString().slice(0, 10)
+    : isPaused
+    ? normalizedStatus === "on break" ? "On break" : normalizedStatus === "on hold" ? "On hold" : "Paused"
+    : isTodayMeeting
     ? "Starting soon"
     : "Next meeting";
 
-  const statusMod = isLive ? "cal-featured--live" : event.date === new Date().toISOString().slice(0, 10) ? "cal-featured--soon" : "cal-featured--next";
+  const statusMod = isLive
+    ? "cal-featured--live"
+    : isPaused
+    ? "cal-featured--next"
+    : isTodayMeeting
+    ? "cal-featured--soon"
+    : "cal-featured--next";
 
   const modeIcon = event.mode === "Virtual" ? Monitor : MapPin;
   const ModeIcon = modeIcon;
@@ -223,7 +239,7 @@ export function CombinedDashboardPage({
         date,
         time: String(m.start_time ?? ""),
         type: "meeting",
-        status: String(m.approval_status ?? "Scheduled"),
+        status: String(m.approval_status || m.status || ""),
         relatedMeeting: String(m.meeting_title ?? ""),
         mode: String(m.mode ?? ""),
         venue: String(m.venue ?? ""),
@@ -334,15 +350,14 @@ export function CombinedDashboardPage({
   const monthEnd = calendarWindow.monthEnd;
   const cutoff7 = calendarWindow.cutoff7;
 
-  const liveMtg   = events.find(e => e.type === "meeting" && e.status === "In Progress");
-  const nextMtg   = events.find(e => e.type === "meeting" && e.date >= today);
+  const { live: liveMtg, paused: pausedMtg, next: nextMtg } = resolveFeaturedMeetings(events, now);
   const mtgsMonth = events.filter(e => e.type === "meeting" && e.date >= monthStart && e.date <= monthEnd).length;
   const deadlines7 = events.filter(e => e.date >= today && e.date <= cutoff7 && e.type !== "meeting").length;
   const meetings7 = events.filter(e => e.date >= today && e.date <= cutoff7 && e.type === "meeting").length;
 
   // ── Resolve immediate action for featured meeting ─────────────────────────
 
-  const featuredEvent = liveMtg ?? nextMtg ?? null;
+  const featuredEvent = liveMtg ?? pausedMtg ?? nextMtg;
 
   const featuredImmediateLabel = useMemo(() => {
     if (!featuredEvent || featuredEvent.type !== "meeting") return null;
@@ -443,18 +458,19 @@ export function CombinedDashboardPage({
         return;
       }
       const mtg = meetings.find(m => String(m.id) === e.sourceId);
-      const status = String(mtg?.approval_status ?? mtg?.status ?? "");
-      if (["In Progress", "Paused", "On Break"].includes(status)) {
+      const status = String(mtg?.approval_status ?? "").trim() || String(mtg?.status ?? "").trim();
+      const stage = resolveLifecycleStage(status, mtg?.meeting_date, now).stage;
+      if (stage === "Meeting Live" || stage === "Meeting Paused") {
         navigate(`/meetings/${e.sourceId}/live`);
         return;
       }
-      navigate("/meetings/all-meetings");
+      navigate(`/meetings/${encodeURIComponent(e.sourceId)}/record`);
     } else if (e.sourceType === "board-pack") {
       navigate("/agenda-documents/board-packs");
     } else if (e.sourceType === "rsvp") {
       navigate("/meetings/all-meetings");
     } else if (e.sourceType === "action-item") {
-      navigate("/decisions-followup/action-items");
+      navigate(actionItemDetailsPath(e.sourceId));
     } else if (e.sourceType === "minutes") {
       navigate("/archive-reports/minutes");
     }
@@ -524,6 +540,7 @@ export function CombinedDashboardPage({
         <FeaturedMeetingCard
           event={featuredEvent}
           isLive={!!liveMtg}
+          today={today}
           immediateLabel={featuredImmediateLabel}
           onAction={() => featuredEvent && openLiveMeeting(featuredEvent)}
           onCardClick={() => featuredEvent && openEvent(featuredEvent)}

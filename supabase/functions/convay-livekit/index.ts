@@ -1,6 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { AccessToken, RoomServiceClient } from "npm:livekit-server-sdk@2.19.2";
 import { checkOnlineAdmission, checkOnlineRoomCapacity, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
+import { canPublishOnlineMeeting } from "./publisherGrant.ts";
+import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, meetingLookupParams, uniqueSavedMeeting, checkAttendancePersistenceScope, type SavedMeetingRow, type SqlEntity } from "./tenantScope.ts";
 
 /**
  * Server-side LiveKit admission. The browser never holds an API secret.
@@ -23,7 +25,7 @@ function headers(req: Request): Headers {
 function response(req: Request, status: number, data: Record<string, unknown>): Response {
   return new Response(JSON.stringify(data), { status, headers: headers(req) });
 }
-type RecordRow<T> = { payload: T };
+type RecordRow<T> = SqlEntity<T>;
 async function jsonRequest<T>(path: string, jwt: string, init?: RequestInit): Promise<T> {
   const res = await fetch(SUPABASE_URL + path, {
     ...init,
@@ -34,34 +36,30 @@ async function jsonRequest<T>(path: string, jwt: string, init?: RequestInit): Pr
   if (!res.ok) throw new Error("Convay account or registry verification failed (" + res.status + ").");
   return await res.json() as T;
 }
-async function entityRows<T>(entity: string, meetingId: string, jwt: string): Promise<T[]> {
+async function entityRows<T>(entity: string, meetingId: string, jwt: string): Promise<SqlEntity<T>[]> {
   const query = new URLSearchParams({
-    select: "payload",
+    select: "tenant_id,payload",
     entity_key: "eq." + entity,
     "payload->>meeting_id": "eq." + meetingId,
     limit: "1000",
   });
-  return (await jsonRequest<RecordRow<T>[]>(
+  return await jsonRequest<RecordRow<T>[]>(
     "/rest/v1/convay_entity_records?" + query.toString(), jwt
-  )).map(row => row.payload);
-}
-async function savedMeeting(meetingId: string, jwt: string): Promise<OnlineMeeting | null> {
-  // Check the canonical record ID, then a meeting_id field for older records.
-  const direct = new URLSearchParams({
-    select: "payload", entity_key: "eq.bms.meetings",
-    record_id: "eq." + meetingId, limit: "1",
-  });
-  const rows = await jsonRequest<RecordRow<OnlineMeeting>[]>(
-    "/rest/v1/convay_entity_records?" + direct.toString(), jwt
   );
-  const meeting = rows[0]?.payload;
-  if (meeting && (meeting.meeting_id === meetingId || meeting.id === meetingId)) return meeting;
-  const byBusinessId = await entityRows<OnlineMeeting>("bms.meetings", meetingId, jwt);
-  return byBusinessId.find(item => item.meeting_id === meetingId) ?? null;
 }
-async function opaqueId(kind: string, value: string): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("convay-livekit-v1:" + kind + ":" + value));
-  return "cv-" + kind + "-" + Array.from(new Uint8Array(hash)).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 40);
+async function savedMeeting(meetingId: string, jwt: string): Promise<SavedMeetingRow | null> {
+  const lookup = async (id: string) => uniqueSavedMeeting(await jsonRequest<SavedMeetingRow[]>(
+    "/rest/v1/convay_entity_records?" + meetingLookupParams(id).toString(), jwt), id);
+  const row = await lookup(meetingId);
+  if (!row) return null;
+  const canonical = row.payload.meeting_id ?? row.payload.id!;
+  if (canonical !== meetingId) {
+    const canonicalRow = await lookup(canonical);
+    if (!canonicalRow || canonicalRow.record_id !== row.record_id || canonicalRow.tenant_id !== row.tenant_id) {
+      throw new Error("Ambiguous meeting identity");
+    }
+  }
+  return row;
 }
 Deno.serve(async req => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: headers(req) });
@@ -96,18 +94,30 @@ Deno.serve(async req => {
     );
     const meeting = await savedMeeting(meetingId, jwt);
     if (!meeting) return response(req, 404, { error: "The saved meeting was not found." });
+    const canonicalMeetingId = meeting.payload.meeting_id ?? meeting.payload.id ?? meetingId;
     const [links, sessions] = await Promise.all([
-      entityRows<OnlineLink>("bms.meetingParticipantLinks", meetingId, jwt),
-      entityRows<OnlineSession>("bms.liveSessions", meetingId, jwt),
+      entityRows<OnlineLink>("bms.meetingParticipantLinks", canonicalMeetingId, jwt),
+      entityRows<OnlineSession>("bms.liveSessions", canonicalMeetingId, jwt),
     ]);
-    const session = sessions.find(item => item.session_status === "active" || item.session_status === "paused")
-      ?? sessions[0] ?? null;
-    const decision = checkOnlineAdmission({
-      meeting, session, links, userId: user.id,
+    // SQL RLS first authorizes each row. Compare their authoritative tenant
+    // columns as a second boundary before granting any provider token.
+    const scope = checkLiveKitTenantScope(meeting, [...links, ...sessions]);
+    if (!scope.allowed) return response(req, scope.status, { error: scope.error });
+    const persistence = checkAttendancePersistenceScope(meeting);
+    if (!persistence.allowed) return response(req, persistence.status, { error: persistence.error });
+    // SQL attendance requires exactly one active or paused session.
+    // Do not issue provider credentials for contradictory live-session records.
+    const activeSessions = sessions.filter(item => item.payload?.session_status === "active" || item.payload?.session_status === "paused");
+    if (activeSessions.length !== 1) return response(req, 409, { error: "Meeting session state is inconsistent." });
+    const session = activeSessions[0].payload;
+    const admission = {
+      meeting: meeting.payload, session, links: links.map(row => row.payload), userId: user.id,
       isSuperAdmin: snapshot.is_super_admin === true,
       permissions: snapshot.effective_permissions ?? [],
-    });
+    };
+    const decision = checkOnlineAdmission(admission);
     if (!decision.allowed) return response(req, decision.status, { error: decision.error });
+    const canPublishMedia = canPublishOnlineMeeting(admission);
 
     const url = Deno.env.get("LIVEKIT_URL");
     const key = Deno.env.get("LIVEKIT_API_KEY");
@@ -115,7 +125,12 @@ Deno.serve(async req => {
     if (!url || !/^wss:\/\/[a-z0-9.-]+(?::\d+)?\/?$/i.test(url) || !key || !secret) {
       return response(req, 503, { error: "Online meeting service is not yet configured." });
     }
-    const room = await opaqueId("room", meeting.id ?? meetingId);
+    // A recovered meeting must never reuse its ended LiveKit room. An ended
+    // participant's old provider token must not grant access to this new session.
+    if (session.reopen_started_at && (!session.id || !/^SES-[A-Za-z0-9_-]+-R[0-9]+$/.test(session.id))) {
+      return response(req, 409, { error: "Recovered meeting session identity is invalid." });
+    }
+    const room = await opaqueId("room", resolveLiveKitRoomIdentity(meeting, session, canonicalMeetingId));
     const roomService = new RoomServiceClient(url.replace(/^wss:/i, "https:"), key, secret);
     let liveRoom = (await roomService.listRooms([room])).find(item => item.name === room) ?? null;
     if (!liveRoom) {
@@ -138,7 +153,7 @@ Deno.serve(async req => {
       identity, name: profiles[0].display_name || "Convay participant", ttl: 300,
     });
     token.addGrant({
-      roomJoin: true, room, canPublish: true, canSubscribe: true,
+      roomJoin: true, room, canPublish: canPublishMedia, canSubscribe: true,
       canPublishData: false, roomAdmin: false, roomCreate: false, roomList: false,
     });
     const participantToken = await token.toJwt();

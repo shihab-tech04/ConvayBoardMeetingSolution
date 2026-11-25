@@ -56,8 +56,10 @@ describe("Supabase invitation callback routing", () => {
     expect(isSupabaseInvitationCallback("?access_token=temporary-token&type=invite", "")).toBe(true);
   });
 
-  it("does not intercept ordinary sessions or invitation error callbacks", () => {
+  it("routes failed or expired invite callbacks to account-recovery guidance", () => {
+    expect(isSupabaseInvitationCallback("?error=access_denied&type=invite", "")).toBe(true);
+    expect(isSupabaseInvitationCallback("", "#error=access_denied&type=invite&error_description=Expired")).toBe(true);
+    expect(isSupabaseInvitationCallback("?error=access_denied&type=recovery", "")).toBe(false);
     expect(isSupabaseInvitationCallback("?access_token=session-token&type=recovery", "")).toBe(false);
-    expect(isSupabaseInvitationCallback("?error=access_denied&type=invite", "")).toBe(false);
   });
 });

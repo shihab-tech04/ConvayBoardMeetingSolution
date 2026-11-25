@@ -82,15 +82,15 @@ export function findChildren(id: string, units: OrgUnit[]): OrgUnit[] {
 export function findDescendants(id: string, units: OrgUnit[]): OrgUnit[] {
   const result: OrgUnit[] = [];
   const queue: string[] = [id];
-  const visited = new Set<string>();
+  // A stored hierarchy can contain legacy cycles. Keep the queried unit out
+  // of its own descendants, and enqueue each descendant at most once.
+  const queued = new Set<string>([id]);
 
   while (queue.length > 0) {
     const current = queue.shift()!;
-    if (visited.has(current)) continue;
-    visited.add(current);
-
-    const children = findChildren(current, units);
-    for (const child of children) {
+    for (const child of findChildren(current, units)) {
+      if (queued.has(child.id)) continue;
+      queued.add(child.id);
       result.push(child);
       queue.push(child.id);
     }

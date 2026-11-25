@@ -1,10 +1,13 @@
-import { LIVE_MEETINGS_RELEASED } from "./services/liveMeetingReleaseGate";
+import { QUICK_MEETINGS_RELEASED } from "./services/liveMeetingReleaseGate";
 import { createBrowserRouter, redirect } from "react-router";
 import { useSelector } from "react-redux";
 import type { RootState } from "./store/store";
 import type { ReactNode } from "react";
 import { AppRoot } from "./layouts/AppRoot";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { SubscribersPage } from "./pages/subscribers/SubscribersPage";
+import { CompanyAdminWorkspacePage } from "./pages/company/CompanyAdminWorkspacePage";
+import { useAccessSnapshot } from "./services/supabase/convayAccess";
 
 // ─── Static page imports (no lazy — dynamic import() fails in Make proxy) ────
 
@@ -37,7 +40,8 @@ import { PermissionListPage }       from "./pages/administration-requests/Permis
 import { ParticipantGroupsPage }    from "./pages/governance/ParticipantGroupsPage";
 import { OrganizationStructurePage } from "./pages/governance/OrganizationStructurePage";
 import { TimeExtensionPage }        from "./pages/administration-requests/TimeExtensionPage";
-import { AuditSelectionPage }       from "./pages/administration-requests/AuditSelectionPage";
+import { SecurityPoliciesPage }     from "./pages/administration/SecurityPoliciesPage";
+import { RetentionLegalHoldsPage }  from "./pages/administration/RetentionLegalHoldsPage";
 
 import { WorkflowDefinitionsPage, ApprovalRulesPage, ReviewRevisionRulesPage, WorkflowHistoryPage } from "./pages/administration/WorkflowPages";
 import { MeetingTypesPage, QuorumRulesPage, VotingMethodsPage, StatusesNumberingPage } from "./pages/administration/MeetingConfigPages";
@@ -85,6 +89,15 @@ function AdminOnly({ children }: { children: ReactNode }) {
   if (!allowed) return <div className="table-page"><h1>Access denied</h1><p>Only the Super Admin can manage users, roles and permissions.</p></div>;
   return <>{children}</>;
 }
+function CompanyAdminRoute() {
+  const access=useAccessSnapshot();
+  if(!access.loaded || (!access.is_super_admin &&
+    (access.company_admin_tenant_ids?.length??0)===0)) {
+    return <div className="table-page"><h1>Company access unavailable</h1>
+      <p>A verified Company Super Admin membership is required.</p></div>;
+  }
+  return <CompanyAdminWorkspacePage/>;
+}
 function UsersAdminRoute() { return <AdminOnly><SupabaseUserManagementPage /></AdminOnly>; }
 function RolesAdminRoute() { return <AdminOnly><RoleManagementPage /></AdminOnly>; }
 function PermissionsAdminRoute() { return <AdminOnly><PermissionListPage /></AdminOnly>; }
@@ -98,7 +111,7 @@ export const router = createBrowserRouter([
   // Invitation links are public only for completing a verified Supabase Auth invite.
   { path: "/invite/accept", Component: InvitationAcceptancePage },
   // Capability-scoped guest routes remain inaccessible until the verified backend release.
-  ...(LIVE_MEETINGS_RELEASED ? [
+  ...(QUICK_MEETINGS_RELEASED ? [
     { path: "/quick-meeting", Component: QuickMeetingGuestPage },
     { path: "/quick-meeting/:shareToken", Component: QuickMeetingGuestPage },
   ] : []),
@@ -120,6 +133,10 @@ export const router = createBrowserRouter([
       { path: "governance-org",     Component: PlaceholderPage },
       { path: "archive-reports",    Component: PlaceholderPage },
       { path: "administration",     Component: PlaceholderPage },
+      { path: "subscribers",        Component: PlaceholderPage },
+      { path: "company-management", Component: PlaceholderPage },
+      { path: "company-management/overview", Component: CompanyAdminRoute },
+      { path: "subscribers/overview", element: <AdminOnly><SubscribersPage /></AdminOnly> },
 
       // ── Home ──────────────────────────────────────────────────────────────
       { path: "home/overview",    Component: DashboardPage },
@@ -132,7 +149,7 @@ export const router = createBrowserRouter([
       { path: "meetings/all-meetings",      Component: OnlineReturnRegisterPage },
       { path: "meetings/meeting-calendar",  Component: OfflineReturnRegisterPage },
       { path: "meetings/meeting-templates", Component: OnlineArchivePage },
-      ...(LIVE_MEETINGS_RELEASED ? [
+      ...(QUICK_MEETINGS_RELEASED ? [
         { path: "meetings/quick-meeting", Component: QuickMeetingLaunchPage },
         { path: "meetings/quick-meeting/:quickMeetingId", Component: QuickMeetingHostPage },
       ] : []),
@@ -202,8 +219,8 @@ export const router = createBrowserRouter([
       { path: "administration/notifications/delivery-logs",       Component: DeliveryLogsPage },
       { path: "administration/integrations", Component: IntegrationsPage },
       { path: "administration/security-retention",                        loader: async () => redirect("/administration/security-retention/security-policies") },
-      { path: "administration/security-retention/security-policies",      Component: AuditSelectionPage },
-      { path: "administration/security-retention/retention-legal-holds",  Component: TimeExtensionPage },
+      { path: "administration/security-retention/security-policies",      Component: SecurityPoliciesPage },
+      { path: "administration/security-retention/retention-legal-holds",  Component: RetentionLegalHoldsPage },
 
       // ── Backward compatibility redirects ──────────────────────────────────
       { path: "governance-org/user-management", loader: async () => redirect("/governance-org/users-assignments") },
@@ -234,8 +251,8 @@ export const router = createBrowserRouter([
       { path: "administration/role-management",     loader: async () => redirect("/administration/roles-permissions/roles") },
       { path: "administration/permission-list",     loader: async () => redirect("/administration/roles-permissions/permissions") },
       { path: "administration/special-registration",loader: async () => redirect("/governance-org/participant-groups") },
-      { path: "administration/time-extension",      loader: async () => redirect("/administration/security-retention/retention-legal-holds") },
-      { path: "administration/audit-selection",     loader: async () => redirect("/administration/security-retention/security-policies") },
+      { path: "administration/time-extension",      Component: TimeExtensionPage },
+      { path: "administration/audit-selection",     loader: async () => redirect("/archive-reports/audit-trail") },
     ],
   },
 ], { basename: import.meta.env.BASE_URL });

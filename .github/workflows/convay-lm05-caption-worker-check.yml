@@ -1,0 +1,33 @@
+name: Convay LM-05 — caption worker contract and pinned SDK smoke
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/convay-caption-worker/**'
+      - '.github/workflows/convay-lm05-caption-worker-check.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  caption-worker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: services/convay-caption-worker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test fail-closed caption authorization and delivery contract
+        run: python -m unittest -v
+      - name: Install pinned LiveKit worker SDK
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Verify dependencies and import worker without joining rooms
+        run: |
+          python -m pip check
+          python -m compileall -q .
+          python -c "import caption_worker; from livekit.agents import inference, stt; from livekit import rtc; assert hasattr(inference.STT, 'stream'); assert hasattr(rtc.LocalParticipant, 'send_text'); assert hasattr(stt.SpeechEventType, 'FINAL_TRANSCRIPT'); assert hasattr(rtc.TrackSource, 'SOURCE_MICROPHONE')"

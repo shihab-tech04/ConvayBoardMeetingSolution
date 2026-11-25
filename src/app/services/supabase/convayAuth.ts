@@ -45,6 +45,7 @@ export type UserMutation = {
   phone?: string;
   user_type?: string;
   employee_id?: string;
+  role_id?: string;
   status?: string;
   user_id?: string;
 };
@@ -250,6 +251,125 @@ export const convayAuth = {
     return records;
   },
 
+  /** Tenant-safe legacy/global organization assignment snapshot. */
+  async orgMemberDirectory(): Promise<Array<{
+    user_id: string;
+    primary_org_unit_id: string | null;
+    branch_id: string | null;
+    division_id: string | null;
+    department_id: string | null;
+    assignment_revision: number;
+    position: string | null;
+  }>> {
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_org_member_directory", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new Error("Invalid organization-member SQL readback");
+    return rows;
+  },
+
+  /** Writes primary assignment through a permission-gated, atomic SQL transaction. */
+  async commitOrgMemberAssignment(intent: {
+    memberId: string; expectedUnitId?: string | null; newUnitId: string;
+    operation: "assign" | "transfer"; requestId: string;
+    reason?: string; position?: string; effectiveDate: string; handoverUserId?: string;
+  }): Promise<{ member_id: string; new_unit_id: string; operation: string; revision: number; request_id: string; audit_event_id: string }> {
+    const response = await this.authenticatedRequest("/rest/v1/rpc/convay_assign_org_member", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_member_id: intent.memberId, p_expected_unit_id: intent.expectedUnitId || null,
+        p_new_unit_id: intent.newUnitId, p_operation: intent.operation,
+        p_request_id: intent.requestId, p_reason: intent.reason || null,
+        p_position: intent.position || null, p_effective_date: intent.effectiveDate,
+        p_handover_user_id: intent.handoverUserId || null,
+      }),
+    });
+    const receipt = await response.json() as {
+      member_id?: unknown; old_unit_id?: unknown; new_unit_id?: unknown;
+      operation?: unknown; revision?: unknown; request_id?: unknown; audit_event_id?: unknown;
+    };
+    if (receipt.member_id !== intent.memberId || receipt.new_unit_id !== intent.newUnitId ||
+        receipt.operation !== intent.operation || receipt.request_id !== intent.requestId ||
+        typeof receipt.revision !== "number" || !Number.isSafeInteger(receipt.revision) ||
+        typeof receipt.audit_event_id !== "string" || !receipt.audit_event_id) {
+      throw new Error("Organization assignment has no valid authoritative SQL receipt. Refresh before retrying.");
+    }
+    // A confirmed write must never be replayed automatically: verify a fresh,
+    // server-authorized record and its monotonic revision.
+    let rows: Awaited<ReturnType<typeof this.orgMemberDirectory>>;
+    try {
+      rows = await this.orgMemberDirectory();
+    } catch {
+      throw new Error("Organization assignment was acknowledged, but SQL readback is unavailable. Refresh before another change.");
+    }
+    const member = rows.find(row => row.user_id === intent.memberId);
+    if (!member || member.primary_org_unit_id !== intent.newUnitId ||
+        Number(member.assignment_revision) !== receipt.revision) {
+      throw new Error("Organization assignment was acknowledged, but SQL readback is stale. Refresh before another change.");
+    }
+    return receipt as {
+      member_id: string; new_unit_id: string; operation: string;
+      revision: number; request_id: string; audit_event_id: string;
+    };
+  },
+
+  /** Read immutable unit changes and assignment events from authorized SQL. */
+  async orgUnitHistory(unitId: string): Promise<Array<{
+    id: string; event_id: string; entity_type: string; entity_id: string;
+    action: string; actor: string; actor_role: string; timestamp: string;
+    ip_address: string; details: string; approval_status: string;
+  }>> {
+    if (!unitId || unitId.length > 180) throw new Error("Valid organization unit required");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_org_unit_history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_unit_id: unitId, p_limit: 100 }),
+    });
+    const records = await res.json();
+    if (!Array.isArray(records) || records.some(row =>
+      typeof row.id !== "string" || row.entity_id !== unitId ||
+      typeof row.action !== "string" || typeof row.timestamp !== "string")) {
+      throw new Error("Invalid organization audit readback");
+    }
+    return records;
+  },
+
+  /** Server-authorized, audit-stamped Super Admin override (no client-selected actor). */
+  async forceStartMeeting(meetingId: string): Promise<{ meetingId: string; sessionId: string; status: string; alreadyStarted: boolean; startedAt?: string }> {
+    const id = meetingId.trim();
+    if (!/^[A-Za-z0-9_-]{1,180}$/.test(id)) throw new Error("A saved meeting ID is required");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_force_start_meeting", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_meeting_id: id }),
+    });
+    const receipt = await res.json() as { meetingId?: unknown; sessionId?: unknown; status?: unknown; alreadyStarted?: unknown; startedAt?: unknown };
+    if (receipt.meetingId !== id || typeof receipt.sessionId !== "string" || receipt.status !== "In Progress") {
+      throw new Error("Force Start was not confirmed by SQL. Refresh the meeting before retrying.");
+    }
+    return { meetingId: id, sessionId: receipt.sessionId, status: receipt.status, alreadyStarted: receipt.alreadyStarted === true,
+      startedAt: typeof receipt.startedAt === "string" ? receipt.startedAt : undefined };
+  },
+
+  /** Reopen a closed online meeting only through the audited Super Admin SQL RPC. */
+  async reopenMeeting(meetingId: string, reason: string): Promise<{ meetingId: string; sessionId: string; reopenedAt: string }> {
+    const id = meetingId.trim();
+    const cleanReason = reason.trim();
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) throw new Error("A saved meeting ID is required");
+    if (cleanReason.length < 10 || cleanReason.length > 500) throw new Error("Provide a reopening reason (10–500 characters)");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_reopen_meeting", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_meeting_id: id, p_reason: cleanReason }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Meeting could not be reopened."));
+    const receipt = await res.json() as { meetingId?: unknown; sessionId?: unknown; status?: unknown; reopenedAt?: unknown };
+    if (receipt.meetingId !== id || typeof receipt.sessionId !== "string"
+      || receipt.status !== "In Progress" || typeof receipt.reopenedAt !== "string") {
+      throw new Error("Reopening was not confirmed by SQL. Refresh before retrying.");
+    }
+    return { meetingId: id, sessionId: receipt.sessionId, reopenedAt: receipt.reopenedAt };
+  },
+
   async applyBatch(operations: Array<{
     entity_key: string;
     action: "create" | "update" | "delete";
@@ -262,11 +382,75 @@ export const convayAuth = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ p_ops: operations }),
     });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Batch update was rejected by SQL."));
     const result = await res.json() as number;
     if (result !== operations.length) {
-      throw new Error("The meeting could not be saved completely");
+      throw new Error("The batch update was not completely confirmed by SQL.");
     }
     return result;
+  },
+
+  /** Atomic agenda review/archive with per-record SQL revision checks.
+   * Never fall back to the generic batch method on a conflict. */
+  async applyAgendaBatch(operations: Array<{
+    entity_key: "bms.agenda";
+    action: "update";
+    record_id: string;
+    expected_revision: number;
+    payload: Record<string, unknown>;
+  }>): Promise<number> {
+    if (!operations.length || operations.some(op =>
+      op.entity_key !== "bms.agenda" || op.action !== "update" ||
+      !op.record_id || !Number.isSafeInteger(op.expected_revision) ||
+      op.expected_revision < 1
+    )) throw new Error("Agenda data is stale. Refresh before saving.");
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_apply_agenda_batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_ops: operations }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res),
+      "Agenda changed or was denied by SQL. Refresh and retry."));
+    const updated = await res.json() as number;
+    if (updated !== operations.length) {
+      throw new Error("Agenda transaction was not fully confirmed by SQL.");
+    }
+    return updated;
+  },
+
+  /** Delete an editable Agenda child and exactly its currently linked documents.
+   * A mismatch in ANY record revision rejects the entire SQL transaction. */
+  async deleteAgendaChild(
+    childId: string, expectedRevision: number,
+    links: Array<{ recordId: string; expectedRevision: number }>,
+  ): Promise<number> {
+    const id = childId.trim();
+    const validRevision = (value: number) => Number.isSafeInteger(value) && value > 0;
+    const linkIds = links.map(link => link.recordId.trim());
+    if (!id || id.length > 180 || !validRevision(expectedRevision) ||
+      links.length > 499 || new Set(linkIds).size !== linkIds.length ||
+      links.some(link => !link.recordId.trim() || !validRevision(link.expectedRevision))) {
+      throw new Error("Agenda child or document revisions are stale. Refresh before removing.");
+    }
+    const res = await this.authenticatedRequest("/rest/v1/rpc/convay_delete_agenda_child", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_child_id: id,
+        p_expected_revision: expectedRevision,
+        p_link_revisions: links.map(link => ({
+          record_id: link.recordId.trim(),
+          expected_revision: link.expectedRevision,
+        })),
+      }),
+    });
+    if (!res.ok) throw new Error(errorMessage(await responseBody(res),
+      "Agenda child or document links changed. Refresh before removing."));
+    const deleted = await res.json() as number;
+    if (deleted !== links.length + 1) {
+      throw new Error("Agenda child removal was not completely confirmed by SQL.");
+    }
+    return deleted;
   },
 
   /**
@@ -473,7 +657,7 @@ export const convayAuth = {
     action: "list" | "create" | "update" | "delete",
     record?: T,
     version?: number,
-  ): Promise<{ records: Array<{ payload: T; revision: number }>; revision?: number }> {
+  ): Promise<{ records: Array<{ payload: T; revision: number; updated_at?: string }>; revision?: number }> {
     const session = await validSession();
     if (!session) throw new Error("Your session has expired. Sign in again.");
     const endpoint = new URL(SUPABASE_URL + "/rest/v1/convay_entity_records");
@@ -485,18 +669,18 @@ export const convayAuth = {
     };
     endpoint.searchParams.set("entity_key", "eq." + entity);
     if (action === "list") {
-      const rows: Array<{ payload: T; revision: number }> = [];
+      const rows: Array<{ payload: T; revision: number; updated_at?: string }> = [];
       // Use explicit pages rather than silently dropping records at the PostgREST max_rows limit.
       let page = 0;
       while (page < 100) {
         const url = new URL(endpoint);
-        url.searchParams.set("select", "payload,revision");
+        url.searchParams.set("select", entity === "bms.agenda" ? "payload,revision,updated_at" : "payload,revision");
         url.searchParams.set("order", "updated_at.desc");
         url.searchParams.set("limit", "1000");
         url.searchParams.set("offset", String(page * 1000));
         const res = await fetch(url.toString(), { headers, cache: "no-store" });
         if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to load " + entity));
-        const batch = await res.json() as Array<{ payload: T; revision: number }>;
+        const batch = await res.json() as Array<{ payload: T; revision: number; updated_at?: string }>;
         if (!Array.isArray(batch)) throw new Error("Invalid record response");
         rows.push(...batch);
         if (batch.length < 1000) break;

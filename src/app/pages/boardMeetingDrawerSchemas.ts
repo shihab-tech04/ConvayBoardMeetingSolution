@@ -492,24 +492,26 @@ export const POLL_DRAWER_COLS: ColDef[] = [
 // ─── Security Policy Details ──────────────────────────────────────────────────
 export const SECURITY_POLICY_DRAWER_COLS: ColDef[] = [
   dg("Summary", [
-    { key: "meeting_title",  label: "Policy Name" },
-    { key: "audit_type",     label: "Policy Type" },
-    { key: "audit_status",   label: "Status", badge: true },
+    { key: "policy_name",  label: "Policy Name" },
+    { key: "policy_type",  label: "Policy Type" },
+    { key: "status",       label: "Status", badge: true },
   ]),
-  dg("Scope & Ownership", [
-    { key: "committee",    label: "Applies To" },
-    { key: "auditor",      label: "Policy Owner" },
-    { key: "audit_date",   label: "Last Reviewed" },
-    { key: "meeting_year", label: "Year" },
+  dg("Scope & Review", [
+    { key: "applies_to",     label: "Applies To" },
+    { key: "policy_owner",   label: "Policy Owner" },
+    { key: "effective_date", label: "Effective Date" },
+    { key: "review_date",    label: "Next Review Date" },
   ]),
   dg("Details", [
-    { key: "audit_scope",      label: "Scope" },
-    { key: "audit_findings",   label: "Findings" },
-    { key: "audit_follow_up",  label: "Follow-Up Actions" },
+    { key: "description",    label: "Policy Description" },
+    { key: "attachments",    label: "Policy Document" },
+    { key: "impact_history", label: "Impact History" },
   ]),
-  dg("Activity", [
-    { key: "meeting_id",  label: "Reference" },
+  dg("Version & Audit", [
+    { key: "version",     label: "Policy Version" },
+    { key: "created_by",  label: "Created By" },
     { key: "created_at",  label: "Created At" },
+    { key: "updated_at",  label: "Last Updated" },
   ]),
 ];
 

@@ -63,13 +63,39 @@ describe("HM-07 Supabase-backed notification inbox", () => {
   });
 
   it("persists mark-all-read within the authenticated and RLS-scoped inbox", async () => {
-    request.mockResolvedValue({ status: 204 });
-    await persistAllNotificationsRead("test-user");
+    request.mockResolvedValue({ json: async () => [
+      { id: "n1", recipient_user_id: "test-user", is_read: true },
+      { id: "n2", recipient_user_id: "test-user", is_read: true },
+    ] });
+    await expect(persistAllNotificationsRead("test-user")).resolves.toEqual(["n1", "n2"]);
     const [path, config] = request.mock.calls[0];
     expect(path).toContain("is_read=eq.false");
     expect(path).toContain("recipient_user_id=eq.test-user");
     expect(config.method).toBe("PATCH");
+    expect(config.headers.Prefer).toBe("return=representation");
+    expect(path).toContain("select=id,recipient_user_id,is_read");
     expect(JSON.parse(config.body)).toEqual({ is_read: true });
+  });
+
+  it("does not claim read-all when SQL acknowledges no matching rows", async () => {
+    request.mockResolvedValue({ json: async () => [] });
+    await expect(persistAllNotificationsRead("test-user")).resolves.toEqual([]);
+  });
+
+  it("rejects malformed and cross-account bulk receipts without trusting them", async () => {
+    request.mockResolvedValueOnce({ json: async () => [
+      { id: "private", recipient_user_id: "other-user", is_read: true },
+    ] });
+    await expect(persistAllNotificationsRead("test-user"))
+      .rejects.toThrow("does not match this account");
+    request.mockResolvedValueOnce({ json: async () => ({ count: 1 }) });
+    await expect(persistAllNotificationsRead("test-user"))
+      .rejects.toThrow("Invalid notification acknowledgement");
+    request.mockResolvedValueOnce({ json: async () => [
+      { id: "n1", recipient_user_id: "test-user", is_read: false },
+    ] });
+    await expect(persistAllNotificationsRead("test-user"))
+      .rejects.toThrow("does not match this account");
   });
 
   it("does not navigate to external addresses or unsafe route segments", () => {

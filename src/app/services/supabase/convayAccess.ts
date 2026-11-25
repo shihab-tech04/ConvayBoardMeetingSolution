@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { convayAuth } from "./convayAuth";
+import { listCompanies } from "../saas/companyDirectory";
 
 export interface AccessRole {
   id: string;
@@ -37,10 +38,12 @@ export interface AccessSnapshot {
   roles: AccessRole[];
   permissions: AccessPermission[];
   user_assignments: AccessAssignment[];
+  /** Fresh, server-authorized company-admin scopes only; never client-supplied. */
+  company_admin_tenant_ids?: string[];
 }
 const empty: AccessSnapshot = {
   loaded: false, error: null, is_super_admin: false, effective_permissions: [],
-  user_role_ids: [], roles: [], permissions: [], user_assignments: [],
+  user_role_ids: [], roles: [], permissions: [], user_assignments: [], company_admin_tenant_ids: [],
 };
 let current: AccessSnapshot = empty;
 let request: Promise<AccessSnapshot> | null = null;
@@ -76,6 +79,17 @@ export async function reloadAccessSnapshot(): Promise<AccessSnapshot> {
       if (epoch !== sessionEpoch) {
         throw new Error("Access verification superseded by a session change");
       }
+      // Company administration is an independent SQL entitlement.
+      // A failure to read it must never grant tenant scope or break existing
+      // non-company roles; only an exact server-scoped directory can add ids.
+      const company_admin_tenant_ids = payload.is_super_admin === true
+        ? []
+        : await listCompanies().then(directory => directory.companies
+            .filter(item => ["provisioning","active","suspended"].includes(item.lifecycle_state))
+            .map(item => item.id)).catch(() => [] as string[]);
+      if (epoch !== sessionEpoch) {
+        throw new Error("Company scope verification superseded by a session change");
+      }
       const value: AccessSnapshot = {
         loaded: true, error: null,
         is_super_admin: payload.is_super_admin === true,
@@ -84,6 +98,7 @@ export async function reloadAccessSnapshot(): Promise<AccessSnapshot> {
         roles: payload.roles ?? [],
         permissions: payload.permissions ?? [],
         user_assignments: payload.user_assignments ?? [],
+        company_admin_tenant_ids,
       };
       publish(value);
       return value;
@@ -110,6 +125,11 @@ export const hasAccess = (code: string, state: AccessSnapshot = current) =>
 // the desktop/mobile navigation and direct route access.
 const direct: Record<string, string> = {
   "home/overview": "home_dashboard",
+  "subscribers/overview": "admin_users",
+  // Navigation catalogue integrity: a real permission label is required.
+  // Company route authorization instead uses freshly verified tenant_admin
+  // membership via convay_company_directory, never global admin_users.
+  "company-management/overview": "admin_users",
   "home/my-tasks": "home_my_tasks",
   "home/my-calendar": "home_my_calendar",
   "meetings/all-meetings": "mtg_view",
@@ -160,6 +180,7 @@ const direct: Record<string, string> = {
   "administration/integrations": "admin_integrations",
   "administration/security-retention/security-policies": "admin_config",
   "administration/security-retention/retention-legal-holds": "admin_retention",
+  "administration/time-extension": "admin_retention",
 };
 // Parent/redirect URLs resolve to their child authorization boundary.
 export function permissionForPath(path: string): string | null {
@@ -183,6 +204,9 @@ export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   if (!state.loaded) return false;
   if (state.is_super_admin) return true;
   const normalizedPath = "/" + path.replace(/^\/+|\/+$/g, "");
+  if (/^\/company-management(?:\/|$)/.test(normalizedPath))
+    return (state.company_admin_tenant_ids?.length ?? 0) > 0;
+  if (/^\/subscribers(?:\/|$)/.test(normalizedPath)) return state.is_super_admin;
   if (/^\/(?:administration\/roles-permissions(?:\/|$)|administration\/integrations(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(normalizedPath)) return false;
   const required = permissionForPath(path);
   return !!required && hasAccess(required, state);

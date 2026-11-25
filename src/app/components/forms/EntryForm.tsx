@@ -651,6 +651,7 @@ export function EntryForm({
               maxFiles={f.maxFiles ?? 5}
               maxSizeMB={f.maxSizeMB ?? 2}
               accept={f.accept}
+              disabled={f.disabled}
             />
           </div>
         );

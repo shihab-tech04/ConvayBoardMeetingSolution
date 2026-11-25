@@ -388,12 +388,12 @@ const ALL_PAGE_CFGS: Array<{ name: string; cols: PageCfg['cols'] }> = [
   {
     name: "Security Policies",
     cols: [
-      col("meeting_title", "Policy Name"),
-      col("audit_type",    "Policy Type"),
-      col("committee",     "Applies To"),
-      col("audit_date",    "Last Reviewed"),
-      col("auditor",       "Policy Owner"),
-      col("audit_status",  "Status", true),
+      col("policy_name",  "Policy Name"),
+      col("policy_type",  "Policy Type"),
+      col("applies_to",   "Applies To"),
+      col("review_date",  "Last Reviewed"),
+      col("policy_owner", "Policy Owner"),
+      col("status",       "Status", true),
     ],
   },
 ];

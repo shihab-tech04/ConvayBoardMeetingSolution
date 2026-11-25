@@ -1,4 +1,10 @@
 import { useState } from "react";
+import { recordListState } from "./recordListState";
+import { normalizeRecordedQuorum } from "./recordedQuorumStatus";
+import {
+  buildMinutesRevisionRequest, canArchiveMinutes, canEditMinutesContent,
+  canRequestMinutesRevision, canSignMinutes,
+} from "./minutesRecordActions";
 import { useParams, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { convayAuth } from "../../services/supabase/convayAuth";
@@ -129,8 +135,11 @@ export function MeetingRecordPage() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [editMinutesId, setEditMinutesId] = useState<string | null>(null);
   const [busyMinutesId, setBusyMinutesId] = useState<string | null>(null);
+  const [revisionMinutesId, setRevisionMinutesId] = useState<string | null>(null);
+  const [revisionInstructions, setRevisionInstructions] = useState("");
   const access = useAccessSnapshot();
   const canApproveMinutes = access.loaded && (access.is_super_admin || access.effective_permissions.includes("min_approve"));
+  const canEditMinutes = access.loaded && (access.is_super_admin || access.effective_permissions.includes("min_create"));
   const [tempAgendaParent, setTempAgendaParent] = useState<Record<string, string>>({});
 
   const meetingReg     = useMeetingRegistry();
@@ -153,6 +162,38 @@ export function MeetingRecordPage() {
 
   const meeting = meetingReg.items.find(m => m.id === meetingId || m.meeting_id === meetingId);
 
+  // A pending/failed SQL list is not evidence that a meeting does not exist.
+  if (meetingReg.loading) {
+    return (
+      <div role="status" aria-live="polite" style={{ padding: "3rem", textAlign: "center" }}>
+        <RefreshCw size={40} aria-hidden="true" style={{ margin: "0 auto 1rem", display: "block" }} />
+        <h2 style={{ fontSize: "1.2rem", fontWeight: 700 }}>Loading Meeting Record</h2>
+        <p style={{ color: "var(--color-muted-foreground)" }}>Retrieving the latest authorized meeting record.</p>
+      </div>
+    );
+  }
+
+  if (meetingReg.error) {
+    return (
+      <div role="alert" style={{ padding: "3rem", textAlign: "center" }}>
+        <AlertCircle size={48} aria-hidden="true" style={{ margin: "0 auto 1rem", color: "#ef4444", display: "block" }} />
+        <h2 style={{ fontSize: "1.2rem", fontWeight: 700, marginBottom: "0.5rem" }}>Meeting Record Unavailable</h2>
+        <p style={{ color: "var(--color-muted-foreground)", marginBottom: "1.5rem" }}>
+          The meeting register could not be loaded. This does not mean the meeting was deleted.
+        </p>
+        <button
+          type="button"
+          onClick={() => { void Promise.resolve(meetingReg.refresh?.()).catch(error =>
+            toast.error(error instanceof Error ? error.message : "Unable to load the meeting record.")
+          ); }}
+          style={{ padding: "0.5rem 1.25rem", borderRadius: 8, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}
+        >
+          Retry Loading
+        </button>
+      </div>
+    );
+  }
+
   if (!meeting) {
     return (
       <div style={{ padding: "3rem", textAlign: "center" }}>
@@ -170,7 +211,12 @@ export function MeetingRecordPage() {
 
   // Use one SQL transaction for the minutes + meeting status transition.
   const archiveMinutes = async (minutesId: string) => {
-    if (busyMinutesId !== null || !canApproveMinutes) return;
+    if (busyMinutesId !== null) return;
+    const latest = minutesReg.items.find(item => item.id === minutesId);
+    if (!canArchiveMinutes(latest?.approval_status, canApproveMinutes)) {
+      toast.error("Only authorized signed minutes can be archived. Refresh and retry.");
+      return;
+    }
     setBusyMinutesId(minutesId);
     try {
       await convayAuth.applyBatch([
@@ -260,10 +306,22 @@ export function MeetingRecordPage() {
     </div>
   );
 
+  // An in-flight or failed permission-scoped SQL read is not an empty history.
+  const participantHistoryState = recordListState(Boolean(participantReg.loading), participantReg.error, meetingParticipants.length);
+  const attendanceHistoryState = recordListState(Boolean(attendanceReg.loading), attendanceReg.error, meetingAttendance.length);
+
   const renderParticipants = () => (
     <>
       <SectionCard title={`Participants (${meetingParticipants.length})`}>
-        {meetingParticipants.length === 0 ? (
+        {participantHistoryState === "loading" ? (
+          <div role="status" aria-live="polite"><EmptyState icon={RefreshCw} message="Loading meeting participants…" /></div>
+        ) : participantHistoryState === "error" ? (
+          <div role="alert" style={{ textAlign: "center", padding: "1.5rem" }}>
+            <p style={{ marginBottom: "0.75rem" }}>Unable to load meeting participants.</p>
+            <button type="button" onClick={() => { void Promise.resolve(participantReg.refresh?.()).catch(() => toast.error("Unable to refresh participants.")); }}
+              style={{ padding: "0.5rem 1.25rem", borderRadius: 8, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}>Retry</button>
+          </div>
+        ) : participantHistoryState === "empty" ? (
           <EmptyState icon={Users} message="No participant records linked to this meeting." />
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -285,7 +343,15 @@ export function MeetingRecordPage() {
         )}
       </SectionCard>
       <SectionCard title={`Attendance Records (${meetingAttendance.length})`}>
-        {meetingAttendance.length === 0 ? (
+        {attendanceHistoryState === "loading" ? (
+          <div role="status" aria-live="polite"><EmptyState icon={RefreshCw} message="Loading attendance history…" /></div>
+        ) : attendanceHistoryState === "error" ? (
+          <div role="alert" style={{ textAlign: "center", padding: "1.5rem" }}>
+            <p style={{ marginBottom: "0.75rem" }}>Unable to load attendance history.</p>
+            <button type="button" onClick={() => { void Promise.resolve(attendanceReg.refresh?.()).catch(() => toast.error("Unable to refresh attendance.")); }}
+              style={{ padding: "0.5rem 1.25rem", borderRadius: 8, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}>Retry</button>
+          </div>
+        ) : attendanceHistoryState === "empty" ? (
           <EmptyState icon={Users} message="No attendance records for this meeting." />
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -322,7 +388,7 @@ export function MeetingRecordPage() {
                 <TD>{q.event_type}</TD>
                 <TD>{q.quorum_present}</TD>
                 <TD>{q.quorum_required}</TD>
-                <TD><StatusPill value={q.quorum_met === "Yes" ? "Met" : "Not Met"} /></TD>
+                <TD><StatusPill value={normalizeRecordedQuorum(q.quorum_met)} /></TD>
                 <TD>{q.recorded_by}</TD>
               </tr>
             ))}
@@ -614,24 +680,51 @@ export function MeetingRecordPage() {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "0.5rem" }}>
               <StatusPill value={m.approval_status} />
               <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                {canApproveMinutes && m.approval_status !== "Signed" && m.approval_status !== "Archived" && (
-                  <>
-                    <button
-                      onClick={async () => { if (busyMinutesId || !canApproveMinutes) return; setBusyMinutesId(m.id); try { const saved = await minutesReg.update(m.id, { approval_status: "Signed" }); if (saved !== false) toast.success("Minutes signed and approved."); } finally { setBusyMinutesId(null); } }}
-                      style={{ padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "#22c55e22", color: "#22c55e", border: "1px solid #22c55e44", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
-                    >
-                      <CheckCircle size={12} /> Sign & Approve
-                    </button>
-                    <button
-                      onClick={async () => { if (busyMinutesId || !canApproveMinutes) return; setBusyMinutesId(m.id); try { const saved = await minutesReg.update(m.id, { approval_status: "Revision Requested" }); if (saved !== false) toast.info("Revision requested."); } finally { setBusyMinutesId(null); } }}
-                      style={{ padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b44", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
-                    >
-                      <RefreshCw size={12} /> Request Revision
-                    </button>
-                  </>
-                )}
-                {canApproveMinutes && m.approval_status === "Signed" && (
+                {canSignMinutes(m.approval_status, canApproveMinutes) && (
                   <button
+                    type="button"
+                    disabled={busyMinutesId !== null}
+                    onClick={async () => {
+                      if (busyMinutesId !== null) return;
+                      const latest = minutesReg.items.find(item => item.id === m.id);
+                      if (!canSignMinutes(latest?.approval_status, canApproveMinutes)) {
+                        toast.error("Minutes must be approved before recording a signature. Refresh and retry.");
+                        return;
+                      }
+                      setBusyMinutesId(m.id);
+                      try {
+                        const saved = await minutesReg.update(m.id, { approval_status: "Signed" });
+                        if (saved === false) return; // Registry already reports failed server writes.
+                        try {
+                          await minutesReg.refresh?.();
+                          toast.success("Internal minutes signature recorded.");
+                        } catch {
+                          toast.info("Signature saved; refresh to confirm the updated minutes.");
+                        }
+                      } catch (error) {
+                        toast.error(error instanceof Error ? error.message : "Could not record the minutes signature.");
+                      } finally {
+                        setBusyMinutesId(null);
+                      }
+                    }}
+                    style={{ padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "#22c55e22", color: "#22c55e", border: "1px solid #22c55e44", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+                  >
+                    <CheckCircle size={12} /> Record Internal Signature
+                  </button>
+                )}
+                {canRequestMinutesRevision(m.approval_status, canApproveMinutes) && (
+                  <button
+                    type="button"
+                    disabled={busyMinutesId !== null}
+                    onClick={() => { setRevisionMinutesId(m.id); setRevisionInstructions(""); }}
+                    style={{ padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b44", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+                  >
+                    <RefreshCw size={12} /> Request Revision
+                  </button>
+                )}
+                {canArchiveMinutes(m.approval_status, canApproveMinutes) && (
+                  <button
+                    type="button"
                     onClick={() => { void archiveMinutes(m.id); }}
                     disabled={busyMinutesId !== null}
                     style={{ padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "#6b728022", color: "#6b7280", border: "1px solid #6b728044", cursor: "pointer" }}
@@ -642,7 +735,67 @@ export function MeetingRecordPage() {
               </div>
             </div>
           </div>
-          {editMinutesId === m.id ? (
+          {revisionMinutesId === m.id && canRequestMinutesRevision(m.approval_status, canApproveMinutes) && (
+            <div style={{ border: "1px solid var(--color-border)", background: "var(--color-muted)", borderRadius: 8, padding: "0.75rem", marginBottom: "0.75rem" }}>
+              <label htmlFor={`min-revision-${m.id}`} style={{ display: "block", fontSize: "0.78rem", fontWeight: 600, marginBottom: "0.35rem" }}>
+                Revision instructions (minimum 10 characters)
+              </label>
+              <textarea
+                id={`min-revision-${m.id}`}
+                rows={3}
+                value={revisionInstructions}
+                onChange={event => setRevisionInstructions(event.target.value)}
+                disabled={busyMinutesId !== null}
+                style={{ width: "100%", padding: "0.5rem", boxSizing: "border-box", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-foreground)", resize: "vertical" }}
+              />
+              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+                <button
+                  type="button"
+                  disabled={busyMinutesId !== null}
+                  onClick={async () => {
+                    if (busyMinutesId !== null) return;
+                    const latest = minutesReg.items.find(item => item.id === m.id);
+                    let patch: ReturnType<typeof buildMinutesRevisionRequest>;
+                    try {
+                      patch = buildMinutesRevisionRequest(latest?.approval_status, canApproveMinutes, revisionInstructions);
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : "Invalid revision request.");
+                      return;
+                    }
+                    setBusyMinutesId(m.id);
+                    try {
+                      const saved = await minutesReg.update(m.id, patch as never);
+                      if (saved === false) return; // Avoid a duplicate error toast from the registry.
+                      setRevisionMinutesId(null);
+                      setRevisionInstructions("");
+                      try {
+                        await minutesReg.refresh?.();
+                        toast.success("Revision requested with instructions.");
+                      } catch {
+                        toast.info("Revision request saved; refresh to confirm the updated minutes.");
+                      }
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : "Could not request a revision.");
+                    } finally {
+                      setBusyMinutesId(null);
+                    }
+                  }}
+                  style={{ padding: "4px 12px", borderRadius: 6, fontSize: "0.78rem", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}
+                >
+                  Submit Revision Request
+                </button>
+                <button
+                  type="button"
+                  disabled={busyMinutesId !== null}
+                  onClick={() => { setRevisionMinutesId(null); setRevisionInstructions(""); }}
+                  style={{ padding: "4px 12px", borderRadius: 6, fontSize: "0.78rem", background: "var(--color-card)", color: "var(--color-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {editMinutesId === m.id && canEditMinutesContent(m.approval_status, canEditMinutes) ? (
             <div>
               <textarea
                 defaultValue={m.discussion_summary ?? m.quorum_statement ?? ""}
@@ -654,11 +807,25 @@ export function MeetingRecordPage() {
                 <button
                   onClick={async () => {
                     const el = document.getElementById(`min-edit-${m.id}`) as HTMLTextAreaElement | null;
-                    if (!el || busyMinutesId) return;
+                    if (!el || busyMinutesId !== null) return;
+                    const latest = minutesReg.items.find(item => item.id === m.id);
+                    if (!canEditMinutesContent(latest?.approval_status, canEditMinutes)) {
+                      toast.error("Only draft or returned minutes can be edited by an authorized author.");
+                      return;
+                    }
                     setBusyMinutesId(m.id);
                     try {
                       const saved = await minutesReg.update(m.id, { discussion_summary: el.value });
-                      if (saved !== false) { toast.success("Minutes content updated."); setEditMinutesId(null); }
+                      if (saved === false) return; // Registry already reports failed server writes.
+                      setEditMinutesId(null);
+                      try {
+                        await minutesReg.refresh?.();
+                        toast.success("Minutes content updated.");
+                      } catch {
+                        toast.info("Minutes saved; refresh to confirm the updated content.");
+                      }
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : "Could not update minutes.");
                     } finally { setBusyMinutesId(null); }
                   }}
                   style={{ padding: "4px 14px", borderRadius: 6, fontSize: "0.8rem", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}
@@ -675,12 +842,16 @@ export function MeetingRecordPage() {
               <pre style={{ fontSize: "0.78rem", whiteSpace: "pre-wrap", background: "var(--color-muted)", borderRadius: 6, padding: "0.75rem", maxHeight: 320, overflowY: "auto", color: "var(--color-foreground)", lineHeight: 1.6 }}>
                 {m.discussion_summary || m.quorum_statement || "No content captured."}
               </pre>
-              <button
-                onClick={() => setEditMinutesId(m.id)}
-                style={{ marginTop: "0.5rem", padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "var(--color-muted)", color: "var(--color-muted-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}
-              >
-                Edit Minutes
-              </button>
+              {canEditMinutesContent(m.approval_status, canEditMinutes) && (
+                <button
+                  type="button"
+                  disabled={busyMinutesId !== null}
+                  onClick={() => setEditMinutesId(m.id)}
+                  style={{ marginTop: "0.5rem", padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "var(--color-muted)", color: "var(--color-muted-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}
+                >
+                  Edit Minutes
+                </button>
+              )}
             </div>
           )}
         </SectionCard>

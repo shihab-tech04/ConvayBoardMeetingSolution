@@ -14,13 +14,20 @@ import {
   type AuthorizedBoardPackFile,
 } from "../../utils/boardPackZip";
 
+export interface BoardPackManifestFile extends AuthorizedBoardPackFile {
+  /** Server-recorded immutable original byte size, never client-provided. */
+  sizeBytes: number;
+  /** Optional immutable SHA-256 (lowercase hex) when recorded by the server. */
+  sha256?: string;
+}
+
 export interface BoardPackDownloadManifest {
   packId: string;
   manifestId: string;
   approvalStatus: "Published";
   frozenRevision: number;
   expiresAt: string;
-  files: readonly AuthorizedBoardPackFile[];
+  files: readonly BoardPackManifestFile[];
 }
 
 export interface BoardPackDownloadReceipt {
@@ -45,7 +52,13 @@ function isRecord(input: unknown): input is Record<string, unknown> {
 }
 
 function validIdentifier(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= 220;
+  return typeof value === "string" && value.trim().length > 0 &&
+    value.trim() === value && value.length <= 220 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/** An immutable board-pack pin must not resolve to the mutable original-file alias. */
+function validFrozenVersionId(value: unknown): value is string {
+  return validIdentifier(value) && !/^(?:latest|live)$/i.test(value);
 }
 
 function assertNotCancelled(signal?: AbortSignal): void {
@@ -77,17 +90,27 @@ export function parseAuthorizedBoardPackManifest(
     throw new Error("The authorized board pack has no valid document list.");
   }
   const seen = new Set<string>();
-  const files: AuthorizedBoardPackFile[] = input.files.map((file: unknown) => {
+  const files: BoardPackManifestFile[] = input.files.map((file: unknown) => {
     if (!isRecord(file) || !validIdentifier(file.documentId) ||
-        !validIdentifier(file.versionId) || !validIdentifier(file.fileName)) {
+        !validFrozenVersionId(file.versionId) || !validIdentifier(file.fileName)) {
       throw new Error("The board pack contains an invalid document/version.");
+    }
+    if (!Number.isSafeInteger(file.sizeBytes) || Number(file.sizeBytes) < 0 ||
+        Number(file.sizeBytes) > 100 * 1024 * 1024 ||
+        (file.sha256 !== undefined &&
+         (typeof file.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(file.sha256)))) {
+      throw new Error("The board pack contains invalid original-file integrity metadata.");
     }
     const pair = `${file.documentId}\0${file.versionId}`;
     if (seen.has(pair)) throw new Error("The board pack contains duplicate document versions.");
     seen.add(pair);
     // Defensive filename validation; the ZIP writer also sanitizes and deduplicates.
     safeBoardPackEntryName(file.fileName);
-    return {documentId: file.documentId, versionId: file.versionId, fileName: file.fileName};
+    return {
+      documentId: file.documentId, versionId: file.versionId,
+      fileName: file.fileName, sizeBytes: file.sizeBytes as number,
+      ...(file.sha256 !== undefined ? {sha256: file.sha256 as string} : {}),
+    };
   });
   return {
     packId: input.packId as string, manifestId: input.manifestId as string,
@@ -130,6 +153,8 @@ export async function prepareAuthorizedBoardPackDownload(
   );
   assertNotCancelled(signal);
   let receiptId: string | null = null;
+  const fileIndex = new Map(manifest.files.map(file =>
+    [`${file.documentId}\0${file.versionId}`, file] as const));
   const archive = await composeAuthorizedBoardPack(
     manifest.files,
     async (documentId, versionId) => {
@@ -139,6 +164,25 @@ export async function prepareAuthorizedBoardPackDownload(
       }
       const original = await gateway.loadOriginal(documentId, versionId);
       assertNotCancelled(signal);
+      if (!original) return null; // The composer fails closed on a missing original.
+      const expected = fileIndex.get(`${documentId}\0${versionId}`);
+      if (!expected || original.size !== expected.sizeBytes) {
+        throw new Error("Board pack original-file size does not match the frozen manifest.");
+      }
+      if (expected.sha256) {
+        // Fail closed if this environment cannot verify a server-issued digest.
+        if (!globalThis.crypto?.subtle) {
+          throw new Error("Board pack original-file integrity cannot be verified.");
+        }
+        const digest = new Uint8Array(await globalThis.crypto.subtle.digest(
+          "SHA-256", await original.arrayBuffer(),
+        ));
+        assertNotCancelled(signal);
+        const actual = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+        if (actual !== expected.sha256) {
+          throw new Error("Board pack original-file checksum mismatch.");
+        }
+      }
       return original;
     },
     async () => {
