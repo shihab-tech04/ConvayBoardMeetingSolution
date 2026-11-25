@@ -39,7 +39,7 @@ DECLARE
   v_progress boolean := false;
 BEGIN
   IF v_actor IS NULL OR p_tenant_id IS NULL
-     OR p_action NOT IN ('list','read','create') THEN
+     OR coalesce(p_action,'') NOT IN ('list','read','create') THEN
     RAISE EXCEPTION 'Verified company administration required' USING ERRCODE='42501';
   END IF;
   -- No implicit platform root bypass: every actor needs their own active,
@@ -179,7 +179,7 @@ BEGIN
         END IF;
       ELSIF v_field_type='select' THEN
         IF pg_catalog.jsonb_typeof(v_value)<>'string'
-          OR NOT (v_field->'options') ? (v_value#>>'{}') THEN
+          OR NOT COALESCE((v_field->'options') ? (v_value#>>'{}'),false) THEN
           RAISE EXCEPTION 'Invalid selected option: %',v_field_id USING ERRCODE='22023';
         END IF;
       ELSIF v_field_type='multiselect' THEN
@@ -189,7 +189,7 @@ BEGIN
         END IF;
         FOR v_option IN SELECT value FROM pg_catalog.jsonb_array_elements(v_value) LOOP
           IF pg_catalog.jsonb_typeof(v_option)<>'string'
-             OR NOT (v_field->'options') ? (v_option#>>'{}') THEN
+             OR NOT COALESCE((v_field->'options') ? (v_option#>>'{}'),false) THEN
             RAISE EXCEPTION 'Invalid multi-select option: %',v_field_id USING ERRCODE='22023';
           END IF;
         END LOOP;

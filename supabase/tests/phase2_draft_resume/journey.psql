@@ -137,4 +137,75 @@ BEGIN
  IF (SELECT count(*) FROM convay_private.tenant_control_events WHERE action IN ('company_meeting_draft_created','company_meeting_draft_updated','company_meeting_draft_discarded'))<>3 THEN RAISE EXCEPTION 'audit count mismatch'; END IF;
  IF (SELECT count(*) FROM public.convay_entity_records WHERE entity_key='bms.meetings')<>1 THEN RAISE EXCEPTION 'staging unexpectedly activated a real meeting'; END IF;
 END $test$;
+
+-- Rollback compatibility rehearsal on a retained progress draft, not just an empty schema.
+CREATE TEMP TABLE draft_rollback_fixture(payload jsonb, receipt jsonb);
+GRANT SELECT,INSERT ON draft_rollback_fixture TO authenticated;
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+DO $test$
+DECLARE
+ a uuid:='11111111-1111-4111-8111-111111111111';
+ d jsonb:='{"steps":[{"id":"details","title":"Meeting Details","fields":[{"id":"purpose","label":"Purpose","type":"text","required":true}]}]}';
+ t uuid; p jsonb; r jsonb;
+BEGIN
+ r:=public.convay_meeting_template_manage('create',jsonb_build_object('tenant_id',a,'title','Rollback compatibility','template_key','rollback_compatibility','definition',d,'request_id',gen_random_uuid()));
+ t:=(r->>'template_id')::uuid;
+ PERFORM public.convay_meeting_template_manage('publish',jsonb_build_object('template_id',t,'expected_revision',1,'request_id',gen_random_uuid()));
+ p:=jsonb_build_object('request_id',gen_random_uuid(),'template_id',t,'template_revision',1,'meeting_title','Retained partial draft','values','{}'::jsonb,'wizard_step_id','details','partial_save',true);
+ r:=public.convay_company_meeting_drafts('create',a,p);
+ INSERT INTO draft_rollback_fixture VALUES(p,r);
+END $test$;
+RESET ROLE;
+CREATE TEMP TABLE rollback_saved_row AS SELECT to_jsonb(d) AS snapshot FROM convay_private.company_meeting_draft_staging d;
+\ir rollback_isolated.sql
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+DO $test$
+DECLARE
+ a uuid:='11111111-1111-4111-8111-111111111111';
+ p jsonb; r jsonb; id text; legacy jsonb;
+BEGIN
+ SELECT payload,receipt INTO p,r FROM draft_rollback_fixture;
+ id:=r->>'draft_id';
+ IF public.convay_company_draft_lifecycle('list',a,'{}') ? 'draft_progress_supported' THEN RAISE EXCEPTION 'rollback capability still active'; END IF;
+ IF public.convay_company_draft_lifecycle('read',a,jsonb_build_object('draft_id',id))->'draft'->'values' IS DISTINCT FROM p->'values' THEN RAISE EXCEPTION 'rollback lost values'; END IF;
+ BEGIN
+  PERFORM public.convay_company_meeting_drafts('create',a,p);
+  RAISE EXCEPTION 'cached progress request accepted during rollback';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL; END;
+ BEGIN
+  PERFORM public.convay_company_draft_lifecycle('update',a,jsonb_build_object('draft_id',id,'expected_revision',1,'request_id',gen_random_uuid(),'meeting_title','Unsafe overwrite','values',jsonb_build_object('purpose','changed')));
+  RAISE EXCEPTION 'legacy overwrite of retained progress accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL; END;
+ BEGIN
+  PERFORM public.convay_company_draft_lifecycle('discard',a,jsonb_build_object('draft_id',id,'expected_revision',1,'request_id',gen_random_uuid()));
+  RAISE EXCEPTION 'legacy discard of retained progress accepted';
+ EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL; END;
+ legacy:=(p-'wizard_step_id'-'partial_save')||jsonb_build_object('request_id',gen_random_uuid(),'meeting_title','Legacy full draft','values',jsonb_build_object('purpose','Complete'));
+ r:=public.convay_company_meeting_drafts('create',a,legacy);
+ IF r->>'draft_id' IS NULL OR r ? 'wizard_step_id' THEN RAISE EXCEPTION 'legacy complete staging failed'; END IF;
+END $test$;
+RESET ROLE;
+DO $test$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM convay_private.company_meeting_draft_staging d JOIN rollback_saved_row s ON to_jsonb(d)=s.snapshot) THEN RAISE EXCEPTION 'rollback modified retained snapshot'; END IF;
+ IF has_function_privilege('anon','public.convay_company_draft_lifecycle(text,uuid,jsonb)','EXECUTE') THEN RAISE EXCEPTION 'rollback widened RPC grant'; END IF;
+END $test$;
+\ir candidate.sql
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+DO $test$
+DECLARE
+ a uuid:='11111111-1111-4111-8111-111111111111';
+ p jsonb; r jsonb; s jsonb;
+BEGIN
+ SELECT payload,receipt INTO p,r FROM draft_rollback_fixture;
+ IF public.convay_company_meeting_drafts('create',a,p) IS DISTINCT FROM r THEN RAISE EXCEPTION 'reapply lost original receipt'; END IF;
+ s:=public.convay_company_draft_lifecycle('read',a,jsonb_build_object('draft_id',r->>'draft_id'));
+ IF s->'draft'->>'wizard_step_id' IS DISTINCT FROM 'details' OR s->'draft'->'values' IS DISTINCT FROM p->'values' OR s->'draft'->>'edit_revision' IS DISTINCT FROM '1' THEN RAISE EXCEPTION 'reapply lost exact progress'; END IF;
+ IF public.convay_company_draft_lifecycle('list',a,'{}')->'draft_progress_supported' IS DISTINCT FROM 'true'::jsonb THEN RAISE EXCEPTION 'reapply missing capability'; END IF;
+ RAISE NOTICE 'PASS: non-destructive rollback, cached write denial, legacy full staging, exact progress and receipt reapply';
+END $test$;
+RESET ROLE;
 ROLLBACK;
