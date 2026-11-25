@@ -10,6 +10,9 @@ import { normalizeMeetingSchedule, validateMeetingSchedule } from "./meetingSche
 import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "./meetingAgendaSelection";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
+import { readMeetingDraftSnapshot, restoreMeetingDraftRow } from "./meetingDraftResume";
+import { readDraftWizardStep } from "../../components/forms/draftWizardStep";
+import { readAccessSnapshot } from "../../services/supabase/convayAccess";
 import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDeletion";
 import { DRAFT_DELETION_UNAVAILABLE_REASON, guardMeetingDrawerAction } from "./meetingDeletionReleaseGate";
 import { meetingLeadershipLabel, meetingLeadershipPayload, resolveMeetingLeadership } from "./meetingLeadership";
@@ -919,11 +922,28 @@ export function OnlineReturnRegisterPage() {
         cancelled.cancellation_reason === reason.trim();
     },
 
+    onResumeDraft: async (row) => {
+      const access = readAccessSnapshot();
+      if (!access.loaded) throw new Error("Verify your session before resuming a draft.");
+      const request = async (path: string, init?: RequestInit) => {
+        if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
+        const response = await convayAuth.authenticatedRequest(path, init);
+        if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
+        return response;
+      };
+      const snapshot = await readMeetingDraftSnapshot(request, String(row.id ?? ""), String(row.meeting_id ?? row.id ?? ""),
+        meeting => resolveMeetingActions({ ...meeting, status: meeting.approval_status }).some(action => action.id === "continue_setup" && action.visible && action.enabled));
+      if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
+      return restoreMeetingDraftRow(snapshot, bmsUserRegistry.items, documentRegistry.items);
+    },
+
     // ── Save Draft: upserts a meeting record with status "Draft" ─────────────────
     onSaveDraft: async (values, existingDraftId) => {
       const batch: Array<{ entity_key: string; action: "create" | "update" | "delete"; record_id?: string; payload?: { id?: string; [key: string]: unknown } }> = [];
       const now   = new Date().toISOString();
       const title = String(values.meeting_title ?? "Untitled Draft");
+      const savedStep = readDraftWizardStep(values._current_step, MEETING_FORM_STEPS.length);
+      if (savedStep.recovered) throw new Error("The current wizard step is invalid. Reopen the draft and retry.");
       const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
       const draftOrg = leadership.names.organizer;
 
@@ -948,7 +968,7 @@ export function OnlineReturnRegisterPage() {
         quorum_forecast:  "Pending",
         readiness:        "In Preparation",
         participant_count: "0", agenda_count: "0", document_count: "0",
-        draft_current_step: String(values._current_step ?? "0"),
+        draft_current_step: String(savedStep.index),
         updated_at: now,
       };
 
