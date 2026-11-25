@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.95.0";
-import { buildInvitationOptions, mayAcceptInvitation } from "./invitation.ts";
+import { buildInvitationOptions, hasExactInvitationRoleReadback, isAssignableInvitationRole, mayAcceptInvitation } from "./invitation.ts";
+import { applyAccountStatusWithReadback, type ManagedAccountStatus } from "./accountStatus.ts";
 
 const headers = {
   "Access-Control-Allow-Origin": "*",
@@ -29,6 +30,7 @@ type Payload = {
   phone?: string;
   user_type?: string;
   employee_id?: string;
+  role_id?: string;
 };
 
 function failOnBadInput(p: Payload, inviting = false): string | null {
@@ -41,7 +43,27 @@ function failOnBadInput(p: Payload, inviting = false): string | null {
   if (p.password !== undefined && p.password.length < 6) return "Password must contain at least 6 characters";
   if (inviting && (!p.name?.trim() || !p.email?.trim())) return "Name and email are required";
   if (inviting && p.password !== undefined) return "Invitees set their own password after verifying their email";
+  if (inviting && (!p.role_id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.role_id))) {
+    return "Select a valid active role before sending the invitation";
+  }
   return null;
+}
+
+/** A failed role write must not leave an apparently successful, roleless invite.
+ * Profile deletion cascades the role links. Auth user deletion alone is
+ * restricted by the profile FK, so the cleanup order is important. */
+async function cancelUnassignedInvitation(userId: string): Promise<boolean> {
+  const { error: profileError } = await admin.from("user_profiles").delete().eq("user_id", userId);
+  if (profileError) {
+    console.error("Invitation rollback: profile deletion failed", profileError.message);
+    return false;
+  }
+  const { error: authError } = await admin.auth.admin.deleteUser(userId);
+  if (authError) {
+    console.error("Invitation rollback: Auth deletion failed", authError.message);
+    return false;
+  }
+  return true;
 }
 
 async function audit(actor: string, subject: string | null, action: string) {
@@ -96,6 +118,17 @@ Deno.serve(async (req: Request) => {
         .update({ account_status: "active", updated_at: new Date().toISOString() })
         .eq("user_id", auth.user.id).select(fields).single();
       if (activationError || !user) return response(500, { error: "Password saved; Convay could not activate the profile. Retry from the invitation link." });
+      // A company assignment is queued only by the Platform Super Admin.
+      // Claim it in the same SQL transaction before finalizing the invitation.
+      // The service role never accepts a tenant/role from the invitee request.
+      const { data: companyClaim, error: companyClaimError } = await admin.rpc(
+        "convay_claim_pending_company_invites", { p_user_id: auth.user.id },
+      );
+      if (companyClaimError || !companyClaim || companyClaim.user_id !== auth.user.id
+          || !Array.isArray(companyClaim.claimed) || companyClaim.tenant_active !== false
+          || companyClaim.meeting_access_activated !== false) {
+        return response(503, { error: "Account activated, but company membership could not be verified. Retry this invitation once; no paid workspace access was granted." });
+      }
       const { error: metadataError } = await admin.auth.admin.updateUserById(auth.user.id, {
         app_metadata: { ...appMetadata, convay_invitation_status: "accepted" },
       });
@@ -148,6 +181,16 @@ Deno.serve(async (req: Request) => {
     if (action === "invite") {
       const problem = failOnBadInput(body, true);
       if (problem) return response(400, { error: problem });
+      const roleId = body.role_id!;
+      // Validate the explicit selected role BEFORE an invitation email is sent.
+      // This is an authenticated, server-authorized Super Admin operation;
+      // client-submitted role IDs do not become grants without SQL validation.
+      const { data: assignableRole, error: roleLookupError } = await admin.from("convay_roles")
+        .select("id,status,is_system_role").eq("id", roleId).maybeSingle();
+      if (roleLookupError) return response(503, { error: "Unable to verify the selected role. Try again." });
+      if (!isAssignableInvitationRole(roleId, assignableRole)) {
+        return response(400, { error: "Selected role is inactive, unavailable or protected. Choose an active role." });
+      }
       const name = body.name!.trim(), email = body.email!.trim().toLowerCase();
       const username = (body.username?.trim() || email.split("@")[0]).toLowerCase();
       if (!/^[a-z0-9._-]{2,80}$/.test(username)) return response(400, { error: "Choose a valid unique username" });
@@ -186,8 +229,25 @@ Deno.serve(async (req: Request) => {
         await admin.auth.admin.deleteUser(userId);
         return response(409, { error: insertError.code === "23505" ? "Email or username already exists; the invitation was cancelled" : "Unable to save user profile; the invitation was cancelled" });
       }
+      // The existing privileged RPC performs the role replacement transaction;
+      // the Edge function confirms the resulting SQL row before claiming success.
+      const { error: assignmentError } = await admin.rpc("convay_assign_roles", {
+        p_user: userId, p_roles: [roleId],
+      });
+      const { data: assignedRoles, error: readbackError } = assignmentError
+        ? { data: null, error: assignmentError }
+        : await admin.from("convay_user_roles").select("role_id").eq("user_id", userId);
+      if (assignmentError || readbackError || !hasExactInvitationRoleReadback(roleId, assignedRoles)) {
+        const cancelled = await cancelUnassignedInvitation(userId);
+        return response(500, { error: cancelled
+          ? "Unable to assign the selected role; the invitation was cancelled. Check the role and retry."
+          : "Invitation may have been sent, but role setup could not be confirmed and cleanup failed. Check User Management before retrying." });
+      }
       await audit(auth.user.id, userId, "user_invited");
-      return response(201, { user: { ...user, invitation_status: "pending", email_verified_at: null } });
+      return response(201, { user: {
+        ...user, invitation_status: "pending", email_verified_at: null,
+        assigned_role_id: roleId,
+      } });
     }
     if (!["update","set_status","set_password","delete"].includes(action)) {
       return response(400, { error: "Unsupported action" });
@@ -201,9 +261,11 @@ Deno.serve(async (req: Request) => {
     if (target.account_role === "super_admin" || body.user_id === auth.user.id) {
       return response(403, { error: "The sole Super Admin account cannot be changed here" });
     }
+    let previousAuthBanUntil: string | null = null;
     if (action === "set_password" || action === "set_status") {
       const { data: targetAuth, error: targetAuthError } = await admin.auth.admin.getUserById(body.user_id);
       if (targetAuthError || !targetAuth.user) return response(404, { error: "Authentication user not found" });
+      if (action === "set_status") previousAuthBanUntil = targetAuth.user.banned_until ?? null;
       if (targetAuth.user.app_metadata?.convay_invitation_status === "pending" &&
         (action === "set_password" || body.status === "active")) {
         return response(403, { error: "The invitee must verify their email and set their own password before activation" });
@@ -239,20 +301,74 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "set_status") {
-      if (!["active","inactive","suspended"].includes(body.status ?? "")) return response(400, { error: "Invalid status" });
-      const active = body.status === "active";
-      const { error: authError } = await admin.auth.admin.updateUserById(
-        body.user_id, { ban_duration: active ? "none" : "876000h" },
-      );
-      if (authError) return response(500, { error: "Unable to update account access" });
-      const { data: user, error } = await admin.from("user_profiles")
-        .update({ account_status: body.status, updated_at: new Date().toISOString() })
-        .eq("user_id", body.user_id).select(fields).single();
-      if (error) return response(500, { error: "Unable to update account status" });
-      await audit(auth.user.id, body.user_id, active ? "user_activated" : "user_disabled");
-      return response(200, { user });
+      if (!["active","inactive","suspended"].includes(body.status ?? "")) {
+        return response(400, { error: "Invalid status" });
+      }
+      const nextStatus = body.status as ManagedAccountStatus;
+      // Auth and profile writes are separate services. Read SQL after every
+      // transition; compensate Auth only if SQL proves no status was changed.
+      let result;
+      try {
+        result = await applyAccountStatusWithReadback({
+          nextStatus,
+          previousStatus: target.account_status as ManagedAccountStatus,
+          previousBannedUntil: previousAuthBanUntil,
+          nowMs: Date.now(),
+          setAuthBan: async duration => {
+            const { error } = await admin.auth.admin.updateUserById(
+              body.user_id!, { ban_duration: duration },
+            );
+            if (error) throw error;
+          },
+          saveProfile: async status => {
+            const { data, error } = await admin.from("user_profiles")
+              .update({ account_status: status, updated_at: new Date().toISOString() })
+              .eq("user_id", body.user_id!)
+              .eq("account_status", target.account_status)
+              .select("user_id,account_status").maybeSingle();
+            if (error || !data || data.account_status !== status) {
+              throw new Error("Account profile transition was not confirmed");
+            }
+          },
+          readProfile: async () => {
+            const { data, error } = await admin.from("user_profiles")
+              .select(fields).eq("user_id", body.user_id!).maybeSingle();
+            if (error || !data) throw new Error("Account SQL readback unavailable");
+            return data;
+          },
+          getProfileStatus: user => user.account_status === "active"
+            || user.account_status === "inactive" || user.account_status === "suspended"
+            ? user.account_status : null,
+        });
+      } catch {
+        return response(500, { error: "Unable to verify or change account access. Refresh both Auth and SQL before retrying." });
+      }
+      if (result.kind === "confirmed") {
+        await audit(auth.user.id, body.user_id, nextStatus === "active" ? "user_activated" : "user_disabled");
+        return response(200, { user: result.profile });
+      }
+      if (result.kind === "reverted") {
+        return response(409, { error: "SQL did not save the status. The previous Auth restriction was restored; refresh and retry." });
+      }
+      return response(503, { error: result.kind === "restore_failed"
+        ? "SQL rejected the status change and Auth rollback failed. Administrator reconciliation is required before retrying."
+        : "Account status could not be reconciled between Auth and SQL. Verify both records before retrying." });
     }
 
+    // A claimed tenant membership is protected by a restrictive Auth FK.
+    // Check this private server-only SQL contract BEFORE deleting profile/roles;
+    // otherwise a subsequent Auth deletion failure would orphan the account.
+    const { data: deletionReadiness, error: readinessError } = await admin.rpc(
+      "convay_user_deletion_readiness", { p_user_id: body.user_id },
+    );
+    if (readinessError || !deletionReadiness || deletionReadiness.user_id !== body.user_id
+        || typeof deletionReadiness.can_delete !== "boolean"
+        || !Number.isSafeInteger(deletionReadiness.company_membership_count)) {
+      return response(503, { error: "Unable to verify company records; user deletion was not started." });
+    }
+    if (!deletionReadiness.can_delete) {
+      return response(409, { error: "This account has company membership history. Preserve the account and complete audited company offboarding before deletion." });
+    }
     // Remove both profile and identity, preserving the independent audit trail.
     const { error: profileDeleteError } = await admin.from("user_profiles")
       .delete().eq("user_id", body.user_id);

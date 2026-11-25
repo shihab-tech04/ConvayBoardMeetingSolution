@@ -25,6 +25,7 @@ import { friendlyDue } from "./dateUtils";
 import { fieldMatchesUser, isWorkflowRole, roleAssignmentMatchesUser } from "./homeWorkspaceUtils";
 import { dashboardCalendarWindow } from "./dashboardOverviewRules";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
+import { buildPersonalDocumentTasks } from "./personalDocumentTasks";
 import type { ColDef, TableRow, FilterDef, MobileCardMapping, TableCellValue } from "../modulePageUtils";
 import type { TabDef } from "../../components/tables/UnifiedDataTable";
 
@@ -439,72 +440,11 @@ export function PSRDashboardPage() {
       });
     }
 
-    // ── Document review — doc is "Under Review"; user is owner or has workflow role
-    for (const d of documents) {
-      if (d.is_template) continue;
-      if (d.approval_status !== "Under Review") continue;
-      const isOwner = fieldMatchesUser(d.owner, userName);
-      if (!isOwner && !hasRoleAccess) continue;
-      const due  = String(d.effective_date ?? d.created_at ?? "").slice(0, 10);
-      out.push({
-        id: `doc-rev-${d.id}`,
-        sourceId: String(d.doc_id ?? d.id),
-        sourceType: "document",
-        title: `Review: ${d.doc_name}`,
-        description: "Document review required",
-        type: "Review",
-        relatedMeeting: String(d.related_meeting ?? ""),
-        dueDate: due,
-        dueLabel: friendlyDue(due),
-        status: isOver(due, today) ? "Overdue" : "Pending",
-      });
-    }
-
-    // ── Document approval — doc is "Pending Approval"; user is owner or has workflow role
-    for (const d of documents) {
-      if (d.is_template) continue;
-      if (d.approval_status !== "Pending Approval") continue;
-      const isOwner = fieldMatchesUser(d.owner, userName);
-      if (!isOwner && !hasRoleAccess) continue;
-      const due  = String(d.effective_date ?? d.created_at ?? "").slice(0, 10);
-      out.push({
-        id: `doc-apv-${d.id}`,
-        sourceId: String(d.doc_id ?? d.id),
-        sourceType: "document",
-        title: `Approve: ${d.doc_name}`,
-        description: "Document approval required",
-        type: "Approval",
-        relatedMeeting: String(d.related_meeting ?? ""),
-        dueDate: due,
-        dueLabel: friendlyDue(due),
-        status: isOver(due, today) ? "Overdue" : "Pending",
-      });
-    }
-
-    // ── Document acknowledgement — doc requires ack; user has not yet acknowledged
-    for (const d of documents) {
-      if (d.is_template) continue;
-      if (d.acknowledgement_required !== "Yes") continue;
-      if (!["Approved", "Published"].includes(String(d.approval_status ?? ""))) continue;
-      const docId = String(d.doc_id ?? d.id);
-      const alreadyAcked = acks.some(
-        a => a.document_id === docId && a.acknowledged_by.toLowerCase() === userName,
-      );
-      if (alreadyAcked) continue;
-      const due = String(d.effective_date ?? d.created_at ?? "").slice(0, 10);
-      out.push({
-        id: `doc-ack-${d.id}`,
-        sourceId: docId,
-        sourceType: "document",
-        title: `Acknowledge: ${d.doc_name}`,
-        description: "Explicit acknowledgement required for this document",
-        type: "Review",
-        relatedMeeting: String(d.related_meeting ?? ""),
-        dueDate: due,
-        dueLabel: friendlyDue(due),
-        status: isOver(due, today) ? "Overdue" : "Pending",
-      });
-    }
+    out.push(...buildPersonalDocumentTasks(documents, acks, {
+      name: userName,
+      role: userRole,
+      designation: userDesig,
+    }, today));
 
     const seen = new Set<string>();
     const deduped = out.filter(t => { if (seen.has(t.id)) return false; seen.add(t.id); return true; });
@@ -533,15 +473,18 @@ export function PSRDashboardPage() {
 
   // ── Tab counts ───────────────────────────────────────────────────────────────
 
-  const tabCounts = useMemo(() => ({
-    all:          tasks.length,
-    approvals:    tasks.filter(t => t.type === "Approval").length,
-    reviews:      tasks.filter(t => t.type === "Review").length,
-    votes:        tasks.filter(t => t.type === "Vote").length,
-    actions:      tasks.filter(t => t.type === "Action").length,
-    declarations: tasks.filter(t => t.type === "Declaration" || t.type === "RSVP").length,
-    completed:    tasks.filter(t => t.status === "Completed").length,
-  }), [tasks]);
+  const tabCounts = useMemo(() => {
+    const activeTasks = tasks.filter(t => t.status !== "Completed");
+    return {
+      all:          activeTasks.length,
+      approvals:    activeTasks.filter(t => t.type === "Approval").length,
+      reviews:      activeTasks.filter(t => t.type === "Review").length,
+      votes:        activeTasks.filter(t => t.type === "Vote").length,
+      actions:      activeTasks.filter(t => t.type === "Action").length,
+      declarations: activeTasks.filter(t => t.type === "Declaration" || t.type === "RSVP").length,
+      completed:    tasks.filter(t => t.status === "Completed").length,
+    };
+  }, [tasks]);
 
   const TASK_TABS: TabDef[] = [
     { id: "all",          label: "All",               count: tabCounts.all },
@@ -563,12 +506,16 @@ export function PSRDashboardPage() {
     else if (kpiFilter === "overdue")       { list = tasks.filter(t => t.status === "Overdue"); }
     else if (kpiFilter === "completed-month") { list = tasks.filter(t => t.status === "Completed"); }
     else {
+      const completedView = activeTab === "completed" || appliedFilters.status === "Completed";
+      list = tasks.filter(t => completedView
+        ? t.status === "Completed"
+        : t.status !== "Completed");
+
       if (activeTab === "approvals")         list = list.filter(t => t.type === "Approval");
       else if (activeTab === "reviews")      list = list.filter(t => t.type === "Review");
       else if (activeTab === "votes")        list = list.filter(t => t.type === "Vote");
       else if (activeTab === "actions")      list = list.filter(t => t.type === "Action");
       else if (activeTab === "declarations") list = list.filter(t => t.type === "Declaration" || t.type === "RSVP");
-      else if (activeTab === "completed")    list = list.filter(t => t.status === "Completed");
     }
 
     if (appliedFilters.type)    list = list.filter(t => t.type === appliedFilters.type);
@@ -646,7 +593,7 @@ export function PSRDashboardPage() {
       case "rsvp":         navigate("/meetings/all-meetings"); break;
       case "declaration":  navigate("/meetings/all-meetings"); break;
       case "minutes":      navigate("/archive-reports/minutes"); break;
-      case "action-item":  navigate("/decisions-followup/action-items"); break;
+      case "action-item":  navigate(`/decisions-followup/action-items?view=${encodeURIComponent(task.sourceId)}`); break;
       case "document":     navigate(`/agenda-documents/document-library?view=${task.sourceId}`); break;
       default:             navigate("/home/my-tasks");
     }

@@ -21,8 +21,19 @@ export interface MeetingPreJoinPanelProps {
     start_time?: string;
     mode?: string;
     venue?: string;
+    approval_status?: string;
   };
   initialRole: PreJoinRole;
+  /** Media publish allowance mirrors the trusted issuer's saved meeting role. */
+  publisherAllowed?: boolean;
+  /** Never offer a join before the SQL live session can admit participants. */
+  joinBlockedReason?: string;
+  /** Server-verified start action. Super Admin uses the explicit override RPC. */
+  onForceStart?: () => void;
+  /** Available only when SQL permits audited Super Admin recovery. */
+  onReopen?: () => void;
+  startLabel?: string;
+  forceStartBusy?: boolean;
   allowedRoles?: PreJoinRole[];
   onJoin: (options: { micOn: boolean; camOn: boolean; role: PreJoinRole }) => void;
   onBack: () => void;
@@ -65,10 +76,19 @@ function formatTime12h(raw?: string): string {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function MeetingPreJoinPanel({
-  meeting, initialRole, onJoin, onBack,
+  meeting, initialRole, publisherAllowed, joinBlockedReason, onForceStart, onReopen, startLabel = "Force Start Now", forceStartBusy = false, onJoin, onBack,
 }: MeetingPreJoinPanelProps) {
-  const [micOn,   setMicOn]   = useState(true);
-  const [camOn,   setCamOn]   = useState(true);
+  const canPublishMedia = publisherAllowed ?? (initialRole !== "Observer" && initialRole !== "Guest");
+  // Cameras and microphones are optional. Do not request device permissions
+  // or publish tracks until the participant explicitly enables a device.
+  const [micOn,   setMicOn]   = useState(false);
+  const [camOn,   setCamOn]   = useState(false);
+  useEffect(() => {
+    if (!canPublishMedia) {
+      setMicOn(false);
+      setCamOn(false);
+    }
+  }, [canPublishMedia]);
   const [permErr, setPermErr] = useState("");
   const [cameraPreviewActive, setCameraPreviewActive] = useState(false);
   const videoRef  = useRef<HTMLVideoElement>(null);
@@ -76,7 +96,7 @@ export function MeetingPreJoinPanel({
 
   useEffect(() => {
     let active = true;
-    if (!camOn) {
+    if (!camOn || !canPublishMedia) {
       setCameraPreviewActive(false);
       streamRef.current?.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -115,7 +135,7 @@ export function MeetingPreJoinPanel({
       streamRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
     };
-  }, [camOn]);
+  }, [camOn, canPublishMedia]);
 
   const dateStr = meeting?.meeting_date
     ? new Date(meeting.meeting_date + "T12:00:00").toLocaleDateString("en-GB", {
@@ -135,6 +155,8 @@ export function MeetingPreJoinPanel({
                  :                      Building2;
 
   const devicesAlreadyOff = !micOn && !camOn;
+  const meetingClosed = new Set(["cancelled", "canceled", "rejected", "completed", "ended", "archived", "awaiting minutes", "minutes approved"])
+    .has(String(meeting?.approval_status ?? "").trim().toLowerCase());
 
   return (
     <div className="meeting-prejoin">
@@ -182,8 +204,12 @@ export function MeetingPreJoinPanel({
                 </div>
               )}
 
+              {/* Subscribe-only visitors must never request media capture. */}
+              {!canPublishMedia && <p role="status" className="meeting-prejoin__alert-text">
+                View-only meeting access — microphone, camera and screen sharing are unavailable for this role.
+              </p>}
               {/* Device controls */}
-              <div className="meeting-prejoin__device-controls" role="group" aria-label="Device controls">
+              {canPublishMedia && <div className="meeting-prejoin__device-controls" role="group" aria-label="Device controls">
                 <button
                   className={`meeting-prejoin__dev-btn meeting-prejoin__dev-btn--${micOn ? "on" : "off"}`}
                   onClick={() => setMicOn(v => !v)}
@@ -200,7 +226,7 @@ export function MeetingPreJoinPanel({
                 >
                   {camOn ? <Video size={19} aria-hidden="true" /> : <VideoOff size={19} aria-hidden="true" />}
                 </button>
-              </div>
+              </div>}
 
             </div>
 
@@ -208,11 +234,11 @@ export function MeetingPreJoinPanel({
             <div className="meeting-prejoin__readiness-tray" role="region" aria-label="Device readiness">
               <div className="meeting-prejoin__tray-item">
                 <div className="meeting-prejoin__tray-icon">
-                  {micOn ? <Mic size={15} className="pj-icon-ok" aria-hidden="true" /> : <MicOff size={15} className="pj-icon-off" aria-hidden="true" />}
+                  {micOn ? <Mic size={15} className="pj-icon-ok" aria-hidden="true" /> : <MicOff size={15} className="pj-icon-muted" aria-hidden="true" />}
                 </div>
                 <div className="meeting-prejoin__tray-info">
                   <span className="meeting-prejoin__tray-label">Microphone</span>
-                  <span className={`meeting-prejoin__tray-state ${micOn ? "pj-ok" : "pj-off"}`}>{micOn ? "Enabled on join" : "Muted"}</span>
+                  <span className={`meeting-prejoin__tray-state ${micOn ? "pj-ok" : "pj-muted"}`}>{micOn ? "Enabled on join" : "Muted · optional"}</span>
                 </div>
               </div>
 
@@ -220,11 +246,11 @@ export function MeetingPreJoinPanel({
 
               <div className="meeting-prejoin__tray-item">
                 <div className="meeting-prejoin__tray-icon">
-                  {camOn ? <Video size={15} className="pj-icon-ok" aria-hidden="true" /> : <VideoOff size={15} className="pj-icon-off" aria-hidden="true" />}
+                  {camOn ? <Video size={15} className="pj-icon-ok" aria-hidden="true" /> : <VideoOff size={15} className="pj-icon-muted" aria-hidden="true" />}
                 </div>
                 <div className="meeting-prejoin__tray-info">
                   <span className="meeting-prejoin__tray-label">Camera</span>
-                  <span className={`meeting-prejoin__tray-state ${camOn ? "pj-ok" : "pj-off"}`}>{camOn ? (cameraPreviewActive ? "Preview active" : "Checking camera") : "Off"}</span>
+                  <span className={`meeting-prejoin__tray-state ${camOn ? "pj-ok" : "pj-muted"}`}>{camOn ? (cameraPreviewActive ? "Preview active" : "Checking camera") : "Off · optional"}</span>
                 </div>
               </div>
 
@@ -248,9 +274,9 @@ export function MeetingPreJoinPanel({
             <div className="meeting-prejoin__card-content">
 
               {/* Ready indicator */}
-              <div className="meeting-prejoin__context">
+              <div className={`meeting-prejoin__context${meetingClosed ? " meeting-prejoin__context--closed" : ""}`}>
                 <span className="meeting-prejoin__ready-dot" aria-hidden="true" />
-                Ready to join
+                {meetingClosed ? "Meeting ended" : joinBlockedReason ? "Waiting for LiveKit meeting" : "Ready to join"}
               </div>
 
               {/* Title + governance body */}
@@ -315,13 +341,29 @@ export function MeetingPreJoinPanel({
 
             </div>
 
+            {/* Admission is issued only after the host starts the SQL live session. */}
+            {joinBlockedReason && <p role="status" aria-live="polite" className="meeting-prejoin__alert-text" style={{ margin: "0 0 0.5rem" }}>
+              {joinBlockedReason}
+            </p>}
+            {/* These devices never gate a meeting start or authenticated join. */}
+            <p className="meeting-prejoin__device-note">Camera and microphone are optional. You can join with both turned off.</p>
             {/* Actions — pushed to bottom */}
             <div className="meeting-prejoin__actions">
-              <PrimaryButton fullWidth size="lg" onClick={() => onJoin({ micOn, camOn, role: initialRole })}>
+              {meetingClosed && onReopen && <PrimaryButton fullWidth size="lg" disabled={forceStartBusy} onClick={onReopen}>
+                {forceStartBusy ? "Reopening meeting…" : "Reopen Meeting"}
+              </PrimaryButton>}
+              {joinBlockedReason && !meetingClosed && onForceStart && <PrimaryButton fullWidth size="lg" disabled={forceStartBusy} onClick={onForceStart}>
+                {forceStartBusy ? "Starting LiveKit meeting…" : startLabel}
+              </PrimaryButton>}
+              <PrimaryButton fullWidth size="lg" disabled={Boolean(joinBlockedReason)} onClick={() => onJoin({
+                micOn: canPublishMedia && micOn,
+                camOn: canPublishMedia && camOn,
+                role: initialRole,
+              })}>
                 Join Meeting
               </PrimaryButton>
-              {!devicesAlreadyOff && (
-                <SecondaryButton fullWidth size="lg" onClick={() => onJoin({ micOn: false, camOn: false, role: initialRole })}>
+              {canPublishMedia && !devicesAlreadyOff && (
+                <SecondaryButton fullWidth size="lg" disabled={Boolean(joinBlockedReason)} onClick={() => onJoin({ micOn: false, camOn: false, role: initialRole })}>
                   Join with devices off
                 </SecondaryButton>
               )}

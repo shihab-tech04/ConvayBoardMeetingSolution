@@ -1,3 +1,5 @@
+import { liveMeetingUrl } from "../../utils/liveMeetingLink";
+
 /** MT-09/MT-10: one shared rule for the three supported meeting modes. */
 export const MEETING_MODE_OPTIONS = ["Physical", "Virtual", "Hybrid"] as const;
 
@@ -14,7 +16,9 @@ export function meetingAccessBlockers(values: Record<string, unknown>): string[]
   if ((mode === "Physical" || mode === "Hybrid") && !venue) {
     blockers.push(`${mode} meeting requires a venue address`);
   }
-  if ((mode === "Virtual" || mode === "Hybrid") && !virtualLink) {
+  // LiveKit creates the real, signed-in meeting URL from the SQL meeting ID
+  // during Save. An unsaved meeting must never receive a fake room/password.
+  if ((mode === "Virtual" || mode === "Hybrid") && !virtualLink && String(values.virtual_platform ?? "") !== "LiveKit") {
     blockers.push(`${mode} meeting requires a virtual meeting link`);
   }
   return blockers;
@@ -44,4 +48,13 @@ export function meetingUpdateAccessBlockers(
       && String(submitted[key] ?? "") !== String(current?.[key] ?? ""),
   );
   return changedAccess ? meetingAccessBlockers(merged) : [];
+}
+
+/** Creation/resume wizard uses Convay's authorized LiveKit journey, never a
+ * client-supplied or fabricated room URL. A new draft receives its ID on save. */
+export function meetingWizardAccess(values: Record<string,unknown>, meetingId = "") {
+  const mode=String(values.mode??"Physical");
+  const online=mode==="Virtual"||mode==="Hybrid";
+  return {mode,venue:String(values.venue??""),virtual_platform:online?"LiveKit":"",
+    virtual_link:online&&meetingId ? liveMeetingUrl(meetingId)??"" : ""};
 }

@@ -1,4 +1,4 @@
-import { LIVE_MEETINGS_RELEASED } from "../services/liveMeetingReleaseGate";
+import { QUICK_MEETINGS_RELEASED } from "../services/liveMeetingReleaseGate";
 import { readAccessSnapshot, mayVisitPath } from "../services/supabase/convayAccess";
 import {
   LayoutDashboard, BarChart2, FileCheck, ShieldCheck, Briefcase, Settings2,
@@ -74,7 +74,9 @@ export function getVisibleNav(): MainNavDef[] {
           return { ...sub, children: accessibleThird };
         })
         .filter(sub => {
-          if (main.id === "administration") return access.is_super_admin &&
+          if (main.id === "company-management") return !access.is_super_admin &&
+            (access.company_admin_tenant_ids?.length ?? 0) > 0;
+          if (main.id === "administration" || main.id === "subscribers") return access.is_super_admin &&
             (!sub.children || sub.children.length > 0);
           if (sub.id === "users-assignments") return access.is_super_admin;
           if (sub.children) return sub.children.length > 0;
@@ -104,7 +106,7 @@ export const NAVIGATION: MainNavDef[] = [
     children: [
       { id: "all-meetings", label: "All Meetings", labelKey: "navigation.meetings.allMeetings", icon: Archive },
       { id: "meeting-calendar", label: "Calendar", labelKey: "navigation.meetings.meetingCalendar", icon: CalendarDays },
-      ...(LIVE_MEETINGS_RELEASED ? [{ id: "quick-meeting", label: "Quick Meeting", icon: Video }] : []),
+      ...(QUICK_MEETINGS_RELEASED ? [{ id: "quick-meeting", label: "Quick Meeting", icon: Video }] : []),
       { id: "meeting-templates", label: "Templates", labelKey: "navigation.meetings.meetingTemplates", icon: FileStack, visibility: "phase2" },
     ],
   },
@@ -179,6 +181,18 @@ export const NAVIGATION: MainNavDef[] = [
       },
       { id: "audit-trail", label: "Audit Trail", labelKey: "navigation.archiveReports.auditTrail", icon: History, visibility: "phase2" },
     ],
+  },
+  {
+    id: "company-management",
+    label: "My Company",
+    icon: Building2,
+    children: [{ id: "overview", label: "Company Management", icon: Building2 }],
+  },
+  {
+    id: "subscribers",
+    label: "Subscriptions Management",
+    icon: CreditCard,
+    children: [{ id: "overview", label: "Subscriptions Overview", icon: Building2 }],
   },
   {
     id: "administration",

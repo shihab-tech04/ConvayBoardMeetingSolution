@@ -4,6 +4,9 @@
 create table public.convay_quick_meetings (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users(id) on delete restrict,
+  -- Resolved only by server-side membership checks; legacy scope is NULL.
+  -- Tenant foundation follows this migration in chronological clean installs.
+  tenant_id uuid,
   title text not null default 'Quick Meeting' check (length(btrim(title)) between 2 and 120),
   meeting_kind text not null default 'quick' check (meeting_kind = 'quick'),
   access_mode text not null default 'link' check (access_mode = 'link'),
@@ -16,6 +19,9 @@ create table public.convay_quick_meetings (
   ended_at timestamptz,
   check ((status = 'active' and ended_at is null) or (status = 'ended' and ended_at is not null))
 );
+
+create index convay_quick_meetings_tenant_created_idx
+  on public.convay_quick_meetings(tenant_id, created_at desc);
 
 create index convay_quick_meetings_owner_created_idx
   on public.convay_quick_meetings(owner_id, created_at desc);
@@ -104,6 +110,90 @@ grant all on public.convay_quick_meetings, public.convay_quick_meeting_sessions,
   public.convay_quick_meeting_removed_guests
   to service_role;
 
+-- Host scope is resolved from the live Auth/profile and company membership
+-- registry, never from an invitation or client-provided tenant. This older
+-- migration is not yet applied to production; PL/pgSQL resolves the later
+-- tenant foundation at execution, after the full schema is installed.
+create function public.convay_quick_host_scope(p_owner_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_count integer;
+  v_tenant uuid;
+  v_lifecycle text;
+  v_prior_sub text;
+  v_permitted boolean;
+begin
+  if not exists (
+    select 1 from auth.users u join public.user_profiles p on p.user_id=u.id
+    where u.id=p_owner_id and u.email_confirmed_at is not null and p.account_status='active'
+  ) then return jsonb_build_object('allowed',false,'tenant_id',null); end if;
+  v_prior_sub := current_setting('request.jwt.claim.sub',true);
+  perform pg_catalog.set_config('request.jwt.claim.sub',p_owner_id::text,true);
+  v_permitted := convay_private.has_permission('mtg_create');
+  perform pg_catalog.set_config('request.jwt.claim.sub',coalesce(v_prior_sub,''),true);
+  if v_permitted is distinct from true then
+    return jsonb_build_object('allowed',false,'tenant_id',null);
+  end if;
+  select count(*) into v_count
+    from convay_private.tenant_memberships m join convay_private.tenants t on t.id=m.tenant_id
+    where m.user_id=p_owner_id and m.membership_state='active' and m.revoked_at is null
+      and t.lifecycle_state<>'offboarded';
+  if v_count=0 then
+    return jsonb_build_object('allowed',true,'tenant_id',null);
+  end if;
+  -- The current approved Quick Meeting UI does not contain a company selector.
+  -- Never guess which of several memberships should own a private room.
+  if v_count<>1 then return jsonb_build_object('allowed',false,'tenant_id',null); end if;
+  select m.tenant_id,t.lifecycle_state into v_tenant,v_lifecycle
+    from convay_private.tenant_memberships m join convay_private.tenants t on t.id=m.tenant_id
+    where m.user_id=p_owner_id and m.membership_state='active' and m.revoked_at is null
+      and t.lifecycle_state<>'offboarded' and m.revision>0;
+  if v_tenant is null or v_lifecycle is distinct from 'active' then
+    return jsonb_build_object('allowed',false,'tenant_id',null);
+  end if;
+  return jsonb_build_object('allowed',true,'tenant_id',v_tenant);
+end $$;
+revoke all on function public.convay_quick_host_scope(uuid) from public,anon,authenticated;
+grant execute on function public.convay_quick_host_scope(uuid) to service_role;
+
+create function public.convay_quick_meeting_scope_valid(p_meeting_id uuid)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare v_meeting public.convay_quick_meetings%rowtype; v_scope jsonb;
+begin
+  select * into v_meeting from public.convay_quick_meetings where id=p_meeting_id;
+  if not found then return false; end if;
+  v_scope:=public.convay_quick_host_scope(v_meeting.owner_id);
+  return coalesce((v_scope->>'allowed')::boolean,false)
+    and (v_scope->>'tenant_id')::uuid is not distinct from v_meeting.tenant_id;
+end $$;
+revoke all on function public.convay_quick_meeting_scope_valid(uuid) from public,anon,authenticated;
+grant execute on function public.convay_quick_meeting_scope_valid(uuid) to service_role;
+
+-- Enforce immutable ownership even on service-role REST patches. The host
+-- scope is checked again in the same transaction that inserts the room row.
+create function public.convay_quick_meeting_owner_guard()
+returns trigger language plpgsql security invoker set search_path='' as $$
+declare v_scope jsonb;
+begin
+  if tg_op='UPDATE' then
+    if new.owner_id is distinct from old.owner_id or new.tenant_id is distinct from old.tenant_id then
+      raise exception 'Quick Meeting ownership is immutable' using errcode='42501';
+    end if;
+    return new;
+  end if;
+  v_scope:=public.convay_quick_host_scope(new.owner_id);
+  if (v_scope->>'allowed')::boolean is distinct from true
+    or (v_scope->>'tenant_id')::uuid is distinct from new.tenant_id then
+    raise exception 'Quick Meeting host scope denied' using errcode='42501';
+  end if;
+  return new;
+end $$;
+revoke all on function public.convay_quick_meeting_owner_guard() from public,anon,authenticated;
+grant execute on function public.convay_quick_meeting_owner_guard() to service_role;
+create trigger convay_quick_meeting_owner_scope_guard
+before insert or update on public.convay_quick_meetings
+for each row execute function public.convay_quick_meeting_owner_guard();
+
 -- Create the quick meeting, its active session and its first link atomically.
 create function public.convay_create_quick_meeting(
   p_owner_id uuid,
@@ -114,7 +204,7 @@ create function public.convay_create_quick_meeting(
   p_title text
 ) returns uuid
 language plpgsql security definer set search_path = '' as $$
-declare v_id uuid;
+declare v_id uuid; v_scope jsonb;
 begin
   if p_owner_id is null
      or p_room_name !~ '^qmr-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
@@ -128,8 +218,12 @@ begin
   if length(btrim(coalesce(p_title, ''))) not between 2 and 120 then
     raise exception 'Meeting title must contain 2-120 characters';
   end if;
-  insert into public.convay_quick_meetings(owner_id,title,room_name,max_participants,expires_at)
-    values (p_owner_id,btrim(p_title),p_room_name,p_max_participants,p_expires_at)
+  v_scope:=public.convay_quick_host_scope(p_owner_id);
+  if (v_scope->>'allowed')::boolean is distinct from true then
+    raise exception 'Quick Meeting host scope denied' using errcode='42501';
+  end if;
+  insert into public.convay_quick_meetings(owner_id,tenant_id,title,room_name,max_participants,expires_at)
+    values (p_owner_id,(v_scope->>'tenant_id')::uuid,btrim(p_title),p_room_name,p_max_participants,p_expires_at)
     returning id into v_id;
   insert into public.convay_quick_meeting_sessions(meeting_id) values (v_id);
   insert into public.convay_quick_meeting_links(meeting_id,token_hash,created_by,expires_at)
@@ -236,6 +330,13 @@ begin
     where m.id = p_meeting_id and m.status = 'active' and m.expires_at > now()
       and (p_participant_kind <> 'host' or m.owner_id = p_user_id)) then
     raise exception 'Quick meeting is unavailable';
+  end if;
+  if not public.convay_quick_meeting_scope_valid(p_meeting_id) then
+    raise exception 'Quick Meeting host scope denied' using errcode='42501';
+  end if;
+  if p_participant_kind = 'guest' and exists(select 1 from public.convay_quick_meeting_removed_guests g
+    where g.meeting_id=p_meeting_id and g.livekit_identity=p_livekit_identity) then
+    raise exception 'Guest admission revoked' using errcode='42501';
   end if;
   if p_participant_kind = 'guest' and not exists(select 1 from public.convay_quick_meeting_links l
     where l.id = p_share_link_id and l.meeting_id = p_meeting_id

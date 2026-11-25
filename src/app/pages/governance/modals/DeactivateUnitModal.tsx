@@ -21,14 +21,17 @@
  *  - Is hidden from new meeting-participant selection
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
+import { toast } from "sonner";
+import { unitCanDeactivate } from "./unitDeactivationEligibility";
 import { createPortal } from "react-dom";
 import { X, AlertTriangle, CheckCircle, Users, GitBranch, Crown, XCircle } from "lucide-react";
 
 import type { OrgUnit } from "../../../data/boardMeetingData";
-import { useOrgUnitRegistry, useUnitHeadRegistry, useAuditEventRegistry, generateId } from "../../../data/boardMeetingData";
+import { useOrgUnitRegistry, useUnitHeadRegistry } from "../../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../../data/bmsUsers";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { convayAuth } from "../../../services/supabase/convayAuth";
 import {
   findChildren,
   resolveUnitUsers,
@@ -62,88 +65,103 @@ export function DeactivateUnitModal({
   const orgReg      = useOrgUnitRegistry();
   const headReg     = useUnitHeadRegistry();
   const bmsUsers    = useBmsUserRegistry();
-  const auditReg    = useAuditEventRegistry();
   const currentUser = useCurrentUser();
 
   const [step, setStep]                = useState<"inspect" | "confirm">("inspect");
-  const [resolvedKeys, setResolvedKeys] = useState<Set<string>>(new Set());
   const [saving, setSaving]            = useState(false);
+  const [error, setError]              = useState("");
+  const saveInFlight                   = useRef(false);
   const [deactivationReason, setDeactivationReason] = useState("");
 
   // Dependencies
   const assignedUsers   = useMemo(() => resolveUnitUsers(unit.id, bmsUsers.items), [unit.id, bmsUsers.items]);
   const childUnits      = useMemo(() => findChildren(unit.id, allUnits), [unit.id, allUnits]);
-  const activeHeads     = useMemo(
+  const activeHeads = useMemo(
     () => headReg.items.filter((a) => a.unit_id === unit.id && a.status === "active"),
     [headReg.items, unit.id],
   );
+  const headProjectionCount = [unit.head_user_id, unit.deputy_user_id]
+    .filter(userId => Boolean(userId) &&
+      !activeHeads.some(head => head.user_id === userId)).length;
+  const unresolvedLeadershipCount = activeHeads.length + headProjectionCount;
+  const sourceReady = !bmsUsers.loading && !bmsUsers.error &&
+    !orgReg.loading && !orgReg.error && !headReg.loading && !headReg.error;
 
   const deps: Dep[] = useMemo(() => [
     {
       key:      "users",
       label:    `Assigned users (${assignedUsers.length})`,
       count:    assignedUsers.length,
-      resolved: resolvedKeys.has("users") || assignedUsers.length === 0,
+      resolved: assignedUsers.length === 0,
     },
     {
       key:      "children",
       label:    `Child units (${childUnits.length})`,
       count:    childUnits.length,
-      resolved: resolvedKeys.has("children") || childUnits.length === 0,
+      resolved: childUnits.length === 0,
     },
     {
       key:      "heads",
-      label:    `Active leadership assignments (${activeHeads.length})`,
-      count:    activeHeads.length,
-      resolved: resolvedKeys.has("heads") || activeHeads.length === 0,
+      label:    `Active leadership assignments (${unresolvedLeadershipCount})`,
+      count:    unresolvedLeadershipCount,
+      resolved: unresolvedLeadershipCount === 0,
     },
-  ], [assignedUsers.length, childUnits.length, activeHeads.length, resolvedKeys]);
+  ], [assignedUsers.length, childUnits.length, unresolvedLeadershipCount]);
 
-  const allResolved = deps.every((d) => d.resolved);
-
-  function markResolved(key: string) {
-    setResolvedKeys((prev) => new Set([...prev, key]));
-  }
+  const allResolved = sourceReady && unitCanDeactivate({
+    assignedUsers: assignedUsers.length,
+    childUnits: childUnits.length,
+    activeHeads: unresolvedLeadershipCount,
+  });
 
   // ── Confirm deactivation ──────────────────────────────────────────────────────
 
   async function handleDeactivate() {
-    setSaving(true);
-    const now = new Date().toISOString();
-
-    // End all active head assignments
-    for (const a of activeHeads) {
-      headReg.update(a.id, { status: "ended", end_date: now.slice(0, 10) });
+    if (saveInFlight.current) return;
+    if (!allResolved) {
+      setStep("inspect");
+      setError(sourceReady
+        ? "Resolve actual user, child-unit and leadership assignments before deactivation."
+        : "Authoritative user, unit or leadership data is unavailable. Refresh before deactivation.");
+      return;
     }
+    saveInFlight.current = true;
+    setSaving(true);
+    setError("");
+    const now = new Date().toISOString();
+    try {
+      // All leadership assignments must already be ended by a confirmed action.
+      // Do not silently end them and then deactivate before the server confirms.
+      const saved = await orgReg.update(unit.id, {
+        status:              "Deactivated",
+        deactivated_at:      now,
+        deactivated_by:      currentUser?.id ?? "system",
+        deactivation_reason: deactivationReason || undefined,
+        updated_at:          now,
+      });
+      if (!saved) throw new Error("The unit was not deactivated. Check access and reload.");
 
-    orgReg.update(unit.id, {
-      status:              "Deactivated",
-      deactivated_at:      now,
-      deactivated_by:      currentUser?.id ?? "system",
-      deactivation_reason: deactivationReason || undefined,
-      head_user_id:        undefined,
-      head:                "",
-      updated_at:          now,
-    });
-
-    auditReg.add({
-      id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-      created_at:      now,
-      event_id:        `AUDIT-DEACT-${Date.now()}`,
-      entity_type:     "OrgUnit",
-      entity_id:       unit.id,
-      action:          "org_unit_deactivated",
-      actor:           currentUser?.name ?? "System",
-      actor_role:      currentUser?.designation ?? "",
-      timestamp:       now,
-      ip_address:      "",
-      details:         `Unit deactivated: ${unit.unit_name}. Reason: ${deactivationReason || "Not specified"}.`,
-      approval_status: "Approved",
-    });
-
-    setSaving(false);
-    onSuccess?.();
-    onClose();
+      // Check the SQL record, not the stale current React registry closure.
+      let confirmed = false;
+      try {
+        const authoritative = await convayAuth.registry<OrgUnit>("bms.orgunits", "list");
+        confirmed = authoritative.records.some(record =>
+          record.payload.id === unit.id && record.payload.status === "Deactivated");
+      } catch { /* The acknowledged write may already have committed. */ }
+      if (!confirmed) {
+        toast.warning("Deactivation acknowledged, but SQL readback is unverified. Refresh before another operation.");
+        onClose();
+        return;
+      }
+      await orgReg.refresh?.();
+      onSuccess?.();
+      onClose();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Unable to deactivate the unit.");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -151,7 +169,7 @@ export function DeactivateUnitModal({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (!saving && e.target === e.currentTarget) onClose(); }}
     >
       <div className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-md flex flex-col max-h-[90vh]">
         {/* Header */}
@@ -163,7 +181,7 @@ export function DeactivateUnitModal({
               <p className="text-xs text-muted-foreground">{unit.unit_name}</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={16} /></button>
+          <button onClick={onClose} disabled={saving} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={16} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
@@ -203,13 +221,13 @@ export function DeactivateUnitModal({
                             {dep.key === "users" && (
                               <>
                                 <button
-                                  onClick={() => { onTransferUsers?.(unit.id); markResolved("users"); }}
+                                  onClick={() => { onTransferUsers?.(unit.id); }}
                                   className="text-xs px-2.5 py-1 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
                                 >
                                   Transfer Users
                                 </button>
                                 <button
-                                  onClick={() => markResolved("users")}
+                                  disabled title="This dependency is only resolved after the registry confirms zero active records."
                                   className="text-xs px-2.5 py-1 rounded-lg border border-border hover:bg-muted text-muted-foreground transition-colors"
                                 >
                                   Mark Resolved
@@ -228,7 +246,7 @@ export function DeactivateUnitModal({
                                   </button>
                                 ))}
                                 <button
-                                  onClick={() => markResolved("children")}
+                                  disabled title="This dependency is only resolved after the registry confirms zero active records."
                                   className="text-xs px-2.5 py-1 rounded-lg border border-border hover:bg-muted text-muted-foreground transition-colors"
                                 >
                                   Mark Resolved
@@ -238,13 +256,13 @@ export function DeactivateUnitModal({
                             {dep.key === "heads" && (
                               <>
                                 <button
-                                  onClick={() => { onManageHead?.(unit); markResolved("heads"); }}
+                                  onClick={() => { onManageHead?.(unit); }}
                                   className="text-xs px-2.5 py-1 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
                                 >
                                   Manage Leadership
                                 </button>
                                 <button
-                                  onClick={() => markResolved("heads")}
+                                  disabled title="This dependency is only resolved after the registry confirms zero active records."
                                   className="text-xs px-2.5 py-1 rounded-lg border border-border hover:bg-muted text-muted-foreground transition-colors"
                                 >
                                   Mark Resolved
@@ -322,9 +340,11 @@ export function DeactivateUnitModal({
           )}
         </div>
 
+        {error && <p role="alert" className="px-5 pb-2 text-sm text-red-600">{error}</p>}
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-border flex-shrink-0">
           <button
             onClick={step === "inspect" ? onClose : () => setStep("inspect")}
+            disabled={saving}
             className="px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg"
           >
             {step === "inspect" ? "Cancel" : "Back"}

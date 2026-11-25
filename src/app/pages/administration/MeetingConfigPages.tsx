@@ -14,17 +14,24 @@ import type { PageCfg } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import {
-  QUORUM_RULE_DRAWER_COLS,
   VOTING_METHOD_DRAWER_COLS,
 } from "../boardMeetingDrawerSchemas";
 import { dg } from "../modulePageUtils";
 import type { ColDef } from "../modulePageUtils";
 import {
   useQuorumRuleRegistry,
+  useGovernanceRegistry, generateId,
   useVotingMethodRegistry,
 } from "../../data/boardMeetingData";
 import { unverifiedMeetingTypesView } from "./meetingTypesEvidence";
-import { unverifiedQuorumRulesView } from "./quorumRulesEvidence";
+import { MeetingTemplateMarketplace } from "../subscribers/MeetingTemplateMarketplace";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { hasAccess, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { activeMeetingGovernanceOptions } from "../return-register/meetingCreatePrerequisites";
+import { useRef, useState } from "react";
+import { toast } from "sonner";
+import { SConfirmModal } from "../../components/modals/SConfirmModal";
+import { createVersionedQuorumRule, deactivateQuorumRule, type VersionedQuorumRule, type QuorumRuleGateway } from "./quorumRulePersistence";
 import { unverifiedVotingMethodsView } from "./votingMethodsEvidence";
 import { unverifiedStatusConfigurationView } from "./statusConfigurationEvidence";
 import { unverifiedNumberingConfigurationView } from "./numberingConfigurationEvidence";
@@ -77,6 +84,23 @@ const MEETING_TYPE_DRAWER_COLS: ColDef[] = [
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
 export function MeetingTypesPage() {
+  // The platform-controlled versioned template registry is live in SQL.
+  // Keep the existing fail-closed view for roles that cannot administer the
+  // platform-wide marketplace. Neither route enables meeting-template runtime.
+  const access = useAccessSnapshot();
+  if (access.loaded && access.is_super_admin) {
+    return (
+      <main className="p-6" aria-label="Meeting type configuration">
+        <h1 className="text-2xl font-semibold mb-2">Meeting Types</h1>
+        <p className="mb-5 text-sm text-[var(--text-secondary,#64748b)]">
+          Configure and publish versioned meeting types in Supabase SQL. Published
+          templates are not yet enabled in the meeting creation wizard, and no
+          company workspace is activated by editing them.
+        </p>
+        <MeetingTemplateMarketplace />
+      </main>
+    );
+  }
   const evidence = unverifiedMeetingTypesView();
 
   const cfg: PageCfg = {
@@ -120,48 +144,117 @@ export function MeetingTypesPage() {
 }
 
 export function QuorumRulesPage() {
+  const access = useAccessSnapshot();
+  const canManageQuorum = hasAccess("admin_config", access);
   const registry = useQuorumRuleRegistry();
-  const evidence = unverifiedQuorumRulesView();
-
+  const governance = useGovernanceRegistry();
+  const [confirmDeactivation, setConfirmDeactivation] = useState<string | null>(null);
+  const pendingCreate = useRef<{ signature: string; id: string; created_at: string } | null>(null);
+  const gateway: QuorumRuleGateway = {
+    list: async () => (await convayAuth.registry<VersionedQuorumRule>("bms.quorumrules", "list")).records.map(r => r.payload),
+    create: async rule => await registry.add(rule),
+    update: async (id, patch) => await registry.update(id, patch),
+  };
+  const bodies = activeMeetingGovernanceOptions(governance.items);
+  const fields = [
+    { key: "rule_name", label: "Rule Name", type: "text", required: true, span: true },
+    { key: "governance_body_id", label: "Board / Committee", type: "select", required: true, options: bodies },
+    { key: "rule_type", label: "Quorum Type", type: "select", required: true,
+      options: [{ value: "percentage", label: "Percentage" }, { value: "fixed_number", label: "Fixed Number" }], defaultValue: "percentage" },
+    { key: "minimum_members_count", label: "Minimum Members", type: "number", defaultValue: "0", placeholder: "0" },
+    { key: "minimum_percentage", label: "Minimum Percentage (%)", type: "number", defaultValue: "50", placeholder: "50" },
+    { key: "count_virtual_attendance", label: "Count Virtual Attendance", type: "toggle", defaultValue: true },
+    { key: "count_alternate_members", label: "Count Alternate Members", type: "toggle", defaultValue: false },
+    { key: "exclude_recused_members", label: "Exclude Recused Members", type: "toggle", defaultValue: true },
+  ];
+  const rows = registry.items.map(rule => ({ ...rule, id: rule.id }));
   const cfg: PageCfg = {
     title: "Quorum Rules",
-    desc:  evidence.description,
+    desc: "Manage versioned quorum policies for verified governance bodies. Changes require administrator authorization and independent SQL readback.",
     cols: [
-      fc("agenda_no",             "Rule ID"),
-      fc("governance_body_name",  "Governance Body"),
-      fc("quorum_type",           "Quorum Type"),
-      fc("minimum_members",       "Min. Members"),
-      fc("quorum_percent",        "Min. Percentage"),
-      fc("meeting_type",          "Meeting Type"),
-      BADGE("approval_status",    "Status"),
+      fc("rule_id", "Rule ID"),
+      fc("body_name", "Governance Body"),
+      fc("rule_type", "Quorum Type"),
+      fc("minimum_members", "Min. Members"),
+      fc("quorum_percent", "Min. Percentage"),
+      fc("policy_version", "Version"),
+      BADGE("status", "Status"),
     ],
     mobileCardMapping: {
-      primary:    "governance_body_name",
-      identifier: "agenda_no",
-      meta:       ["quorum_type", "minimum_members", "meeting_type"],
-      status:     "approval_status",
+      primary: "body_name", identifier: "rule_id", meta: ["rule_type", "minimum_members", "quorum_percent"], status: "status",
     },
-    filters:      BASE_FILTERS,
-    actions:      ROW_VIEW,
-    drawerTitle:  "Quorum Rule Details",
-    drawerCols:   QUORUM_RULE_DRAWER_COLS,
-    drawerActions: [
-      { id: "edit",       label: "Edit Rule",    icon: Pencil,      color: "#3b82f6" },
-      { id: "activate",   label: "Activate",     icon: CheckCircle, color: "#22c55e" },
-      { id: "deactivate", label: "Deactivate",   icon: Pause,       color: "#f59e0b" },
-      { id: "download",   label: "Export",       icon: Download,    color: "#6b7280" },
+    filters: BASE_FILTERS,
+    actions: ROW_VIEW,
+    drawerTitle: "Quorum Rule Details",
+    drawerCols: [
+      dg("Policy", [
+        { key: "rule_name", label: "Rule Name" },
+        { key: "rule_id", label: "Rule ID" },
+        { key: "body_name", label: "Governance Body" },
+        { key: "rule_type", label: "Quorum Type" },
+        { key: "policy_version", label: "Version" },
+        { key: "status", label: "Status", badge: true },
+      ]),
+      dg("Thresholds", [
+        { key: "minimum_members", label: "Minimum Members" },
+        { key: "quorum_percent", label: "Percentage" },
+        { key: "created_at", label: "Created At" },
+      ]),
     ],
-    rows:      evidence.rows,
-    dataLoading: registry.loading,
-    dataError: registry.error ?? (registry.loading ? null : evidence.unavailableReason),
-    dataErrorTitle: "Quorum rule configuration is unavailable",
-    dataErrorDescription: evidence.description,
-    onDataRetry: registry.refresh,
-    entryBtn:  "Create Quorum Rule",
-    searchPlaceholder: "Search quorum rules",
+    drawerActionsResolver: row => canManageQuorum && String(row.status) === "Active"
+      ? [{ id: "deactivate", label: "Deactivate Rule", icon: Pause, color: "#b45309" }]
+      : [],
+    onCustomAction: (action, row) => {
+      if (action === "deactivate") setConfirmDeactivation(String(row.id ?? ""));
+    },
+    rows,
+    formFields: fields,
+    entryBtn: bodies.length > 0 && canManageQuorum ? "Create Quorum Rule" : undefined,
+    awaitCreateSave: true,
+    dataLoading: registry.loading || governance.loading,
+    dataError: registry.error ?? governance.error,
+    onDataRetry: async () => { await Promise.all([registry.refresh?.(), governance.refresh?.()]); },
+    searchPlaceholder: "Search quorum policies",
+    async onRowCreate(values) {
+      const signature = JSON.stringify(values);
+      if (!pendingCreate.current || pendingCreate.current.signature !== signature) {
+        pendingCreate.current = {
+          signature, id: generateId("QR", registry.items.map(rule => rule.rule_id)), created_at: new Date().toISOString(),
+        };
+      }
+      await createVersionedQuorumRule(values, pendingCreate.current, governance.items, gateway);
+      pendingCreate.current = null;
+      await registry.refresh?.();
+      return true;
+    },
   };
-
-  return <GenPage cfg={cfg} />;
+  return (
+    <>
+      {bodies.length === 0 && !governance.loading && !governance.error && (
+        <div role="status" className="mx-6 my-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm">
+          An active Board / Committee must exist before its quorum policy can be configured.
+          <a className="font-semibold underline text-[var(--primary)]" href={`${import.meta.env.BASE_URL}governance-org/governance-bodies`}>
+            Open Governance Bodies
+          </a>
+        </div>
+      )}
+      <GenPage cfg={cfg} />
+      {confirmDeactivation && <SConfirmModal
+        title="Deactivate quorum rule?"
+        message="This is a versioned policy. Deactivation is denied while scheduled or active meetings rely on it; after deactivation you can create a new version."
+        confirmLabel="Deactivate Rule"
+        danger
+        onClose={() => setConfirmDeactivation(null)}
+        onConfirm={() => {
+          const id = confirmDeactivation;
+          setConfirmDeactivation(null);
+          void deactivateQuorumRule(id, gateway)
+            .then(async () => { await registry.refresh?.(); toast.success("Quorum rule deactivated. You can create a new version."); })
+            .catch(err => toast.error(err instanceof Error ? err.message : "Could not deactivate the rule."));
+        }}
+      />}
+    </>
+  );
 }
 
 export function VotingMethodsPage() {

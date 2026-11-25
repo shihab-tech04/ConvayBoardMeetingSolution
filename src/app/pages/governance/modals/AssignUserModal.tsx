@@ -9,21 +9,15 @@
  * - Creates an audit event.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X, UserCheck, Search, AlertTriangle, CheckCircle, ArrowRight } from "lucide-react";
 
 import type { OrgUnit } from "../../../data/boardMeetingData";
 import type { BmsUser } from "../../../data/bmsUsers";
 import { useBmsUserRegistry } from "../../../data/bmsUsers";
-import { useAuditEventRegistry, generateId } from "../../../data/boardMeetingData";
-import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import {
-  buildUnitAssignmentPatch,
-  buildUnitClearancePatch,
-  isUserAlreadyAssigned,
-  resolveUnitUsers,
-} from "../../../utils/orgHierarchy";
+import { convayAuth } from "../../../services/supabase/convayAuth";
+import { isUserAlreadyAssigned, resolveUnitUsers } from "../../../utils/orgHierarchy";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -38,14 +32,14 @@ interface Props {
 
 export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
   const bmsUsers   = useBmsUserRegistry();
-  const auditReg   = useAuditEventRegistry();
-  const currentUser = useCurrentUser();
 
   const [search, setSearch] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [operationType, setOperationType] = useState<"assign" | "transfer" | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
+  const requestId = useRef<{ fingerprint: string; id: string } | null>(null);
   const [error, setError] = useState<string>("");
 
   // Only active/pending users are eligible
@@ -96,6 +90,7 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
 
   function handleSelectUser(user: BmsUser) {
     setSelectedUserId(user.id);
+    requestId.current = null;
     setOperationType(null);
     setError("");
     setConfirming(false);
@@ -108,8 +103,8 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
   function handleContinue() {
     if (!selectedUser) { setError("Select a user first."); return; }
     if (alreadyInThisUnit) { setError("This user is already assigned to this unit."); return; }
-    if (selectedUser.primary_org_unit_id && !operationType) {
-      setError("Choose whether this is an assignment or transfer.");
+    if (selectedUser.primary_org_unit_id && operationType !== "transfer") {
+      setError("One primary unit is supported. Choose Transfer to change the existing assignment.");
       return;
     }
     setError("");
@@ -117,42 +112,40 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
   }
 
   async function handleConfirm() {
-    if (!selectedUser) return;
+    if (saveInFlight.current || !selectedUser || alreadyInThisUnit) return;
+    const priorUnit = selectedUser.primary_org_unit_id || null;
+    if (priorUnit && operationType !== "transfer") {
+      setError("A member already has one primary unit; select Transfer.");
+      return;
+    }
+    const operation = priorUnit ? "transfer" : "assign";
+    const fingerprint = [selectedUser.id, priorUnit || "", unit.id, operation].join(":");
+    if (!requestId.current || requestId.current.fingerprint !== fingerprint) {
+      requestId.current = { fingerprint, id: crypto.randomUUID() };
+    }
+    saveInFlight.current = true;
     setSaving(true);
-    const now = new Date().toISOString();
-    const prevUnitId = selectedUser.primary_org_unit_id;
-
-    const patch: Partial<BmsUser> = {
-      ...buildUnitClearancePatch(),
-      ...buildUnitAssignmentPatch(unit),
-      updated_at: now,
-    };
-
-    bmsUsers.update(selectedUser.id, patch);
-
-    const action = operationType === "transfer" ? "org_user_transferred" : "org_user_assigned";
-    const details = operationType === "transfer"
-      ? `User ${selectedUser.name} transferred from ${prevUnitId ?? "—"} to ${unit.unit_name}`
-      : `User ${selectedUser.name} assigned to ${unit.unit_name}`;
-
-    auditReg.add({
-      id:              generateId("AUD", auditReg.items.map((a) => a.id)),
-      created_at:      now,
-      event_id:        `AUDIT-ASSIGN-${Date.now()}`,
-      entity_type:     "OrgUnit",
-      entity_id:       unit.id,
-      action,
-      actor:           currentUser?.name ?? "System",
-      actor_role:      currentUser?.designation ?? "",
-      timestamp:       now,
-      ip_address:      "",
-      details,
-      approval_status: "Approved",
-    });
-
-    setSaving(false);
-    onSuccess?.();
-    onClose();
+    setError("");
+    try {
+      await convayAuth.commitOrgMemberAssignment({
+        memberId: selectedUser.id,
+        expectedUnitId: priorUnit,
+        newUnitId: unit.id,
+        operation,
+        requestId: requestId.current.id,
+        effectiveDate: new Date().toISOString().slice(0, 10),
+      });
+      await bmsUsers.refresh?.();
+      onSuccess?.();
+      onClose();
+    } catch (failure) {
+      // No local audit event or artificial success: SQL writes their immutable
+      // receipt and the separate SQL readback is required for completion.
+      setError(failure instanceof Error ? failure.message : "Unable to verify assignment.");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -160,7 +153,7 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (!saving && e.target === e.currentTarget) onClose(); }}
     >
       <div className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-md flex flex-col max-h-[90vh]">
         {/* Header */}
@@ -172,7 +165,7 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
               <p className="text-xs text-muted-foreground">{unit.unit_name}</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={16} /></button>
+          <button onClick={onClose} disabled={saving} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={16} /></button>
         </div>
 
         {!confirming ? (
@@ -312,8 +305,9 @@ export function AssignUserModal({ unit, allUnits, onClose, onSuccess }: Props) {
               </div>
             </div>
 
+            {error && <p role="alert" className="px-5 pb-2 text-xs text-destructive">{error}</p>}
             <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-border flex-shrink-0">
-              <button onClick={() => setConfirming(false)} className="px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg">Back</button>
+              <button disabled={saving} onClick={() => setConfirming(false)} className="px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg">Back</button>
               <button
                 onClick={handleConfirm}
                 disabled={saving}

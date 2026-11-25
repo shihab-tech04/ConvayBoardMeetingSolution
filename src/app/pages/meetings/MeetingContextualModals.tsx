@@ -18,8 +18,9 @@ import { SecondaryButton } from "../../components/buttons/SecondaryButton";
 import { UnifiedDataTable } from "../../components/tables";
 import { fc, BADGE } from "../modulePageUtils";
 import type { TableRow, ColDef } from "../modulePageUtils";
+import { contextualLeadershipRemovalBlocker } from "../return-register/contextualLeadershipProtection";
 import {
-  useParticipantRegistry, useRSVPRegistry, useConflictRegistry,
+  useParticipantRegistry, useMeetingRegistry, useRSVPRegistry, useConflictRegistry,
   useAvailabilityPollRegistry, useDocumentRegistry, useBoardPackRegistry,
   useGovernanceRegistry, useParticipantGroupRegistry, useAgendaRegistry,
   useDecisionRegistry, useResolutionRegistry, useActionItemRegistry,
@@ -96,7 +97,11 @@ function buildReadinessItems(meeting: TableRow, participantCount: number, agenda
 // ─── 1. Manage Participants ────────────────────────────────────────────────────
 
 export function ManageParticipantsModal({ meeting, onClose }: { meeting: TableRow; onClose: () => void }) {
-  const { items: participants, add, remove } = useParticipantRegistry();
+  const participantRegistry = useParticipantRegistry();
+  const { items: participants, add, remove } = participantRegistry;
+  const meetingRegistry = useMeetingRegistry();
+  const mutationInFlight = useRef(false);
+  const [mutating, setMutating] = useState(false);
   const meetingId = String(meeting.meeting_id ?? meeting.id ?? "");
   const local = participants.filter(p => p.meeting_id === meetingId);
 
@@ -104,10 +109,13 @@ export function ManageParticipantsModal({ meeting, onClose }: { meeting: TableRo
   const [role, setRole] = useState("Member");
   const [req, setReq] = useState("Mandatory");
 
-  const handleAdd = useCallback(() => {
+  const handleAdd = useCallback(async () => {
+    if (mutationInFlight.current) return;
     if (!name.trim()) { toast.error("Name is required."); return; }
+    mutationInFlight.current = true; setMutating(true);
+    try {
     const pId = generateId("PRT", participants.map(p => p.participant_id));
-    add({
+    const accepted = await add({
       id: pId, participant_id: pId,
       meeting_id: meetingId,
       meeting_title: String(meeting.meeting_title ?? ""),
@@ -118,8 +126,28 @@ export function ManageParticipantsModal({ meeting, onClose }: { meeting: TableRo
       proxy_for: "", conflict_declared: "No",
       created_at: new Date().toISOString(),
     } as never);
+    if (accepted !== true) { toast.error("Participant was not saved. Review and retry."); return; }
     setName(""); toast.success("Participant added.");
+    } catch { toast.error("Participant was not saved. Review and retry."); }
+    finally { mutationInFlight.current = false; setMutating(false); }
   }, [name, role, req, meetingId, meeting, participants, add]);
+
+  const handleRemove = async (rowId: string) => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true; setMutating(true);
+    try {
+      if (!meetingRegistry.refresh || !participantRegistry.refresh) throw new Error("Current SQL roster is unavailable. Refresh and retry.");
+      await Promise.all([meetingRegistry.refresh(), participantRegistry.refresh()]);
+      const currentMeeting = meetingRegistry.getById(String(meeting.id ?? ""));
+      const participant = participantRegistry.getById(rowId);
+      if (!currentMeeting || !participant || String(currentMeeting.meeting_id) !== meetingId) throw new Error("Meeting or participant changed. Refresh and retry.");
+      const blocker = contextualLeadershipRemovalBlocker(currentMeeting as unknown as Record<string, unknown>, participant);
+      if (blocker) { toast.error(blocker); return; }
+      if (await remove(rowId) !== true) { toast.error("Participant was not removed. Review and retry."); return; }
+      toast.success("Participant removed.");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Participant could not be removed. Retry."); }
+    finally { mutationInFlight.current = false; setMutating(false); }
+  };
 
   return (
     <AppModal open onClose={onClose} title="Manage Participants" icon={<Users size={16} />} size="lg"
@@ -136,7 +164,7 @@ export function ManageParticipantsModal({ meeting, onClose }: { meeting: TableRo
           <Field label="Attendance">
             <Select value={req} onChange={e => setReq(e.target.value)} options={["Mandatory", "Optional", "By Invitation"]} />
           </Field>
-          <PrimaryButton onClick={handleAdd}>Add</PrimaryButton>
+          <PrimaryButton onClick={() => { void handleAdd(); }} disabled={mutating}>Add</PrimaryButton>
         </div>
 
         {/* Participant list */}
@@ -146,7 +174,7 @@ export function ManageParticipantsModal({ meeting, onClose }: { meeting: TableRo
           rows={local.map(p => ({ id: p.id, name: p.name, role: p.role, attendance_requirement: p.attendance_requirement, rsvp_status: String(p.rsvp_status ?? "Pending") }))}
           totalCount={local.length}
           actions={[{ id: "remove", label: "Remove", icon: XCircle, color: "var(--color-error)" }]}
-          onActionClick={(_id, row) => { remove(String(row.id)); toast.success("Participant removed."); }}
+          onActionClick={(_id, row) => { void handleRemove(String(row.id)); }}
           emptyLabel="No participants added yet."
           aria-label="Participants"
         />

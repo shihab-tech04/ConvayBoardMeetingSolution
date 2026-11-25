@@ -20,11 +20,13 @@ import { USER_TYPES, userBusinessFields, validateUserBusinessFields } from "./us
 import { createLatestUserDirectoryRead, isUserDirectoryStatsUnavailable } from "./userDirectoryRead";
 import { userDirectoryCountLabel } from "./userDirectorySubtitle";
 import { requireUserMutationAck } from "./userMutationAck";
+import { requireRoleAssignmentReadback } from "./roleAssignmentReadback";
+import { canCompleteInvitationRoleStep, needsRoleAssignment } from "./invitationRoleState";
 
 type Mode = "invite" | "edit" | "password" | null;
 type StatusAction = "active" | "suspended" | "inactive" | "delete";
-interface FormState { name: string; username: string; email: string; password: string; phone: string; employeeId: string; userType: string; }
-const blank: FormState = { name: "", username: "", email: "", password: "", phone: "", employeeId: "", userType: "Internal Employee" };
+interface FormState { name: string; username: string; email: string; password: string; phone: string; employeeId: string; userType: string; roleId: string; }
+const blank: FormState = { name: "", username: "", email: "", password: "", phone: "", employeeId: "", userType: "Internal Employee", roleId: "" };
 const columns: ColDef[] = [
   fc("employeeId", "ID"),
   fc("name", "User"),
@@ -36,7 +38,7 @@ const columns: ColDef[] = [
 ];
 const filters: FilterDef[] = [
   { key: "status", label: "Account Status", type: "select", options: ["All", "Active", "Awaiting verification", "Finish account setup", "Inactive", "Suspended"] },
-  { key: "role", label: "Role", type: "select", options: ["All", "Super Admin", "User"] },
+  { key: "role", label: "Role", type: "select", options: ["All", "Super Admin", "User", "Needs assignment"] },
 ];
 function displayStatus(status: string) {
   return status.charAt(0).toUpperCase() + status.slice(1);
@@ -68,6 +70,7 @@ export function SupabaseUserManagementPage() {
   const [confirm, setConfirm] = useState<{ id: string; action: StatusAction } | null>(null);
   const [form, setForm] = useState<FormState>(blank);
   const [roleAssignId, setRoleAssignId] = useState<string | null>(null);
+  const [roleAssignFromInvite, setRoleAssignFromInvite] = useState(false);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [assignError, setAssignError] = useState("");
 
@@ -114,10 +117,14 @@ export function SupabaseUserManagementPage() {
     if (q && ![u.username, u.display_name, u.email, u.employee_id, u.phone]
       .some(text => String(text ?? "").toLowerCase().includes(q))) return false;
     if (applied.status && applied.status !== "All" && displayAccountStatus(u) !== applied.status) return false;
-    if (applied.role && applied.role !== "All"
+    if (applied.role === "Needs assignment") {
+      if (!needsRoleAssignment(u, access.user_assignments)) return false;
+    } else if (applied.role && applied.role !== "All"
       && (u.account_role === "super_admin" ? "Super Admin" : "User") !== applied.role) return false;
     return true;
-  }), [users, search, applied]);
+  }), [users, search, applied, access.user_assignments]);
+  const pendingRoleCount = users.filter(u => needsRoleAssignment(u, access.user_assignments)).length;
+  const activeInviteRoles = access.roles.filter(role => role.status === "Active" && !role.is_system_role);
 
   const pageRows = filtered.slice((page - 1) * 10, page * 10).map(u => ({
     id: u.user_id,
@@ -127,7 +134,8 @@ export function SupabaseUserManagementPage() {
     userType: u.user_type || "Internal Employee",
     primaryRole: u.account_role === "super_admin" ? "Super Admin" :
       access.user_assignments.filter(a => a.user_id === u.user_id)
-        .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ") || "Unassigned",
+        .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ")
+        || (needsRoleAssignment(u, access.user_assignments) ? "Unassigned — needs role" : "Unassigned"),
     accountStatus: displayAccountStatus(u),
     lastActive: u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleString() : "—",
   }));
@@ -146,19 +154,28 @@ export function SupabaseUserManagementPage() {
 
   const openRoleAssignment = (user: ConvayProfile) => {
     setSelectedId(null);
+    setRoleAssignFromInvite(false);
     setRoleAssignId(user.user_id);
     setSelectedRoles(access.user_assignments.filter(a => a.user_id === user.user_id).map(a => a.role_id));
     setAssignError("");
   };
   const saveRoleAssignments = async () => {
     if (!roleAssignId || working) return;
+    if (!canCompleteInvitationRoleStep(roleAssignFromInvite, selectedRoles)) {
+      setAssignError("Select at least one active role to finish invitation access setup.");
+      return;
+    }
     setWorking(true);
     setAssignError("");
     try {
-      await convayAuth.access("assign_roles", { user_id: roleAssignId, role_ids: selectedRoles });
-      await reloadAccessSnapshot();
+      const confirmation = await convayAuth.access<{ ok?: boolean }>("assign_roles", {
+        user_id: roleAssignId, role_ids: selectedRoles,
+      });
+      const confirmedSnapshot = await reloadAccessSnapshot();
+      requireRoleAssignmentReadback(confirmation, confirmedSnapshot, roleAssignId, selectedRoles);
       setRoleAssignId(null);
-      toast.success("User roles updated");
+      setRoleAssignFromInvite(false);
+      toast.success("User roles updated and verified");
     } catch (error) {
       setAssignError(error instanceof Error ? error.message : "Unable to assign roles");
     } finally {
@@ -177,13 +194,16 @@ export function SupabaseUserManagementPage() {
     setFormError("");
     setEditId(null);
     setMode("invite");
+    void reloadAccessSnapshot().catch(() => {
+      setFormError("Unable to refresh roles. Reload User Management and try again.");
+    });
   };
   const openEdit = (user: ConvayProfile) => {
     setSelectedId(null);
     setEditId(user.user_id);
     setForm({ name: user.display_name, username: user.username, email: user.email,
       password: "", phone: user.phone ?? "", employeeId: user.employee_id ?? "",
-      userType: user.user_type ?? "Internal Employee" });
+      userType: user.user_type ?? "Internal Employee", roleId: "" });
     setFormError("");
     setMode("edit");
   };
@@ -192,7 +212,7 @@ export function SupabaseUserManagementPage() {
     setEditId(user.user_id);
     setForm({ name: user.display_name, username: user.username, email: user.email,
       password: "", phone: user.phone ?? "", employeeId: user.employee_id ?? "",
-      userType: user.user_type ?? "Internal Employee" });
+      userType: user.user_type ?? "Internal Employee", roleId: "" });
     setFormError("");
     setMode("password");
   };
@@ -209,6 +229,10 @@ export function SupabaseUserManagementPage() {
       const businessError = validateUserBusinessFields(form);
       if (businessError) { setFormError(businessError); return; }
     }
+    if (mode === "invite" && !activeInviteRoles.some(role => role.id === form.roleId)) {
+      setFormError("Select an active role before sending the invitation.");
+      return;
+    }
     if (mode === "password" && form.password.length < 6) {
       setFormError("Password must be at least 6 characters");
       return;
@@ -219,12 +243,12 @@ export function SupabaseUserManagementPage() {
       if (mode === "invite") {
         const confirmed = await convayAuth.users("invite", {
           name: form.name.trim(), username: form.username.trim() || undefined,
-          email: form.email.trim(),
+          email: form.email.trim(), role_id: form.roleId,
           phone: form.phone.trim() || undefined,
           ...userBusinessFields(form),
         });
-        requireUserMutationAck("invite", confirmed, { email: form.email.trim() });
-        toast.success("Invitation sent. The account stays inactive until the user verifies their email and sets a password.");
+        requireUserMutationAck("invite", confirmed, { email: form.email.trim(), roleId: form.roleId });
+        toast.success("Invitation sent and selected role assigned.");
       } else if (mode === "edit" && editing) {
         const confirmed = await convayAuth.users("update", {
           user_id: editing.user_id, name: form.name.trim(), username: form.username.trim(),
@@ -316,6 +340,12 @@ export function SupabaseUserManagementPage() {
         ))}
       </div>
       {loadError && <p role="alert" className="text-red-600 text-sm my-3">{loadError}</p>}
+      {!statsUnavailable && pendingRoleCount > 0 && (
+        <p role="status" className="text-sm text-slate-600 my-3">
+          {pendingRoleCount} {pendingRoleCount === 1 ? "account needs" : "accounts need"} an authorized role before workspace access.
+          Use Filter → Role → Needs assignment, then View Details → Assign Roles.
+        </p>
+      )}
       <UnifiedDataTable
         title="Users" countLabel="users" singularLabel="user" totalCount={filtered.length}
         cols={columns} rows={pageRows}
@@ -374,6 +404,9 @@ export function SupabaseUserManagementPage() {
               access.user_assignments.filter(a => a.user_id === selected.user_id)
                 .map(a => access.roles.find(r => r.id === a.role_id)?.name).filter(Boolean).join(", ") || "Unassigned"}</p>
             <p>Status: {displayAccountStatus(selected)}</p>
+            {needsRoleAssignment(selected, access.user_assignments) && (
+              <p role="status">Workspace access: Pending role assignment. Select Assign Roles below to grant only the permissions this user needs.</p>
+            )}
             {selected.invitation_status && selected.invitation_status !== "accepted" && (
               <p>Email verification: {selected.email_verified_at ? "Verified — the invitee must finish setting a password." : "Pending — access stays inactive until the invitee verifies this address."}</p>
             )}
@@ -390,7 +423,8 @@ export function SupabaseUserManagementPage() {
         icon={<UserPlus size={16}/>} size="md"
         footer={<div className="flex justify-end gap-2">
           <Button variant="ghost" size="lg" onClick={closeForm} disabled={working}>Cancel</Button>
-          <Button variant="primary" size="lg" onClick={() => void save()} loading={working}>
+          <Button variant="primary" size="lg" onClick={() => void save()} loading={working}
+            disabled={mode === "invite" && activeInviteRoles.length === 0}>
             {mode === "invite" ? "Send invitation" : mode === "password" ? "Save Password" : "Save Changes"}
           </Button>
         </div>}
@@ -408,13 +442,22 @@ export function SupabaseUserManagementPage() {
                 helper={mode === "edit" ? "Email changes require a separate verified process." : "The user must verify this address before access is activated."}/>
               <AppSelectField id="convay-user-type" label="User Type" required value={form.userType}
                 onChange={v => setField("userType", v)} options={[...USER_TYPES]}/>
+              {mode === "invite" && (
+                <AppSelectField id="convay-user-role" label="Assign Role" required
+                  value={form.roleId} onChange={value => { setField("roleId", value); setFormError(""); }}
+                  options={activeInviteRoles.length > 0
+                    ? [{ value: "", label: "Select a role" }, ...activeInviteRoles.map(role => ({ value: role.id, label: role.name }))]
+                    : []}
+                  emptyMessage="No active assignable roles. Create one in Manage Roles."
+                />
+              )}
               <AppTextField id="convay-employee-id" label="Employee ID (optional)" value={form.employeeId}
                 onChange={v => setField("employeeId", v)} placeholder="Employee ID or reference"/>
               <AppTextField id="convay-user-phone" label="Phone (optional)" value={form.phone}
                 onChange={v => setField("phone", v)} placeholder="Phone number"/>
             </>
           )}
-          {mode === "invite" && <p className="text-sm text-slate-600">Convay will email a secure invitation link. The account remains inactive until the recipient verifies this address and chooses their own password.</p>}
+          {mode === "invite" && <p className="text-sm text-slate-600">Convay emails the invitation and assigns the selected role together. Access activates after the recipient verifies their email and creates a password.</p>}
           {mode === "password" && (
             <AppPasswordField id="convay-user-password" label="Password" value={form.password}
               onChange={v => setField("password", v)} autoComplete="new-password"
@@ -426,13 +469,14 @@ export function SupabaseUserManagementPage() {
       <AppModal open={roleAssignId !== null}
         title="Assign User Roles"
         size="md"
-        onClose={() => { if (!working) setRoleAssignId(null); }}
+        onClose={() => { if (!working) { setRoleAssignId(null); setRoleAssignFromInvite(false); } }}
         footer={<div className="flex justify-end gap-2">
-          <Button variant="ghost" size="lg" onClick={() => setRoleAssignId(null)} disabled={working}>Cancel</Button>
+          <Button variant="ghost" size="lg" onClick={() => { setRoleAssignId(null); setRoleAssignFromInvite(false); }} disabled={working}>Cancel</Button>
           <Button variant="primary" size="lg" onClick={() => { void saveRoleAssignments(); }} loading={working}>Save Roles</Button>
         </div>}>
         <div className="flex flex-col gap-3">
-          <p>Select which application roles this user may use. Permissions take effect from the selected roles.</p>
+          <p>Select which application roles this user may use. Permissions take effect from the selected roles. An invited user can complete password setup without a role, but will see an access-pending screen until an authorized role is assigned.</p>
+          {roleAssignFromInvite && <p role="status">Invitation sent. Choose at least one role to finish the administrator's access setup for this user.</p>}
           {access.roles.filter(r => r.status === "Active" && !r.is_system_role).length === 0 &&
             <p>No custom roles yet. Create one from Role Management.</p>}
           {access.roles.filter(r => r.status === "Active" && !r.is_system_role).map(r => (

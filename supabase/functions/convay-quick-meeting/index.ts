@@ -39,6 +39,7 @@ type QuickMeetingRow = QuickMeetingAccessRecord & {
   room_name: string;
   created_at: string;
   ended_at: string | null;
+  tenant_id: string | null;
 };
 type QuickLinkRow = QuickMeetingLinkAccessRecord & {
   id: string;
@@ -241,11 +242,19 @@ function cleanSessionId(value: unknown): string {
 
 async function meetingById(id: string): Promise<QuickMeetingRow | null> {
   const query = new URLSearchParams({
-    select: "id,owner_id,title,meeting_kind,access_mode,status,room_name,admission_locked,max_participants,created_at,expires_at,ended_at",
+    select: "id,owner_id,tenant_id,title,meeting_kind,access_mode,status,room_name,admission_locked,max_participants,created_at,expires_at,ended_at",
     id: `eq.${id}`,
     limit: "1",
   });
   return (await serviceJson<QuickMeetingRow[]>(`/rest/v1/convay_quick_meetings?${query}`))[0] ?? null;
+}
+
+async function assertMeetingOwnerScope(meeting: QuickMeetingRow): Promise<void> {
+  if (!Object.prototype.hasOwnProperty.call(meeting, "tenant_id")) {
+    throw new HttpError(503, "Quick Meeting company scope is unavailable.");
+  }
+  const valid = await postRpc<boolean>("convay_quick_meeting_scope_valid", { p_meeting_id: meeting.id });
+  if (valid !== true) throw new HttpError(403, "Quick Meeting host authorization is no longer active.");
 }
 
 async function ownedMeeting(id: string, host: HostIdentity): Promise<QuickMeetingRow> {
@@ -271,6 +280,7 @@ async function requireGuestLink(secret: string): Promise<{ meeting: QuickMeeting
   if (!link) throw new HttpError(404, "This quick meeting link is unavailable.");
   const meeting = await meetingById(link.meeting_id);
   if (!meeting) throw new HttpError(404, "This quick meeting link is unavailable.");
+  await assertMeetingOwnerScope(meeting);
   const decision = checkQuickMeetingLink(meeting, link);
   if (!decision.allowed) throw new HttpError(decision.status, decision.error);
   return { meeting, link };
@@ -321,6 +331,7 @@ async function issueRoomToken(
   meeting: QuickMeetingRow,
   linkExpiresAt?: string,
 ): Promise<{ participantToken: string; expiresIn: number }> {
+  await assertMeetingOwnerScope(meeting);
   const ttl = quickMeetingTokenLifetimeSeconds(meeting.expires_at, Date.now(), TOKEN_TTL_SECONDS, linkExpiresAt);
   if (ttl === null || !isQuickMeetingActive(meeting)) {
     throw new HttpError(410, "This quick meeting has ended or expired.");
@@ -445,6 +456,8 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
     if (!canCreateQuickMeeting(host.isSuperAdmin, host.permissions)) {
       throw new HttpError(403, "You need Quick Meeting creation permission.");
     }
+    const scope = await postRpc<{allowed: boolean; tenant_id: string | null}>("convay_quick_host_scope", { p_owner_id: host.id });
+    if (scope?.allowed !== true) throw new HttpError(403, "An unambiguous active Quick Meeting host scope is required.");
     const requestedTitle = normalizeQuickParticipantName(body.title);
     const title = requestedTitle ?? "Quick Meeting";
     if (typeof body.title === "string" && body.title.trim() && !requestedTitle) {
@@ -476,6 +489,9 @@ async function hostAction(req: Request, body: JsonObject): Promise<JsonObject> {
 
   const meetingId = cleanMeetingId(body.meetingId);
   const meeting = await ownedMeeting(meetingId, host);
+  // Ending an owned room is cleanup-only and remains available to a verified
+  // host even when the company is no longer active. No new admission is issued.
+  if (action !== "end" && action !== "host-leave") await assertMeetingOwnerScope(meeting);
   if (action === "state") {
     if (meeting.status === "ended") {
       const query = new URLSearchParams({

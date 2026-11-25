@@ -422,17 +422,40 @@ nav[aria-label="Breadcrumb"]::-webkit-scrollbar {
     min-height: 100svh;
     min-height: 100vh;
     overflow: auto;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     background: var(--color-background);
   }
+  /* CSS fail-safe: never render the desktop slideshow in a narrow viewport,
+     even if resize or hydration updates the React media state late. */
+  .lp-visual {
+    display: none;
+  }
   .lp-auth {
-    flex: 1;
+    flex: 1 1 auto;
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: clip;
     height: auto;
     min-height: 100svh;
     min-height: 100vh;
     align-items: flex-start;
     justify-content: flex-start;
     background: var(--color-background);
+  }
+
+  .lp-auth .lp-form {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+  }
+  /* Preserve the approved row arrangement when space allows; allow its
+     controls to wrap instead of creating horizontal overflow at 320–375px. */
+  .lp-auth .lp-form__row {
+    flex-wrap: wrap;
+    gap: 8px;
   }
 
   /* ── Mobile login form redesign ── */

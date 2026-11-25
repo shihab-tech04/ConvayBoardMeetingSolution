@@ -1,6 +1,7 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { toast } from "sonner";
-import { persistOrgUnitChange, type OrgSaveResult } from "./orgUnitPersistence";
+import { persistOrgUnitChange, verifyOrgUnitSqlReadback, type OrgSaveResult } from "./orgUnitPersistence";
+import { validateOrgUnitFormStep, firstInvalidOrgUnitStep, type UnitFormValues } from "./orgUnitFormValidation";
 import { createPortal } from "react-dom";
 import {
   Building2, ChevronRight, ChevronDown, Plus, Pencil, Eye,
@@ -15,6 +16,7 @@ import type { OrgUnit } from "../../data/boardMeetingData";
 import { useOrgUnitRegistry, useAuditEventRegistry, generateId } from "../../data/boardMeetingData";
 import { useBmsUserRegistry } from "../../data/bmsUsers";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { convayAuth } from "../../services/supabase/convayAuth";
 import {
   findChildren, findDescendants, findParent, buildPathLabel, buildPathIds,
   getValidParents, validateParentType, detectCycle,
@@ -25,6 +27,10 @@ import { useOrgPermissions } from "../../utils/orgPermissions";
 import { AppTextField } from "../../components/forms/AppTextField";
 import { AppSelectField } from "../../components/forms/AppSelectField";
 import { AppTextArea } from "../../components/forms/AppTextArea";
+import { AppModal } from "../../components/modals/AppModal";
+import { PrimaryButton } from "../../components/buttons/PrimaryButton";
+import { SecondaryButton } from "../../components/buttons/SecondaryButton";
+import { StatCard } from "../../components/cards/StatCard";
 import { AssignUserModal }    from "./modals/AssignUserModal";
 import { ManageHeadModal }    from "./modals/ManageHeadModal";
 import { TransferUserModal }  from "./modals/TransferUserModal";
@@ -262,6 +268,27 @@ function UnitDetailDrawer({
   onMove?: (u: OrgUnit) => void;
 }) {
   const [tab, setTab] = useState<DrawerTab>("overview");
+  const [sqlAudit, setSqlAudit] = useState<import("../../data/boardMeetingData").AuditEvent[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyRetry, setHistoryRetry] = useState(0);
+  useEffect(() => {
+    if (tab !== "history" || import.meta.env.MODE === "test") return;
+    let active = true;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    void convayAuth.orgUnitHistory(unit.id).then(rows => {
+      if (active) setSqlAudit(rows);
+    }).catch(err => {
+      if (active) {
+        setSqlAudit([]);
+        setHistoryError(err instanceof Error ? err.message : "Organization audit history unavailable");
+      }
+    }).finally(() => {
+      if (active) setHistoryLoading(false);
+    });
+    return () => { active = false; };
+  }, [tab, unit.id, historyRetry]);
 
   const children = useMemo(() => findChildren(unit.id, allUnits), [unit.id, allUnits]);
   const parent = useMemo(() => findParent(unit, allUnits), [unit, allUnits]);
@@ -273,9 +300,14 @@ function UnitDetailDrawer({
   const assignedUsers = useMemo(() => resolveUnitUsers(unit.id, users), [unit.id, users]);
   const headUser = users.find(u => u.id === unit.head_user_id);
   const deputyUser = users.find(u => u.id === unit.deputy_user_id);
-  const unitAudit = useMemo(
-    () => auditItems.filter(a => a.entity_id === unit.id || a.entity_id === unit.unit_id).sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
-    [auditItems, unit],
+  // Existing test fixtures continue to support component tests. Production
+  // history is read exclusively from the SQL event and entity-change ledger.
+  const unitAudit = useMemo(() =>
+    (import.meta.env.MODE === "test"
+      ? auditItems.filter(a => a.entity_id === unit.id || a.entity_id === unit.unit_id)
+      : sqlAudit
+    ).slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    [auditItems, unit, sqlAudit],
   );
 
   const isActive = unit.status === "Active";
@@ -439,8 +471,16 @@ function UnitDetailDrawer({
           {tab === "history" && (
             <div className="space-y-3">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Audit History</p>
-              {unitAudit.length === 0 ? (
-                <div className="text-center py-8 text-sm text-muted-foreground">No audit events for this unit</div>
+              {historyLoading ? (
+                <div role="status" className="text-center py-8 text-sm text-muted-foreground">Loading verified SQL audit history…</div>
+              ) : historyError ? (
+                <div role="alert" className="space-y-2 py-5 text-sm">
+                  <p className="text-destructive">{historyError}</p>
+                  <button type="button" className="text-primary underline underline-offset-2"
+                    onClick={() => setHistoryRetry(n => n + 1)}>Retry audit history</button>
+                </div>
+              ) : unitAudit.length === 0 ? (
+                <div className="text-center py-8 text-sm text-muted-foreground">No SQL audit events for this unit</div>
               ) : (
                 <div className="space-y-2">
                   {unitAudit.map(a => (
@@ -588,21 +628,6 @@ function FooterActions({
 
 const FORM_STEPS = ["Unit Type", "Basic Info", "Parent & Path", "Leadership", "Review"];
 
-interface UnitFormValues {
-  unit_type: string;
-  unit_name: string;
-  code: string;
-  description: string;
-  phone: string;
-  email: string;
-  address: string;
-  parent_unit_id: string;
-  effective_start_at: string;
-  head_user_id: string;
-  deputy_user_id: string;
-  status: "Draft" | "Active";
-}
-
 function UnitFormModal({
   editUnit,
   defaultParentId,
@@ -636,6 +661,7 @@ function UnitFormModal({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const saveInFlight = useRef(false);
+  const originalValues = useRef(vals);
 
   const set = useCallback(<K extends keyof UnitFormValues>(k: K, v: UnitFormValues[K]) => {
     setVals(prev => ({ ...prev, [k]: v }));
@@ -663,40 +689,28 @@ function UnitFormModal({
     return `${parentPath} › ${vals.unit_name || "New Unit"}`;
   }, [vals.parent_unit_id, vals.unit_name, allUnits]);
 
-  const activeUsers = users.filter(u => u.account_status === "active" || u.account_status === "pending_activation");
+  const activeUsers = users.filter(u => u.account_status === "active");
 
-  // Duplicate code check
-  const codeIsDuplicate = vals.code.trim() !== "" && allUnits.some(
-    u => u.code?.toUpperCase() === vals.code.toUpperCase().trim() && u.id !== editUnit?.id,
-  );
-
-  // Step validation
   function validateStep(s: number): boolean {
-    const e: Record<string, string> = {};
-    if (s === 0 && !vals.unit_type) e.unit_type = "Select a unit type";
-    if (s === 1) {
-      if (!vals.unit_name.trim()) e.unit_name = "Unit name is required";
-      if (codeIsDuplicate) e.code = "This code is already in use";
-    }
-    if (s === 2) {
-      const needsParent = (VALID_PARENT_TYPES[vals.unit_type] ?? []).length > 0;
-      if (needsParent && !vals.parent_unit_id) e.parent_unit_id = "Select a parent unit";
-      if (vals.parent_unit_id && detectCycle(editUnit?.id ?? "", vals.parent_unit_id, allUnits))
-        e.parent_unit_id = "This would create a circular reference";
-    }
-    setErrors(e);
-    return Object.keys(e).length === 0;
+    const found = validateOrgUnitFormStep(s, vals, allUnits, users, editUnit);
+    setErrors(found);
+    return Object.keys(found).length === 0;
   }
-
-  function nextStep() { if (validateStep(step)) setStep(s => s + 1); }
-  function prevStep() { setStep(s => s - 1); }
+  function nextStep() { if (step < FORM_STEPS.length - 1 && validateStep(step)) setStep(s => s + 1); }
+  function prevStep() { setErrors({}); setStep(s => Math.max(0, s - 1)); }
   async function handleSubmit(saveStatus: "Draft" | "Active") {
-    if (saveInFlight.current || !validateStep(step)) return;
+    if (saveInFlight.current) return;
+    const invalid = firstInvalidOrgUnitStep(vals, allUnits, users, editUnit, saveStatus);
+    if (invalid) { setStep(invalid.step); setErrors(invalid.errors); return; }
     saveInFlight.current = true;
     setSaving(true);
     setErrors(prev => { const next = { ...prev }; delete next.save; return next; });
     try {
-      const saved = await onConfirm({ ...vals, status: saveStatus });
+      const saved = await onConfirm({
+        ...vals, unit_name: vals.unit_name.trim(), code: vals.code.trim().toUpperCase(),
+        phone: vals.phone.trim(), email: vals.email.trim(), address: vals.address.trim(),
+        status: saveStatus,
+      });
       if (!saved) setErrors(prev => ({ ...prev, save: "The organization record was not saved. Review access or reload and retry." }));
     } catch (error) {
       setErrors(prev => ({
@@ -710,49 +724,68 @@ function UnitFormModal({
   }
 
   const isEdit = !!editUnit;
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+  const isDirty = JSON.stringify(vals) !== JSON.stringify(originalValues.current);
+  const requestClose = () => {
+    if (saveInFlight.current) return;
+    if (isDirty && !window.confirm("Discard your unsaved unit changes?")) return;
+    onClose();
+  };
+  return (
+    <AppModal
+      open
+      title={isEdit ? "Edit Unit" : "Create Unit"}
+      subtitle="Set up the organizational hierarchy and review the unit before saving."
+      onClose={requestClose}
+      fullPage
+      icon={<Building2 size={18} />}
+      steps={FORM_STEPS}
+      currentStep={step}
+      onStepClick={target => { if (target < step && !saving) { setStep(target); setErrors({}); } }}
+      footer={
+        <>
+          <SecondaryButton type="button" disabled={saving}
+            style={{ marginRight: "auto" }}
+            onClick={step === 0 ? requestClose : prevStep}>
+            {step === 0 ? "Cancel" : "Back"}
+          </SecondaryButton>
+          {step < FORM_STEPS.length - 1 ? (
+            <PrimaryButton type="button" disabled={saving} onClick={nextStep}>Continue</PrimaryButton>
+          ) : (
+            <>
+              <SecondaryButton type="button" disabled={saving} onClick={() => { void handleSubmit("Draft"); }}>
+                Save as Draft
+              </SecondaryButton>
+              <PrimaryButton type="button" disabled={saving} onClick={() => { void handleSubmit("Active"); }}>
+                {saving ? "Saving…" : isEdit ? "Save Changes" : "Save & Activate"}
+              </PrimaryButton>
+            </>
+          )}
+        </>
+      }
     >
-      <div className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[92vh]">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border flex-shrink-0">
-          <div className="flex items-center gap-3">
-            <Building2 size={20} className="text-primary" />
-            <p className="font-semibold text-foreground">{isEdit ? "Edit Unit" : "Create Unit"}</p>
-          </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-muted text-muted-foreground"><X size={18} /></button>
-        </div>
-
-        {/* Step bar */}
-        <div className="flex items-center px-6 py-3 border-b border-border flex-shrink-0 gap-0.5 overflow-x-auto">
-          {FORM_STEPS.map((label, i) => (
-            <div key={i} className="flex items-center gap-0.5 flex-shrink-0">
-              <div
-                className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold transition-colors
-                  ${i < step ? "bg-primary text-primary-foreground" : i === step ? "bg-primary text-primary-foreground ring-2 ring-primary/30" : "bg-muted text-muted-foreground"}`}
-              >
-                {i < step ? <CheckCircle size={12} /> : i + 1}
-              </div>
-              <span className={`text-xs px-1 hidden sm:block ${i === step ? "text-foreground font-medium" : "text-muted-foreground"}`}>{label}</span>
-              {i < FORM_STEPS.length - 1 && <div className="w-4 h-px bg-border mx-1" />}
-            </div>
-          ))}
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+      <div className="wiz-form-body">
           {/* Step 0: Unit Type */}
           {step === 0 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Unit Type">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><Building2 size={16} /></span>
+                <div>
+                  <div className="form-section__title">Unit Type</div>
+                  <p className="text-xs text-muted-foreground">Choose where the unit belongs in the organization hierarchy.</p>
+                </div>
+              </div>
+              <div className="form-section__body--stack">
               <p className="text-sm text-muted-foreground">Select the type of organisational unit you are creating.</p>
               <div className="grid grid-cols-1 gap-2">
                 {PHASE1_TYPES.map(type => (
                   <button
                     key={type}
-                    onClick={() => { set("unit_type", type); set("parent_unit_id", ""); }}
+                    onClick={() => {
+                      set("unit_type", type);
+                      const preferredId = vals.parent_unit_id || defaultParentId || "";
+                      const preferred = allUnits.find(u => u.id === preferredId);
+                      set("parent_unit_id", preferred && validateParentType(type, preferred.unit_type) ? preferredId : "");
+                    }}
                     className={`flex items-center gap-3 p-3 rounded-lg border transition-colors text-left ${
                       vals.unit_type === type
                         ? "border-primary bg-primary/5 text-foreground"
@@ -771,12 +804,21 @@ function UnitFormModal({
                 ))}
               </div>
               {errors.unit_type && <p className="text-xs text-destructive">{errors.unit_type}</p>}
-            </div>
+              </div>
+            </section>
           )}
 
           {/* Step 1: Basic Info */}
           {step === 1 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Basic Information">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><Building2 size={16} /></span>
+                <div>
+                  <div className="form-section__title">Basic Information</div>
+                  <p className="text-xs text-muted-foreground">Identity and contact details for this organizational unit.</p>
+                </div>
+              </div>
+              <div className="form-section__body--grid">
               <AppTextField
                 id="unit_name" label="Unit Name" required
                 value={vals.unit_name} onChange={v => set("unit_name", v)}
@@ -789,22 +831,31 @@ function UnitFormModal({
                 placeholder="e.g. FIN"
                 error={errors.code}
               />
-              <AppTextArea
+              <div className="field-group--full"><AppTextArea
                 id="desc" label="Description"
                 value={vals.description} onChange={v => set("description", v)}
                 rows={3} placeholder="Optional description of this unit's purpose and responsibilities"
-              />
-              <div className="grid grid-cols-2 gap-4">
-                <AppTextField id="phone" label="Phone" value={vals.phone} onChange={v => set("phone", v)} placeholder="+880 2..." />
-                <AppTextField id="email" label="Email" value={vals.email} onChange={v => set("email", v)} placeholder="unit@example.com" />
+              /></div>
+              <AppTextField id="phone" label="Phone" value={vals.phone} onChange={v => set("phone", v)}
+                  error={errors.phone} placeholder="+880 2..." />
+                <AppTextField id="email" label="Email" value={vals.email} onChange={v => set("email", v)}
+                  error={errors.email} placeholder="unit@example.com" />
+              <div className="field-group--full"><AppTextField id="address" label="Address" value={vals.address} onChange={v => set("address", v)} placeholder="Street address" /></div>
               </div>
-              <AppTextField id="address" label="Address" value={vals.address} onChange={v => set("address", v)} placeholder="Street address" />
-            </div>
+            </section>
           )}
 
           {/* Step 2: Parent & Path */}
           {step === 2 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Parent & Path">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><GitBranch size={16} /></span>
+                <div>
+                  <div className="form-section__title">Parent & Path</div>
+                  <p className="text-xs text-muted-foreground">Confirm the parent and resulting hierarchy.</p>
+                </div>
+              </div>
+              <div className="form-section__body--stack">
               {(VALID_PARENT_TYPES[vals.unit_type] ?? []).length === 0 ? (
                 <div className="rounded-lg bg-muted/40 border border-border p-4 text-sm text-muted-foreground">
                   <strong>{vals.unit_type}</strong> is a root-level unit and does not require a parent.
@@ -821,6 +872,11 @@ function UnitFormModal({
                     ]}
                     error={errors.parent_unit_id}
                   />
+                  {parentOptions.length === 0 && (
+                    <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
+                      No eligible parent units yet. Create and activate the required parent first.
+                    </p>
+                  )}
                   {vals.parent_unit_id && (
                     <div className="rounded-lg bg-muted/40 border border-border p-3">
                       <p className="text-xs text-muted-foreground mb-1">Full path after save</p>
@@ -836,17 +892,34 @@ function UnitFormModal({
                   type="date"
                   value={vals.effective_start_at}
                   onChange={e => set("effective_start_at", e.target.value)}
+                  aria-invalid={!!errors.effective_start_at}
+                  aria-describedby={errors.effective_start_at ? "effective-start-error" : undefined}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
                 />
+                {errors.effective_start_at && (
+                  <p id="effective-start-error" role="alert" className="text-xs text-destructive mt-1">
+                    {errors.effective_start_at}
+                  </p>
+                )}
               </div>
-            </div>
+              </div>
+            </section>
           )}
 
           {/* Step 3: Leadership */}
           {step === 3 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Leadership">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><Users size={16} /></span>
+                <div>
+                  <div className="form-section__title">Leadership</div>
+                  <p className="text-xs text-muted-foreground">Assign an active unit head and deputy, or leave them unassigned.</p>
+                </div>
+              </div>
+              <div className="form-section__body--stack">
               <AppSelectField
                 id="head" label="Unit Head"
+                error={errors.head_user_id}
                 value={vals.head_user_id}
                 onChange={v => set("head_user_id", v)}
                 options={[
@@ -856,6 +929,7 @@ function UnitFormModal({
               />
               <AppSelectField
                 id="deputy" label="Deputy Head"
+                error={errors.deputy_user_id}
                 value={vals.deputy_user_id}
                 onChange={v => set("deputy_user_id", v)}
                 options={[
@@ -864,12 +938,21 @@ function UnitFormModal({
                 ]}
               />
               <p className="text-xs text-muted-foreground">Leadership assignments can be updated at any time from the unit detail page.</p>
-            </div>
+              </div>
+            </section>
           )}
 
           {/* Step 4: Review */}
           {step === 4 && (
-            <div className="space-y-4">
+            <section className="form-section" aria-label="Review Unit">
+              <div className="form-section__header">
+                <span className="form-section__icon" aria-hidden="true"><CheckCircle size={16} /></span>
+                <div>
+                  <div className="form-section__title">Review Unit</div>
+                  <p className="text-xs text-muted-foreground">Check every field before saving or activating the unit.</p>
+                </div>
+              </div>
+              <div className="form-section__body--stack">
               <p className="text-sm text-muted-foreground">Review the details before saving.</p>
               <div className="rounded-lg border border-border divide-y divide-border">
                 {[
@@ -879,6 +962,11 @@ function UnitFormModal({
                   ["Parent",      selectedParent?.unit_name || (VALID_PARENT_TYPES[vals.unit_type]?.length === 0 ? "Root unit" : "—")],
                   ["Full Path",   futurePath],
                   ["Head User",   activeUsers.find(u => u.id === vals.head_user_id)?.name ?? "— Assign Later —"],
+                  ["Deputy",      activeUsers.find(u => u.id === vals.deputy_user_id)?.name ?? "— None —"],
+                  ["Description", vals.description || "—"],
+                  ["Phone",       vals.phone || "—"],
+                  ["Email",       vals.email || "—"],
+                  ["Address",     vals.address || "—"],
                   ["Eff. Date",   vals.effective_start_at || "—"],
                 ].map(([l, v]) => (
                   <div key={l} className="flex items-center justify-between px-3 py-2 text-sm">
@@ -887,40 +975,13 @@ function UnitFormModal({
                   </div>
                 ))}
               </div>
-            </div>
+              </div>
+            </section>
           )}
-        </div>
 
-        {/* Save failures stay visible in the modal until server confirmation succeeds. */}
-        {errors.save && <p role="alert" className="px-6 pb-2 text-sm text-red-600">{errors.save}</p>}
-        {/* Footer */}
-        <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-border flex-shrink-0">
-          <button
-            onClick={step === 0 ? onClose : prevStep}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-foreground bg-muted hover:bg-muted/80 rounded-lg transition-colors"
-          >
-            {step === 0 ? <><X size={14} /> Cancel</> : <><ChevronLeft size={14} /> Back</>}
-          </button>
-          <div className="flex items-center gap-2">
-            {step < FORM_STEPS.length - 1 ? (
-              <button onClick={nextStep} className="px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors">
-                Continue
-              </button>
-            ) : (
-              <>
-                <button onClick={() => { void handleSubmit("Draft"); }} disabled={saving} className="px-4 py-2 text-sm font-medium text-foreground border border-border hover:bg-muted rounded-lg transition-colors">
-                  Save as Draft
-                </button>
-                <button onClick={() => { void handleSubmit("Active"); }} disabled={saving} className="px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors">
-                  {saving ? "Saving..." : isEdit ? "Save Changes" : "Save & Activate"}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+        {errors.save && <p role="alert" className="text-sm text-red-600">{errors.save}</p>}
       </div>
-    </div>,
-    document.body,
+    </AppModal>
   );
 }
 
@@ -1035,29 +1096,12 @@ export function OrganizationStructurePage() {
     setExpanded(new Set());
   }, []);
 
-  const emitAudit = useCallback((unitId: string, action: string, details: string) => {
-    const now = new Date().toISOString();
-    return auditReg.add({
-      id:              generateId("AUD", auditReg.items.map(a => a.id)),
-      created_at:      now,
-      event_id:        `AUDIT-OU-${Date.now()}`,
-      entity_type:     "OrgUnit",
-      entity_id:       unitId,
-      action,
-      actor:           currentUser?.name ?? "System",
-      actor_role:      currentUser?.role ?? "",
-      timestamp:       now,
-      ip_address:      "",
-      details,
-      approval_status: "Approved",
-    });
-  }, [auditReg, currentUser]);
-
   const handleFormConfirm = useCallback(async (values: UnitFormValues): Promise<boolean> => {
+    if (editingUnit ? !perm.edit_units : !perm.create_units) return false;
     const now = new Date().toISOString();
     let result: OrgSaveResult;
+    let savedRecordId = editingUnit?.id ?? "";
     if (editingUnit) {
-      const prevParent = editingUnit.parent_unit_id;
       result = await persistOrgUnitChange(
         () => orgReg.update(editingUnit.id, {
           unit_name:          values.unit_name,
@@ -1068,7 +1112,7 @@ export function OrganizationStructurePage() {
           email:              values.email || undefined,
           address:            values.address || undefined,
           parent_unit_id:     values.parent_unit_id || undefined,
-          parent_unit:        allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? editingUnit.parent_unit,
+          parent_unit:        allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? "—",
           head_user_id:       values.head_user_id || undefined,
           deputy_user_id:     values.deputy_user_id || undefined,
           effective_start_at: values.effective_start_at || undefined,
@@ -1078,16 +1122,13 @@ export function OrganizationStructurePage() {
           path_ids:           values.parent_unit_id ? buildPathIds(values.parent_unit_id, units).concat(editingUnit.id) : [editingUnit.id],
           path_label:         values.parent_unit_id ? `${buildPathLabel(values.parent_unit_id, units)} › ${values.unit_name}` : values.unit_name,
         }),
-        async () => {
-          const updated = await emitAudit(editingUnit.id, "org_unit_updated", `Unit updated: ${values.unit_name}`);
-          if (prevParent === values.parent_unit_id) return updated;
-          const parentChange = await emitAudit(editingUnit.id, "org_parent_changed",
-            `Parent changed from ${prevParent ?? "root"} to ${values.parent_unit_id || "root"}`);
-          return Boolean(updated && parentChange);
-        },
+        // SQL BEFORE trigger convay_entity_track writes immutable entity_changes
+        // in the same transaction. bms.audit direct INSERT is denied in production.
+        () => true,
       );
     } else {
       const newId = generateId("OU", units.map(u => u.unit_id));
+      savedRecordId = newId;
       const parentPath = values.parent_unit_id ? buildPathLabel(values.parent_unit_id, units) : "";
       result = await persistOrgUnitChange(
         () => orgReg.add({
@@ -1113,18 +1154,51 @@ export function OrganizationStructurePage() {
           path_ids:           values.parent_unit_id ? [...buildPathIds(values.parent_unit_id, units), newId] : [newId],
           path_label:         parentPath ? `${parentPath} › ${values.unit_name}` : values.unit_name,
         }),
-        () => emitAudit(newId, "org_unit_created", `Unit created: ${values.unit_name} (${values.unit_type})`),
+        // The server mutation atomically writes entity_changes via convay_entity_track.
+        () => true,
       );
     }
     if (result === "not-saved") return false;
     if (result === "audit-unverified") {
       toast.warning("The organization record was saved, but its activity journal could not be confirmed.");
     }
+    // Production registry is SQL-backed. Re-fetch the authoritative record
+    // before announcing a completed mutation; never retry a confirmed write
+    // automatically if this independent read fails.
+    if (orgReg.refresh) {
+      const readbackConfirmed = await verifyOrgUnitSqlReadback(
+        orgReg.refresh,
+        orgReg.getById,
+        {
+          id: savedRecordId,
+          unit_name: values.unit_name,
+          unit_type: values.unit_type,
+          status: values.status,
+          code: values.code || undefined,
+          description: values.description || undefined,
+          phone: values.phone || undefined,
+          email: values.email || undefined,
+          address: values.address || undefined,
+          effective_start_at: values.effective_start_at || undefined,
+          parent_unit_id: values.parent_unit_id || undefined,
+          parent_unit: allUnits.find(u => u.id === values.parent_unit_id)?.unit_name ?? "—",
+          path_ids: values.parent_unit_id
+            ? [...buildPathIds(values.parent_unit_id, units), savedRecordId] : [savedRecordId],
+          path_label: values.parent_unit_id
+            ? `${buildPathLabel(values.parent_unit_id, units)} › ${values.unit_name}` : values.unit_name,
+          head_user_id: values.head_user_id || undefined,
+          deputy_user_id: values.deputy_user_id || undefined,
+        },
+      );
+      if (!readbackConfirmed) {
+        toast.warning("Unit write was acknowledged, but SQL readback could not be confirmed. Refresh Organization Structure before making further changes.");
+      }
+    }
     setFormOpen(false);
     setEditingUnit(undefined);
     setDefaultParentId(undefined);
     return true;
-  }, [editingUnit, orgReg, units, currentUser, emitAudit]);
+  }, [editingUnit, orgReg, units, currentUser, perm.edit_units, perm.create_units]);
 
   // Alias for path functions inside handleFormConfirm
   const allUnits = units;
@@ -1132,18 +1206,36 @@ export function OrganizationStructurePage() {
   const handleActivate = useCallback(async (unit: OrgUnit): Promise<void> => {
     if (!perm.activate_units) return;
     const now = new Date().toISOString();
+    // The server's convay_entity_track trigger records this change atomically.
+    // A direct client bms.audit INSERT is forbidden by the registry contract.
     const result = await persistOrgUnitChange(
       () => orgReg.update(unit.id, {
         status: "Active", updated_at: now, updated_by: currentUser?.id,
       }),
-      () => emitAudit(unit.id, "org_status_changed", `Status changed to Active (was ${unit.status})`),
+      () => true,
     );
     if (result === "not-saved") {
       toast.error("Activation was not saved. Check permissions and retry.");
-    } else if (result === "audit-unverified") {
-      toast.warning("Activation was saved, but its activity journal could not be confirmed.");
+      return;
     }
-  }, [perm.activate_units, orgReg, currentUser, emitAudit]);
+    if (!orgReg.refresh) {
+      toast.warning("Activation acknowledged but SQL readback is unavailable. Refresh before editing.");
+      return;
+    }
+    const confirmed = await verifyOrgUnitSqlReadback(
+      orgReg.refresh, orgReg.getById,
+      {
+        id: unit.id, unit_name: unit.unit_name, unit_type: unit.unit_type,
+        status: "Active", code: unit.code,
+        description: unit.description, phone: unit.phone, email: unit.email,
+        address: unit.address, effective_start_at: unit.effective_start_at,
+        parent_unit_id: unit.parent_unit_id, parent_unit: unit.parent_unit,
+        path_ids: unit.path_ids, path_label: unit.path_label,
+        head_user_id: unit.head_user_id, deputy_user_id: unit.deputy_user_id,
+      },
+    );
+    if (!confirmed) toast.warning("Activation acknowledged but SQL readback is unverified. Refresh before editing.");
+  }, [perm.activate_units, orgReg, currentUser]);
 
   const handleDeactivate = useCallback((unit: OrgUnit) => {
     if (!perm.deactivate_units) return;
@@ -1190,12 +1282,9 @@ export function OrganizationStructurePage() {
         </div>
         <div className="flex items-center gap-2 self-start sm:self-auto">
           {perm.create_units && (
-            <button
-              onClick={() => openCreate()}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors"
-            >
+            <PrimaryButton type="button" onClick={() => openCreate()}>
               <Plus size={16} /> Add Unit
-            </button>
+            </PrimaryButton>
           )}
           {!perm.create_units && (
             <div className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground bg-muted rounded-lg">
@@ -1205,20 +1294,13 @@ export function OrganizationStructurePage() {
         </div>
       </div>
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {[
-          { label: "Total Units",  value: totalUnits,   color: "text-foreground" },
-          { label: "Active",       value: activeUnits,  color: "text-emerald-600 dark:text-emerald-400" },
-          { label: "Branches",     value: branchCount,  color: "text-cyan-600 dark:text-cyan-400" },
-          { label: "Divisions",    value: divisionCount,color: "text-indigo-600 dark:text-indigo-400" },
-          { label: "Departments",  value: deptCount,    color: "text-teal-600 dark:text-teal-400" },
-        ].map(kpi => (
-          <div key={kpi.label} className="bg-background border border-border rounded-xl p-4">
-            <p className="text-xs text-muted-foreground">{kpi.label}</p>
-            <p className={`text-2xl font-bold mt-1 ${kpi.color}`}>{kpi.value}</p>
-          </div>
-        ))}
+      {/* KPI cards — same approved StatCard component as other Convay pages. */}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+        <StatCard icon={Building2} value={String(totalUnits)} label="Total Units" tone="primary" loading={orgReg.loading} />
+        <StatCard icon={CheckCircle} value={String(activeUnits)} label="Active" tone="success" loading={orgReg.loading} />
+        <StatCard icon={GitBranch} value={String(branchCount)} label="Branches" tone="primary" loading={orgReg.loading} />
+        <StatCard icon={Network} value={String(divisionCount)} label="Divisions" tone="primary" loading={orgReg.loading} />
+        <StatCard icon={FolderTree} value={String(deptCount)} label="Departments" tone="primary" loading={orgReg.loading} />
       </div>
 
       {/* Toolbar */}
@@ -1353,10 +1435,19 @@ export function OrganizationStructurePage() {
 
       {/* Content area */}
       <div className="bg-background border border-border rounded-xl overflow-hidden">
-        {filteredUnits.length === 0 ? (
+        {orgReg.loading ? (
+          <div role="status" className="py-16 text-center text-sm text-muted-foreground">Loading organization units…</div>
+        ) : orgReg.error ? (
+          <div role="alert" className="flex flex-col items-center gap-3 py-12 px-4 text-center">
+            <p className="text-sm text-destructive">Unable to load units: {orgReg.error}</p>
+            <button onClick={() => { void orgReg.refresh?.(); }}
+              className="rounded-lg px-4 py-2 text-sm bg-primary text-primary-foreground">Retry loading</button>
+          </div>
+        ) : filteredUnits.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Network size={40} className="text-muted-foreground mb-3 opacity-40" />
-            <p className="text-sm font-medium text-muted-foreground">No units found</p>
+            <p className="text-sm font-medium text-muted-foreground">{units.length === 0 ? "No organization units yet" : "No units match your filters"}</p>
+            {units.length === 0 && perm.create_units && <button onClick={() => openCreate()} className="mt-3 rounded-lg px-4 py-2 bg-primary text-primary-foreground text-sm">Create first Organization</button>}
             {(search || activeFilterCount > 0) && (
               <button onClick={() => { setSearch(""); setFilters({ type: "", status: "", parent: "", hasUsers: null, hasChildren: null }); }} className="mt-2 text-xs text-primary hover:underline">Clear filters</button>
             )}

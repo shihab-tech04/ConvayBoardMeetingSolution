@@ -1,7 +1,8 @@
+import { hasUnapprovedActiveAgendaDescendant, isAgendaMeetingReady } from "../../pages/return-register/meetingAgendaSelection";
 /**
  * AgendaDocumentStep — Step 2 custom renderer.
  *
- * Lets users select approved L1 parent agendas from the canonical Agenda registry,
+ * Optionally lets users select approved L1 parent agendas from the canonical Agenda registry,
  * reorder them, and pick additional documents from the Document Library.
  * Writes to values.selected_agenda_ids_json and values.additional_doc_ids_json.
  */
@@ -84,16 +85,14 @@ function agendaReadinessLabel(agenda: AgendaSubmission, allAgendas: AgendaSubmis
   if (status !== "Approved") {
     return { label: status, color: "amber", schedulingBlocked: true };
   }
-  // Approved: check children
-  const children = allAgendas.filter(a => a.parent_agenda_id === aid && !a.archived_at);
-  const hasBlockingChild = children.some(c => c.approval_status !== "Approved");
-  if (hasBlockingChild) {
+  // Mirror SQL's recursive requirement for children AND grandchildren.
+  if (hasUnapprovedActiveAgendaDescendant(agenda, allAgendas)) {
     return { label: "Partially Approved", color: "amber", schedulingBlocked: true };
   }
-  // Check Meeting Readiness
+  // Match the same policy used by Meeting Review and save validation.
   const mr = (agenda as { meeting_readiness?: string }).meeting_readiness;
-  if (mr && mr !== "Meeting Ready") {
-    return { label: `Approved — ${mr}`, color: "amber", schedulingBlocked: true };
+  if (!isAgendaMeetingReady(agenda, allAgendas)) {
+    return { label: `Approved — ${mr || "Child approval required"}`, color: "amber", schedulingBlocked: true };
   }
   return { label: "Approved ✓ Meeting Ready", color: "emerald", schedulingBlocked: false };
 }
@@ -481,7 +480,7 @@ export function AgendaDocumentStep({
             <BookOpen size={15} strokeWidth={2} />
           </span>
           <div className="flex-1 min-w-0">
-            <span className="text-sm font-bold text-[var(--foreground)]">Select Agendas</span>
+            <span className="text-sm font-bold text-[var(--foreground)]">Select Agendas (Optional)</span>
             <span className="ml-2 text-xs text-[var(--muted-foreground)]">
               {eligibleAgendas.length > 0 ? `${eligibleAgendas.length} available` : "No eligible agendas"}
             </span>
@@ -539,7 +538,7 @@ export function AgendaDocumentStep({
                 <p className="text-xs text-[var(--muted-foreground)]">
                   {agendaSearch || purposeFilter
                     ? "Try a different search or filter"
-                    : "No agendas found. Create one from Agenda Management first."}
+                    : "No eligible agendas. You can continue without an agenda, or create one in Agenda Management."}
                 </p>
               </div>
             ) : (
@@ -583,7 +582,14 @@ export function AgendaDocumentStep({
             <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--primary)] text-white font-semibold">
               {selectedEntries.length}
             </span>
-            <span className="text-xs text-[var(--muted-foreground)] ml-auto">{formatMinutes(agendaTotalMin)} total</span>
+            {canManage && (
+              <button type="button" onClick={() => { updateEntries([]); setPendingIds(new Set()); }}
+                className="ml-auto text-xs font-semibold text-[var(--primary)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary)] rounded-sm"
+                aria-label="Remove all selected agendas and continue without an agenda">
+                Remove all — continue without agenda
+              </button>
+            )}
+            <span className="text-xs text-[var(--muted-foreground)]">{formatMinutes(agendaTotalMin)} total</span>
           </div>
           <div className="space-y-1.5">
             {selectedEntries.map((entry, idx) => {
@@ -765,7 +771,7 @@ export function AgendaDocumentStep({
           )}
           {selectedEntries.length === 0 && (
             <span className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-400">
-              <AlertTriangle size={12} />No agendas selected
+              <CheckCircle2 size={12} />No agenda selected — optional
             </span>
           )}
         </div>

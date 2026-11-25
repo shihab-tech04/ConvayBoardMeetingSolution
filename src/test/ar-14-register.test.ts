@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildActionRegisterFilters, isActionClosed, countOverdueActions, todayInLocalTime } from "../app/pages/archive-reports/actionRegisterView";
+import { buildActionRegisterFilters, isActionCancelled, isActionClosed, isActionOpen, countOverdueActions, todayInLocalTime } from "../app/pages/archive-reports/actionRegisterView";
 
 const row = {"id": "a1", "source_meeting": "M-1", "assigned_to": "Secretary", "priority": "High", "implementation_status": "Open", "due_date": "2026-11-01"};
 
@@ -51,5 +51,38 @@ describe("AR-14 — overdue and closure semantics", () => {
       { due_date: "", implementation_status: "Open" },
       { due_date: "TBD", implementation_status: "Open" },
     ], "2026-11-07")).toBe(1);
+  });
+});
+
+describe("AR-14 — calendar-valid overdue and cancelled lifecycle precedence", () => {
+  it("does not count impossible calendar dates as overdue", () => {
+    const dueDates = ["2026-02-29", "2026-02-30", "2026-04-31", "2026-13-01", "2026-00-01", "2026-01-00", "0000-01-01"];
+    expect(countOverdueActions(dueDates.map(due_date => ({ due_date, implementation_status: "Open" })), "2026-11-23")).toBe(0);
+  });
+
+  it("accepts real leap days and excludes invalid century leap days", () => {
+    const dueDates = ["2024-02-29", "2000-02-29", "1900-02-29"];
+    expect(countOverdueActions(dueDates.map(due_date => ({ due_date, implementation_status: "Open" })), "2026-11-23")).toBe(2);
+  });
+
+  it("does not mark cancelled actions as completed, open or overdue when old fields conflict", () => {
+    const cancelled = [
+      { due_date: "2026-11-01", implementation_status: "Completed", approval_status: "Cancelled" },
+      { due_date: "2026-11-01", action_status: "Closed", completion_status: "Canceled" },
+      { due_date: "2026-11-01", implementation_status: "In Progress", completion_status: "Cancelled" },
+    ];
+    for (const action of cancelled) {
+      expect(isActionCancelled(action)).toBe(true);
+      expect(isActionClosed(action)).toBe(false);
+      expect(isActionOpen(action)).toBe(false);
+    }
+    expect(countOverdueActions(cancelled, "2026-11-23")).toBe(0);
+    expect(isActionClosed({ implementation_status: "Completed", approval_status: "Approved" })).toBe(true);
+  });
+
+  it("never treats a malformed reference date as overdue evidence", () => {
+    expect(countOverdueActions([{ due_date: "2026-11-01", implementation_status: "Open" }], "2026-11-31")).toBe(0);
+    expect(countOverdueActions([{ due_date: "2026-11-01", implementation_status: "Open" }], "")).toBe(0);
+    expect(countOverdueActions([{ due_date: "2026-11-01", implementation_status: "Open" }], "2026-11-23")).toBe(1);
   });
 });

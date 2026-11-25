@@ -22,7 +22,9 @@ import {
   useConflictRegistry,
   useMinutesRegistry,
   useResolutionRegistry,
+  useDocumentRegistry,
 } from "../../data/boardMeetingData";
+import { useDocumentAcknowledgementRegistry } from "../../data/documentWorkspaceData";
 import { useUserRegistry } from "../../hooks/useUserRegistry";
 import { useResolvedActions } from "../../actions/useResolvedActions";
 import type { ResolvedAction } from "../../actions/types";
@@ -30,12 +32,39 @@ import { friendlyDate, friendlyDue, friendlyTime, timeAgo } from "./dateUtils";
 import { dashboardCalendarWindow, isMeetingApprovalPending } from "./dashboardOverviewRules";
 import { Button } from "../../components/buttons/Button";
 import { useSettings } from "../../hooks/useSettings";
-import { resolveLifecycleStage, type LifecycleStage } from "./meetingLifecycleStatus";
+import { resolveLifecycleStage, validMeetingDateKey, type LifecycleStage } from "./meetingLifecycleStatus";
+import { compareMeetingStart, meetingCountdown } from "./meetingScheduleTime";
 import { selectAvailableDirectMeetingAction, mayAutoAdvanceMeetings } from "./meetingDirectActions";
-import { resolveDashboardMeetingDestination } from "./dashboardContextActions";
+import { meetingRecordPath, resolveDashboardMeetingDestination } from "./dashboardContextActions";
+import { resolveMeetingStartCardState, type MeetingStartCardState } from "./liveMeetingCardActions";
+import { liveMeetingUrl } from "../../utils/liveMeetingLink";
+import { actionItemDetailsPath } from "./actionItemDetailsPath";
+import {
+  isPersonalMeetingTask, isPersonalAgendaTask, isPersonalRsvpTask,
+  isPersonalActionTask, isPersonalBoardPackTask, isPersonalConflictTask,
+  isPersonalMinutesTask,
+} from "./personalTaskPreviewRules";
+import { buildPersonalDocumentTasks } from "./personalDocumentTasks";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { deriveDashboardRole, type ViewRole } from "./dashboardRole";
 import { resolveDashboardDataState, retryDashboardSources } from "./dashboardRegistryHealth";
+import { useAccessSnapshot, reloadAccessSnapshot } from "../../services/supabase/convayAccess";
+
+// ── Reusable authorized LiveKit start CTA ────────────────────────────────────
+interface DashboardStartAction extends MeetingStartCardState { onClick: () => void }
+
+function StartMeetingCardButton({ action, size = "sm" }: { action: DashboardStartAction; size?: "sm" | "lg" }) {
+  return (
+    <span title={action.enabled ? action.label : action.disabledReason} style={{ display: "inline-flex" }}>
+      <Button type="button" size={size} variant="primary" leadingIcon={Radio}
+        disabled={!action.enabled}
+        aria-label={action.enabled ? action.label : `${action.label} — ${action.disabledReason}`}
+        onClick={action.onClick}>
+        {action.label}
+      </Button>
+    </span>
+  );
+}
 
 // ── Full-page Meeting Detail Modal ────────────────────────────────────────────
 
@@ -43,6 +72,7 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string }> = {
   "In Progress":      { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
   "Paused":           { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
   "On Break":         { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
+  "On Hold":          { bg: "var(--color-warning-bg)",       fg: "var(--color-warning)"   },
   "Ready to Start":   { bg: "var(--color-success-bg)",       fg: "var(--color-success)"   },
   "Awaiting Approval":{ bg: "var(--color-primary-alpha-8)",  fg: "var(--color-primary)"   },
   "Scheduled":        { bg: "var(--color-primary-alpha-8)",  fg: "var(--color-primary)"   },
@@ -93,9 +123,10 @@ interface MeetingDetailModalProps {
   meeting: Meeting | null;
   onClose: () => void;
   navigate: (path: string) => void;
+  startAction: DashboardStartAction | null;
 }
 
-function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalProps) {
+function MeetingDetailModal({ meeting, onClose, navigate, startAction }: MeetingDetailModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const { themeId } = useSettings();
   const isDark = themeId === "dark-mode";
@@ -122,9 +153,13 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
   if (!meeting) return null;
 
   const m = meeting;
-  const status    = String(m.approval_status ?? m.status ?? "");
+  const status    = String(m.approval_status ?? "").trim() || String(m.status ?? "").trim();
   const mid       = String(m.meeting_id ?? m.id ?? "");
-  const isLive    = ["In Progress", "Paused", "On Break"].includes(status);
+  const lifecycleStage = resolveLifecycleStage(status, m.meeting_date).stage;
+  const isLive    = lifecycleStage === "Meeting Live";
+  const canJoinLiveWorkspace = isLive || (
+    lifecycleStage === "Meeting Paused" && ["paused", "on break"].includes(status.toLowerCase())
+  );
   const statusSty = STATUS_STYLES[status] ?? { bg: "var(--color-surface-secondary)", fg: "var(--color-text-secondary)" };
   const str = (v: unknown) => { const s = String(v ?? ""); return s === "undefined" || s === "null" ? "" : s; };
 
@@ -204,12 +239,13 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            {isLive && (
+            {startAction && <StartMeetingCardButton action={startAction} />}
+            {canJoinLiveWorkspace && (
               <button type="button" onClick={() => { onClose(); navigate(`/meetings/${mid}/live`); }} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: "var(--color-success)", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
                 <Radio size={14} /> Join Live
               </button>
             )}
-            <button type="button" onClick={() => { onClose(); navigate("/meetings/all-meetings"); }} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.15)", color: "#fff", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>
+            <button type="button" onClick={() => { onClose(); navigate(meetingRecordPath(mid)); }} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.15)", color: "#fff", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>
               <ExternalLink size={13} /> Full Record
             </button>
             <button type="button" aria-label="Close" onClick={onClose} style={{ width: 36, height: 36, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.2)", cursor: "pointer", color: "#fff", flexShrink: 0 }}>
@@ -252,14 +288,19 @@ function MeetingDetailModal({ meeting, onClose, navigate }: MeetingDetailModalPr
               {str(m.organizer)   && <DetailField label="Organizer"   value={str(m.organizer)} />}
             </DetailSection>
 
-            {str(m.virtual_link) && (
+            {["Virtual", "Hybrid"].includes(str(m.mode)) && mid && liveMeetingUrl(mid) && (
               <div style={{ marginBottom: 28, padding: "14px 18px", background: "var(--color-primary-alpha-8)", borderRadius: "var(--radius-lg)", display: "flex", alignItems: "center", gap: 12 }}>
                 <Link2 size={16} style={{ color: "var(--color-primary)", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-secondary)", marginBottom: 2 }}>Meeting Link</div>
-                  <a href={str(m.virtual_link)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: "var(--color-primary)", textDecoration: "none", wordBreak: "break-all" }}>
-                    {str(m.virtual_link)}
+                  <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-secondary)", marginBottom: 2 }}>
+                    LiveKit Meeting Link
+                  </div>
+                  <a href={liveMeetingUrl(mid) ?? "#"} style={{ fontSize: 13, color: "var(--color-primary)", textDecoration: "none", wordBreak: "break-all" }}>
+                    {liveMeetingUrl(mid)}
                   </a>
+                  <p style={{ marginTop: 6, fontSize: 12, color: "var(--color-text-secondary)" }}>
+                    Uses the actual saved meeting ID. Sign-in, meeting publication and participant permissions are required.
+                  </p>
                 </div>
               </div>
             )}
@@ -282,8 +323,16 @@ const ROLE_LABELS: Record<ViewRole, string> = {
   admin:        "Administrator",
 };
 
-const ONGOING_STATUSES  = ["In Progress", "Paused", "On Break"];
-const EXCLUDED_STATUSES = ["Completed", "Cancelled", "Archived"];
+const ONGOING_STATUSES  = new Set(["in progress", "paused", "on break", "on hold"]);
+const EXCLUDED_STATUSES = new Set(["completed", "cancelled", "archived"]);
+
+function persistedMeetingStatus(meeting: Meeting): string {
+  return String(meeting.approval_status ?? "").trim() || String(meeting.status ?? "").trim();
+}
+
+function hasOngoingStatus(status: string): boolean {
+  return ONGOING_STATUSES.has(status.toLowerCase());
+}
 
 const ROLE_SUBTITLES: Record<ViewRole, string> = {
   chairperson:  "Meeting readiness, quorum status, pending approvals, and decisions requiring attention.",
@@ -295,13 +344,7 @@ const ROLE_SUBTITLES: Record<ViewRole, string> = {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function countdown(dateStr: string, timeStr?: string): string {
-  const target = new Date(`${dateStr}T${timeStr || "09:00"}:00`);
-  const diff   = target.getTime() - Date.now();
-  if (diff <= 0) return "Now";
-  const days  = Math.floor(diff / 86400000);
-  const hours = Math.floor((diff % 86400000) / 3600000);
-  if (days > 0) return `In ${days}d ${hours}h`;
-  return `In ${hours}h ${Math.floor((diff % 3600000) / 60000)}m`;
+  return meetingCountdown(dateStr, timeStr, new Date());
 }
 
 // ── Lifecycle stage resolver ───────────────────────────────────────────────────
@@ -341,33 +384,35 @@ function StatusPill({ status }: { status: string }) {
 
 interface HeroSlideProps {
   meeting: Meeting;
+  now: Date;
   navigate: (path: string) => void;
   primaryAction: { label: string; tone: "primary" | "success" | "warning" | "neutral"; icon?: React.ElementType; onClick: () => void } | null;
+  startAction: DashboardStartAction;
   userRole: string;
   isVisible: boolean;
   hasMultiple: boolean;
   onViewDetails: () => void;
 }
 
-function HeroSlide({ meeting, navigate, primaryAction, userRole, isVisible, hasMultiple, onViewDetails }: HeroSlideProps) {
+function HeroSlide({ meeting, now, navigate, primaryAction, startAction, userRole, isVisible, hasMultiple, onViewDetails }: HeroSlideProps) {
   const action  = primaryAction ?? { label: "View Details", tone: "neutral" as const, onClick: onViewDetails };
   const mode    = String(meeting.mode ?? "");
-  const status  = String(meeting.approval_status ?? meeting.status ?? "Scheduled");
+  const status  = persistedMeetingStatus(meeting);
   const dateStr = String(meeting.meeting_date ?? "");
   const cd      = countdown(dateStr, String(meeting.start_time ?? ""));
-  const isOngoing = ["In Progress", "Paused", "On Break"].includes(status);
-  const isLive    = status === "In Progress";
-
-  const contextLabel =
-    status === "In Progress" ? "Live Now"
-    : status === "Paused"    ? "On Pause"
-    : status === "On Break"  ? "On Break"
-    : status === "Ready to Start" ? "Starting Soon"
-    : status === "Pending Approval" ? "Needs Approval"
-    : status === "Approved" || status === "Published" ? "Next Meeting"
-    : "Upcoming";
-
-  const { stage } = resolveLifecycleStage(status, dateStr);
+  const { stage } = resolveLifecycleStage(status, dateStr, now);
+  const normalizedStatus = status.toLowerCase();
+  const isLive = stage === "Meeting Live";
+  const isPaused = stage === "Meeting Paused";
+  const isOngoing = isLive || isPaused;
+  const contextLabel = stage === "Meeting Live" ? "Live Now"
+    : stage === "Meeting Paused" ? normalizedStatus === "on break" ? "On Break" : normalizedStatus === "on hold" ? "On Hold" : "On Pause"
+    : stage === "Ready to Start" ? "Starting Soon"
+    : stage === "Awaiting Approval" ? "Needs Approval"
+    : stage === "Ready to Publish" ? "Next Meeting"
+    : stage === "Upcoming Meeting" ? "Upcoming"
+    : stage === "Post-Meeting Follow-up" ? "Post-Meeting Follow-up"
+    : "Preparation Required";
   const stageStyle = STAGE_STYLES[stage];
 
   const { themeId } = useSettings();
@@ -413,7 +458,7 @@ function HeroSlide({ meeting, navigate, primaryAction, userRole, isVisible, hasM
         )}
         <span style={{ marginLeft: "auto", fontSize: 12, color: "rgba(255,255,255,0.5)", display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
           <Clock size={11} />
-          {status === "In Progress" ? "In progress" : status === "Paused" ? "Paused" : status === "On Break" ? "On break" : cd}
+          {isLive ? "In progress" : isPaused ? contextLabel : cd}
         </span>
       </div>
 
@@ -451,12 +496,15 @@ function HeroSlide({ meeting, navigate, primaryAction, userRole, isVisible, hasM
       </div>
 
       {/* Actions */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: "auto", paddingBottom: hasMultiple ? 28 : 0 }}>
-        <Button type="button" size="lg" variant="primary" onClick={action.onClick} style={primaryStyle}>
-          {action.label}
-        </Button>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: "auto", paddingBottom: hasMultiple ? 28 : 0 }}>
+        <StartMeetingCardButton action={startAction} size="lg" />
+        {!["Start meeting", "Start Meeting", "Continue meeting", "Continue Meeting"].includes(action.label) && (
+          <Button type="button" size="lg" variant="primary" onClick={action.onClick} style={primaryStyle}>
+            {action.label}
+          </Button>
+        )}
         {!["View Details", "View details", "View Meeting Record"].includes(action.label) && (
-          <Button type="button" size="lg" variant="ghost" onClick={onViewDetails} style={{ color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.18)" }}>
+          <Button type="button" size="lg" variant="ghost" onClick={onViewDetails} style={{ color: "rgba(255,255,255,0.75)", border: "1px solid rgba(255,255,255,0.18)" }}>
             View details
           </Button>
         )}
@@ -469,13 +517,15 @@ function HeroSlide({ meeting, navigate, primaryAction, userRole, isVisible, hasM
 
 interface MeetingHeroCarouselProps {
   meetings: Meeting[];
+  now: Date;
   navigate: (path: string) => void;
   getPrimaryAction: (m: Meeting) => { label: string; tone: "primary" | "success" | "warning" | "neutral"; onClick: () => void } | null;
+  getStartAction: (m: Meeting) => DashboardStartAction;
   onViewDetails: (m: Meeting) => void;
   userRole: string;
 }
 
-function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetails, userRole }: MeetingHeroCarouselProps) {
+function MeetingHeroCarousel({ meetings, now, navigate, getPrimaryAction, getStartAction, onViewDetails, userRole }: MeetingHeroCarouselProps) {
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
   const [keyboardFocused, setKeyboardFocused] = useState(false);
@@ -552,8 +602,10 @@ function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetai
           <HeroSlide
             key={String(m.meeting_id ?? m.id ?? i)}
             meeting={m}
+            now={now}
             navigate={navigate}
             primaryAction={pa}
+            startAction={getStartAction(m)}
             userRole={userRole}
             isVisible={i === idx}
             hasMultiple={total > 1}
@@ -594,17 +646,18 @@ function MeetingHeroCarousel({ meetings, navigate, getPrimaryAction, onViewDetai
 
 interface MeetingsSectionProps {
   meetings: Meeting[];
+  now: Date;
   navigate: (path: string) => void;
   getRowAction: (m: Meeting) => { label: string; onClick: () => void; highlight: boolean } | null;
+  getStartAction: (m: Meeting) => DashboardStartAction;
   onRowClick: (m: Meeting) => void;
 }
 
-const LIVE_STATUSES = new Set(["In Progress", "Paused", "On Break"]);
-
 function LiveDot({ status }: { status: string }) {
-  const isLive = status === "In Progress";
+  const normalizedStatus = status.toLowerCase();
+  const isLive = normalizedStatus === "in progress";
   const fg = isLive ? "var(--color-success)" : "var(--color-warning)";
-  const label = isLive ? "Live" : status === "Paused" ? "Paused" : "On Break";
+  const label = isLive ? "Live" : normalizedStatus === "paused" ? "Paused" : normalizedStatus === "on hold" ? "On Hold" : "On Break";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 44, flexShrink: 0 }}>
       <span style={{ width: 7, height: 7, borderRadius: "50%", background: fg, flexShrink: 0 }} />
@@ -613,7 +666,7 @@ function LiveDot({ status }: { status: string }) {
   );
 }
 
-function MeetingsSection({ meetings, navigate, getRowAction, onRowClick }: MeetingsSectionProps) {
+function MeetingsSection({ meetings, now, navigate, getRowAction, getStartAction, onRowClick }: MeetingsSectionProps) {
   return (
     <div className="dash-compact-card">
       {/* Header */}
@@ -637,10 +690,12 @@ function MeetingsSection({ meetings, navigate, getRowAction, onRowClick }: Meeti
             <p>No upcoming meetings</p>
           </div>
         ) : meetings.map((m, i) => {
-          const status = String(m.approval_status ?? m.status ?? "");
+          const status = persistedMeetingStatus(m);
           const isLast = i === meetings.length - 1;
-          const isOngoing = LIVE_STATUSES.has(status);
+          const lifecycleStage = resolveLifecycleStage(status, m.meeting_date, now).stage;
+          const isOngoing = lifecycleStage === "Meeting Live" || lifecycleStage === "Meeting Paused";
           const rowAction = getRowAction(m);
+          const startAction = getStartAction(m);
 
           return (
             <div
@@ -648,7 +703,7 @@ function MeetingsSection({ meetings, navigate, getRowAction, onRowClick }: Meeti
               role="button"
               tabIndex={0}
               onClick={() => onRowClick(m)}
-              onKeyDown={e => { if (e.key === "Enter") onRowClick(m); }}
+              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onRowClick(m); } }}
               className={`dash-compact-row${isLast ? " dash-compact-row--last" : ""}`}
             >
               {/* Leading indicator */}
@@ -673,21 +728,21 @@ function MeetingsSection({ meetings, navigate, getRowAction, onRowClick }: Meeti
                   {m.start_time && <span className="dash-compact-row__meta-sep">·</span>}
                   {m.start_time && <span>{friendlyTime(String(m.start_time))}</span>}
                   {isOngoing && <span className="dash-compact-row__meta-sep">·</span>}
-                  {isOngoing && <span style={{ color: status === "In Progress" ? "var(--color-success)" : "var(--color-warning)" }}>{status}</span>}
+                  {isOngoing && <span style={{ color: lifecycleStage === "Meeting Live" ? "var(--color-success)" : "var(--color-warning)" }}>{status}</span>}
                 </div>
               </div>
 
-              {/* Immediate action only */}
-              {rowAction && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={rowAction.highlight ? "primary" : "ghost"}
-                  onClick={e => { e.stopPropagation(); rowAction.onClick(); }}
-                >
-                  {rowAction.label}
-                </Button>
-              )}
+              {/* Every meeting card shows a real Start CTA; eligibility stays server-backed. */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}
+                   onClick={e => e.stopPropagation()}>
+                <StartMeetingCardButton action={startAction} />
+                {rowAction && !["Start meeting", "Start Meeting", "Continue meeting", "Continue Meeting"].includes(rowAction.label) && (
+                  <Button type="button" size="sm" variant={rowAction.highlight ? "primary" : "ghost"}
+                    onClick={e => { e.stopPropagation(); rowAction.onClick(); }}>
+                    {rowAction.label}
+                  </Button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -966,6 +1021,8 @@ export function DashboardPage() {
   const viewRole: ViewRole = deriveDashboardRole(sessionUser.role, currentUser?.role);
 
   const { resolve: resolveMtgActions } = useResolvedActions("meeting");
+  const startAccess = useAccessSnapshot();
+  useEffect(() => { if (!startAccess.loaded && !startAccess.error) void reloadAccessSnapshot().catch(() => undefined); }, [startAccess.loaded, startAccess.error]);
 
   const meetingRegistry = useMeetingRegistry();
   const decisionRegistry = useDecisionRegistry();
@@ -976,6 +1033,8 @@ export function DashboardPage() {
   const conflictRegistry = useConflictRegistry();
   const minutesRegistry = useMinutesRegistry();
   const resolutionRegistry = useResolutionRegistry();
+  const documentRegistry = useDocumentRegistry();
+  const acknowledgementRegistry = useDocumentAcknowledgementRegistry();
 
   const { items: meetings } = meetingRegistry;
   const { items: decisions } = decisionRegistry;
@@ -986,24 +1045,33 @@ export function DashboardPage() {
   const { items: conflicts } = conflictRegistry;
   const { items: minutes } = minutesRegistry;
   const { items: resolutions } = resolutionRegistry;
+  const { items: documents } = documentRegistry;
+  const { items: acknowledgements } = acknowledgementRegistry;
 
   // Never present incomplete/failed Supabase reads as a genuine empty dashboard.
   const dashboardSources = [
     meetingRegistry, decisionRegistry, actionRegistry, agendaRegistry, boardPackRegistry,
     rsvpRegistry, conflictRegistry, minutesRegistry, resolutionRegistry,
+    documentRegistry, acknowledgementRegistry,
   ];
   const dashboardDataState = resolveDashboardDataState(dashboardSources);
 
-  const { today, weekEnd } = dashboardCalendarWindow(new Date());
+  const calendarNow = new Date();
+  const { today, weekEnd } = dashboardCalendarWindow(calendarNow);
 
 
-  // ── Ongoing meetings (regardless of date) ───────────────────────────────────
+  // ── Ongoing meetings are current only when persisted status and date agree ──
 
   const ongoingMeetings = useMemo(() =>
     meetings
-      .filter(m => ONGOING_STATUSES.includes(String(m.approval_status ?? m.status ?? "")))
-      .sort((a, b) => String(a.meeting_date ?? "").localeCompare(String(b.meeting_date ?? ""))),
-    [meetings]
+      .filter(m => {
+        const status = persistedMeetingStatus(m);
+        if (!hasOngoingStatus(status) || !validMeetingDateKey(m.meeting_date)) return false;
+        const stage = resolveLifecycleStage(status, m.meeting_date, calendarNow).stage;
+        return stage === "Meeting Live" || stage === "Meeting Paused";
+      })
+      .sort(compareMeetingStart),
+    [meetings, calendarNow]
   );
 
   // ── Upcoming meetings (future, not ongoing) ──────────────────────────────────
@@ -1011,11 +1079,13 @@ export function DashboardPage() {
   const upcomingMeetings = useMemo(() =>
     meetings
       .filter(m => {
-        const date   = String(m.meeting_date ?? "");
-        const status = String(m.approval_status ?? m.status ?? "");
-        return date >= today && !EXCLUDED_STATUSES.includes(status) && !ONGOING_STATUSES.includes(status);
+        const date = validMeetingDateKey(m.meeting_date);
+        const status = persistedMeetingStatus(m);
+        return date !== null && date >= today
+          && !EXCLUDED_STATUSES.has(status.toLowerCase())
+          && !hasOngoingStatus(status);
       })
-      .sort((a, b) => String(a.meeting_date ?? "").localeCompare(String(b.meeting_date ?? ""))),
+      .sort(compareMeetingStart),
     [meetings, today]
   );
 
@@ -1029,13 +1099,13 @@ export function DashboardPage() {
   // ── Hero carousel: priority-sorted, 3–5 items ───────────────────────────────
 
   const heroMeetings = useMemo(() => {
-    const inProgress   = ongoingMeetings.filter(m => String(m.approval_status ?? "") === "In Progress");
-    const paused       = ongoingMeetings.filter(m => ["Paused", "On Break"].includes(String(m.approval_status ?? "")));
-    const readyToStart = upcomingMeetings.filter(m => String(m.approval_status ?? "") === "Ready to Start");
-    const pendingAppr  = upcomingMeetings.filter(m => String(m.approval_status ?? "") === "Pending Approval");
-    const approved     = upcomingMeetings.filter(m => ["Approved", "Published"].includes(String(m.approval_status ?? "")));
+    const inProgress   = ongoingMeetings.filter(m => persistedMeetingStatus(m).toLowerCase() === "in progress");
+    const paused       = ongoingMeetings.filter(m => ["paused", "on break", "on hold"].includes(persistedMeetingStatus(m).toLowerCase()));
+    const readyToStart = upcomingMeetings.filter(m => persistedMeetingStatus(m).toLowerCase() === "ready to start");
+    const pendingAppr  = upcomingMeetings.filter(m => ["pending approval", "awaiting approval"].includes(persistedMeetingStatus(m).toLowerCase()));
+    const approved     = upcomingMeetings.filter(m => ["approved", "published"].includes(persistedMeetingStatus(m).toLowerCase()));
     const other        = upcomingMeetings.filter(m =>
-      !["Ready to Start", "Pending Approval", "Approved", "Published"].includes(String(m.approval_status ?? ""))
+      !["ready to start", "pending approval", "awaiting approval", "approved", "published"].includes(persistedMeetingStatus(m).toLowerCase())
     );
     return [...inProgress, ...paused, ...readyToStart, ...pendingAppr, ...approved, ...other].slice(0, 5);
   }, [ongoingMeetings, upcomingMeetings]);
@@ -1054,6 +1124,21 @@ export function DashboardPage() {
       setSelectedMeeting(meeting);
     }
   }, [navigate]);
+
+  const getStartNowAction = useCallback((meeting: Meeting): DashboardStartAction => {
+    const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);
+    const state = resolveMeetingStartCardState(meeting as unknown as Record<string, unknown>, resolved, new Date(), startAccess.loaded && startAccess.is_super_admin);
+    return {
+      ...state,
+      onClick: () => {
+        if (!state.enabled || !state.entryAction) return;
+        const meetingId = String(meeting.meeting_id ?? meeting.id ?? "").trim();
+        if (!meetingId) return;
+        setSelectedMeeting(null);
+        setLiveMeeting({ meetingId, entryAction: state.entryAction });
+      },
+    };
+  }, [resolveMtgActions, startAccess.loaded, startAccess.is_super_admin]);
 
   const getMeetingRowAction = useCallback((meeting: Meeting) => {
     const resolved = resolveMtgActions(meeting as Parameters<typeof resolveMtgActions>[0]);
@@ -1090,57 +1175,107 @@ export function DashboardPage() {
   const handleTaskAction = useCallback((task: UrgentTask) => {
     if (task.id.startsWith("mtg-")) {
       const meeting = meetings.find(m => String(m.id ?? "") === task.id.replace("mtg-", ""));
-      if (meeting) { setSelectedMeeting(meeting); return; }
+      if (meeting) {
+        if (String(meeting.approval_status ?? meeting.status ?? "") === "Awaiting Minutes") {
+          navigate("/archive-reports/minutes");
+        } else {
+          setSelectedMeeting(meeting);
+        }
+        return;
+      }
       navigate("/meetings/all-meetings");
     } else if (task.id.startsWith("agd-")) {
       navigate("/agenda-documents/agenda-management");
     } else if (task.id.startsWith("rsvp-")) {
       navigate("/meetings/all-meetings");
     } else if (task.id.startsWith("act-")) {
-      navigate("/decisions-followup/action-items");
+      navigate(actionItemDetailsPath(task.id.slice(4)));
     } else {
       navigate("/home/my-tasks");
     }
   }, [meetings, navigate]);
 
-  // ── KPI cards ────────────────────────────────────────────────────────────────
+  // ── Personal KPI cards ───────────────────────────────────────────────────────
+  // Every "My" count uses the same viewer as the detailed My Tasks preview,
+  // never the entire RLS-visible registry.
+  const viewerName = sessionUser.name || currentUser?.name || "";
+  const viewerRole = sessionUser.role || currentUser?.role || "";
+  const viewerDesignation = sessionUser.designation || currentUser?.designation || "";
+  const taskViewer = { name: viewerName, role: viewerRole, designation: viewerDesignation };
+  const personalDocumentTasks = useMemo(
+    () => buildPersonalDocumentTasks(documents, acknowledgements, taskViewer, today),
+    [documents, acknowledgements, viewerName, viewerRole, viewerDesignation, today],
+  );
 
   const openTaskCount = useMemo(() => {
     let n = 0;
-    n += meetings.filter(m => isMeetingApprovalPending(m.approval_status ?? m.status)).length;
-    n += agendas.filter(a => ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))).length;
-    n += boardPacks.filter(p => !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? ""))).length;
-    n += rsvps.filter(r => !r.response || String(r.response) === "Pending").length;
-    n += conflicts.filter(c => String(c.review_status ?? "") === "Pending").length;
-    n += minutes.filter(m => ["Draft", "Awaiting Review"].includes(String(m.approval_status ?? ""))).length;
-    n += actions.filter(a => String(a.implementation_status ?? "") !== "Completed").length;
+    n += meetings.filter(m => {
+      const state = String(m.approval_status ?? m.status ?? "");
+      return ["Pending Approval", "Awaiting Approval", "Awaiting Minutes"].includes(state)
+        && isPersonalMeetingTask(m, taskViewer)
+        && !(state === "Awaiting Minutes" && minutes.some(min =>
+          String(min.meeting_id ?? "") === String(m.id)
+          && ["Draft", "Awaiting Review"].includes(String(min.approval_status ?? ""))));
+    }).length;
+    n += agendas.filter(a =>
+      ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))
+      && isPersonalAgendaTask(a, taskViewer)).length;
+    n += boardPacks.filter(p =>
+      !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? ""))
+      && isPersonalBoardPackTask(p, taskViewer)).length;
+    n += rsvps.filter(v =>
+      (!v.response || String(v.response) === "Pending")
+      && isPersonalRsvpTask(v, taskViewer)).length;
+    n += conflicts.filter(c =>
+      ["Pending", "Under Review"].includes(String(c.review_status ?? ""))
+      && isPersonalConflictTask(c, taskViewer)).length;
+    n += minutes.filter(m =>
+      ["Draft", "Awaiting Review"].includes(String(m.approval_status ?? ""))
+      && isPersonalMinutesTask(m, taskViewer)).length;
+    n += actions.filter(a =>
+      String(a.implementation_status ?? "") !== "Completed"
+      && isPersonalActionTask(a, taskViewer)).length;
+    n += personalDocumentTasks.length;
     return n;
-  }, [meetings, agendas, boardPacks, rsvps, conflicts, minutes, actions]);
+  }, [meetings, agendas, boardPacks, rsvps, conflicts, minutes, actions, personalDocumentTasks]);
 
   const tasksThisWeek = useMemo(() =>
     actions.filter(a => {
       const due = String(a.due_date ?? "");
-      return due > today && due <= weekEnd && String(a.implementation_status ?? "") !== "Completed";
+      return due > today && due <= weekEnd
+        && String(a.implementation_status ?? "") !== "Completed"
+        && isPersonalActionTask(a, taskViewer);
     }).length,
-    [actions, today, weekEnd]
+    [actions, today, weekEnd, viewerName, viewerRole, viewerDesignation]
   );
 
-  const pendingApprovals      = meetings.filter(m => isMeetingApprovalPending(m.approval_status ?? m.status));
-  const pendingAgendas        = agendas.filter(a => ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? "")));
-  const pendingApprovalCount  = pendingApprovals.length + pendingAgendas.length;
-  const pendingToday          = pendingApprovals.filter(m => String(m.meeting_date ?? "") === today).length;
+  const pendingApprovals = meetings.filter(m =>
+    isMeetingApprovalPending(m.approval_status ?? m.status)
+    && isPersonalMeetingTask(m, taskViewer));
+  const pendingAgendas = agendas.filter(a =>
+    ["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))
+    && isPersonalAgendaTask(a, taskViewer));
+  const pendingApprovalCount = pendingApprovals.length + pendingAgendas.length;
+  const pendingToday = pendingApprovals.filter(m => String(m.meeting_date ?? "") === today).length;
 
   const overdueActions = useMemo(() =>
-    actions.filter(a => String(a.due_date ?? "") < today && String(a.due_date ?? "") !== "" && String(a.implementation_status ?? "") !== "Completed"),
-    [actions, today]
+    actions.filter(a => String(a.due_date ?? "") < today && String(a.due_date ?? "") !== ""
+      && String(a.implementation_status ?? "") !== "Completed"
+      && isPersonalActionTask(a, taskViewer)),
+    [actions, today, viewerName, viewerRole, viewerDesignation]
   );
   const over30Days = overdueActions.filter(a => {
     const diff = (new Date(today).getTime() - new Date(String(a.due_date ?? "")).getTime()) / 86400000;
     return diff > 30;
   }).length;
 
-  const docsToReview    = boardPacks.filter(p => !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? "")));
-  const docsDueThisWeek = docsToReview.filter(p => { const d = String(p.meeting_date ?? ""); return d > today && d <= weekEnd; }).length;
+  const docsToReview = boardPacks.filter(p =>
+    !["Published", "Archived", "Approved"].includes(String(p.approval_status ?? ""))
+    && isPersonalBoardPackTask(p, taskViewer));
+  const docsDueThisWeek = docsToReview.filter(p => {
+    const due = String(p.meeting_date ?? "");
+    return due > today && due <= weekEnd;
+  }).length;
 
   // ── Recent updates ───────────────────────────────────────────────────────────
 
@@ -1186,27 +1321,39 @@ export function DashboardPage() {
     return out.filter(u => u.time).sort((a, b) => b.time.localeCompare(a.time)).slice(0, 8);
   }, [meetings, agendas, actions, decisions]);
 
-  // ── Urgent tasks ─────────────────────────────────────────────────────────────
-
+  // ── Personal urgent tasks ───────────────────────────────────────────────────
+  // Mirror My Tasks ownership instead of showing every RLS-visible person's
+  // assignments as if they were this user's tasks.
   const urgentTasks = useMemo((): UrgentTask[] => {
+    const viewer = { name: viewerName, role: viewerRole, designation: viewerDesignation };
     const out: UrgentTask[] = [];
     for (const m of meetings) {
-      if (!["Pending Approval", "Awaiting Minutes"].includes(String(m.approval_status ?? ""))) continue;
+      const meetingStatus = String(m.approval_status ?? m.status ?? "");
+      if (!["Pending Approval", "Awaiting Approval", "Awaiting Minutes"].includes(meetingStatus)) continue;
+      if (!isPersonalMeetingTask(m, viewer)) continue;
+      if (meetingStatus === "Awaiting Minutes" && minutes.some(min =>
+        String(min.meeting_id ?? "") === String(m.id) &&
+        ["Draft", "Awaiting Review"].includes(String(min.approval_status ?? "")),
+      )) continue;
       const due = String(m.meeting_date ?? "");
-      out.push({ id: `mtg-${m.id}`, title: "Review meeting approval", context: String(m.meeting_title ?? ""), dueLabel: friendlyDue(due), type: "Approval", action: "Review", isOverdue: due < today && due !== "" });
+      const isMinutes = meetingStatus === "Awaiting Minutes";
+      out.push({ id: `mtg-${m.id}`, title: isMinutes ? "Prepare meeting minutes" : "Review meeting approval", context: String(m.meeting_title ?? ""), dueLabel: friendlyDue(due), type: isMinutes ? "Review" : "Approval", action: "Review", isOverdue: due < today && due !== "" });
     }
     for (const a of agendas) {
       if (!["Pending Approval", "Pending"].includes(String(a.approval_status ?? a.submission_status ?? ""))) continue;
+      if (!isPersonalAgendaTask(a, viewer)) continue;
       const due = String(a.meeting_date ?? "");
       out.push({ id: `agd-${a.id}`, title: "Approve agenda submission", context: String(a.meeting_title ?? ""), dueLabel: friendlyDue(due), type: "Approval", action: "Approve", isOverdue: due < today && due !== "" });
     }
     for (const r of rsvps) {
       if (r.response && String(r.response) !== "Pending") continue;
+      if (!isPersonalRsvpTask(r, viewer)) continue;
       const due = String(r.meeting_date ?? "");
       out.push({ id: `rsvp-${r.id}`, title: "Confirm RSVP", context: String(r.meeting_title ?? ""), dueLabel: friendlyDue(due), type: "RSVP", action: "Respond", isOverdue: due < today && due !== "" });
     }
     for (const a of actions) {
       if (String(a.implementation_status ?? "") === "Completed") continue;
+      if (!isPersonalActionTask(a, viewer)) continue;
       const due = String(a.due_date ?? "");
       out.push({ id: `act-${a.id}`, title: String(a.action_title ?? "Action item"), context: String(a.source_meeting ?? ""), dueLabel: friendlyDue(due), type: "Action", action: "Update", isOverdue: due < today && due !== "" });
     }
@@ -1215,7 +1362,7 @@ export function DashboardPage() {
       if (!a.isOverdue && b.isOverdue) return 1;
       return 0;
     });
-  }, [meetings, agendas, rsvps, actions, today]);
+  }, [meetings, agendas, rsvps, actions, minutes, today, viewerName, viewerRole, viewerDesignation]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -1274,8 +1421,10 @@ export function DashboardPage() {
         <div className="lg:col-span-7" style={{ display: "flex", flexDirection: "column" }}>
           <MeetingHeroCarousel
             meetings={heroMeetings}
+            now={calendarNow}
             navigate={navigate}
             getPrimaryAction={getPrimaryAction}
+            getStartAction={getStartNowAction}
             onViewDetails={setSelectedMeeting}
             userRole={ROLE_LABELS[viewRole]}
           />
@@ -1337,7 +1486,7 @@ export function DashboardPage() {
       {/* Row 2: Ongoing & Upcoming Meetings (50%) + My Tasks (50%) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" style={{ alignItems: "start" }}>
         <div>
-          <MeetingsSection meetings={displayedMeetings} navigate={navigate} getRowAction={getMeetingRowAction} onRowClick={setSelectedMeeting} />
+          <MeetingsSection meetings={displayedMeetings} now={calendarNow} navigate={navigate} getRowAction={getMeetingRowAction} getStartAction={getStartNowAction} onRowClick={setSelectedMeeting} />
         </div>
         <div>
           <MyTasksOverviewSection tasks={urgentTasks} navigate={navigate} onTaskAction={handleTaskAction} />
@@ -1362,6 +1511,7 @@ export function DashboardPage() {
         meeting={selectedMeeting}
         onClose={() => setSelectedMeeting(null)}
         navigate={navigate}
+        startAction={selectedMeeting ? getStartNowAction(selectedMeeting) : null}
       />
 
       {/* Live meeting full-screen workspace */}

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { persistOrgUnitChange } from "../app/pages/governance/orgUnitPersistence";
+import { persistOrgUnitChange, verifyOrgUnitSqlReadback } from "../app/pages/governance/orgUnitPersistence";
 
 describe("GV-01 server-confirmed governance unit changes", () => {
   it("does not emit activity before an asynchronous registry save resolves", async () => {
@@ -38,5 +38,77 @@ describe("GV-01 server-confirmed governance unit changes", () => {
     expect(await persistOrgUnitChange(write, audit)).toBe("audit-unverified");
     expect(write).toHaveBeenCalledTimes(1);
     expect(audit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GV-01 authenticated SQL readback after a server-acknowledged write", () => {
+  const expected = {
+    id: "OU-009", unit_name: "Finance", unit_type: "Division", status: "Active",
+    code: "FIN", parent_unit_id: "OU-001", head_user_id: "user-a", deputy_user_id: "user-b",
+  };
+
+  it("refreshes the SQL registry and confirms all persisted identity, hierarchy and leadership fields", async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const read = vi.fn().mockReturnValue({ ...expected });
+    await expect(verifyOrgUnitSqlReadback(refresh, read, expected)).resolves.toBe(true);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith(expected.id);
+  });
+
+  it("treats a missing record as unverified instead of creating it twice", async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const read = vi.fn().mockReturnValue(undefined);
+    await expect(verifyOrgUnitSqlReadback(refresh, read, expected)).resolves.toBe(false);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledOnce();
+  });
+
+  it("rejects stale or modified status, code, hierarchy and leadership readback", async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    for (const field of ["status", "code", "parent_unit_id", "head_user_id", "deputy_user_id"] as const) {
+      const read = vi.fn().mockReturnValue({ ...expected, [field]: "unexpected" });
+      await expect(verifyOrgUnitSqlReadback(refresh, read, expected)).resolves.toBe(false);
+    }
+  });
+
+  it("fails readback without discarding the confirmed write when an authenticated refresh is denied", async () => {
+    const refresh = vi.fn().mockRejectedValue(new Error("RLS denied"));
+    const read = vi.fn();
+    await expect(verifyOrgUnitSqlReadback(refresh, read, expected)).resolves.toBe(false);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("compares every saved contact, date, parent label, path and leadership field", async () => {
+    const complete = {
+      ...expected,
+      description: "Tax governance", phone: "+880 123456789", email: "unit@example.test",
+      address: "Dhaka", effective_start_at: "2026-11-23",
+      parent_unit: "Head Office", path_label: "Organization › Head Office › Finance",
+      path_ids: ["OU-001", "OU-009"],
+    };
+    await expect(verifyOrgUnitSqlReadback(async () => {}, () => complete, complete))
+      .resolves.toBe(true);
+    for (const field of [
+      "description", "phone", "email", "address", "effective_start_at",
+      "parent_unit", "path_label",
+    ] as const) {
+      const stale = { ...complete, [field]: "stale" };
+      await expect(verifyOrgUnitSqlReadback(async () => {}, () => stale, complete))
+        .resolves.toBe(false);
+    }
+    await expect(verifyOrgUnitSqlReadback(
+      async () => {}, () => ({ ...complete, path_ids: ["OU-009"] }), complete,
+    )).resolves.toBe(false);
+  });
+
+  it("handles absent optional unit fields without a false mismatch", async () => {
+    const root = {
+      id: "OU-ROOT", unit_name: "Meridian", unit_type: "Organization", status: "Active",
+    };
+    await expect(verifyOrgUnitSqlReadback(
+      async () => undefined,
+      () => ({ ...root, code: undefined, parent_unit_id: undefined }),
+      root,
+    )).resolves.toBe(true);
   });
 });

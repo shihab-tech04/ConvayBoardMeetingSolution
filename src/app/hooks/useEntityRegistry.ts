@@ -12,6 +12,8 @@ export interface EntityRegistry<T extends { id: string }> {
   update: (id: string, patch: Partial<T>) => boolean | Promise<boolean>;
   remove: (id: string) => boolean | Promise<boolean>;
   getById: (id: string) => T | undefined;
+  /** SQL revision from the authoritative registry, for multi-record transaction checks. */
+  getRevision?: (id: string) => number | undefined;
   loading?: boolean;
   error?: string | null;
   refresh?: () => Promise<void>;
@@ -118,7 +120,8 @@ export function createEntityRegistry<T extends { id: string }>(
         return true;
       }, []);
       const getById = useCallback((id: string) => merge(read()).find(x => x.id === id), []);
-      return { items: merge(custom), add, update, remove, getById };
+      return { items: merge(custom), add, update, remove, getById,
+        getRevision: id => merge(read()).some(x => x.id === id) ? 1 : undefined };
     };
   }
 
@@ -139,7 +142,10 @@ export function createEntityRegistry<T extends { id: string }>(
       try {
         const result = await convayAuth.registry<T>(storageKey, "list");
         if (!isCurrent()) return; // Old account's readback is obsolete.
-        state.items = result.records.map(x => x.payload);
+        // Preserve the authoritative SQL modified time for Agenda Management.
+        // The main registry record otherwise contains only client-authored fields.
+        state.items = result.records.map(x => storageKey === "bms.agenda" && x.updated_at
+          ? { ...x.payload, updated_at: x.updated_at } : x.payload);
         state.versions = new Map(result.records.map(x => [x.payload.id, x.revision]));
         state.loaded = true;
         state.error = null;
@@ -236,8 +242,9 @@ export function createEntityRegistry<T extends { id: string }>(
     const getById = useCallback((id: string) =>
       store<T>(storageKey).items.find(x => x.id === id), []);
     const refresh = useCallback(() => load(true), []);
+    const getRevision = useCallback((id: string) => store<T>(storageKey).versions.get(id), []);
     return {
-      items: state.items, add, update, remove, getById, refresh,
+      items: state.items, add, update, remove, getById, getRevision, refresh,
       loading: !state.loaded && !NO_LEGACY_RECORDS.has(storageKey),
       error: state.error,
     };
