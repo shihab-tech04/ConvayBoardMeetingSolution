@@ -954,7 +954,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
           </div>
           <div className="table-page__actions">
             {cfg.entryBtn && (
-              <Button type="button" variant="primary" size="lg" leadingIcon={Plus} disabled={Boolean(cfg.dataLoading || cfg.dataError || resumePending)} onClick={() => cfg.onEntryBtnClick ? cfg.onEntryBtnClick() : setModal("entry")}>{cfg.entryBtn}</Button>
+              <Button type="button" variant="primary" size="lg" leadingIcon={Plus} disabled={Boolean(cfg.dataLoading || cfg.dataError)} onClick={() => { cancelDraftResume(); cfg.onEntryBtnClick ? cfg.onEntryBtnClick() : setModal("entry"); }}>{cfg.entryBtn}</Button>
             )}
             {cfg.extraBtns?.map((b) => {
               const Icon = b.icon;
