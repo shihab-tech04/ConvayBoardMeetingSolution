@@ -145,7 +145,9 @@ export async function readManagedTemplate(templateId: string, revision?: number)
   const result = await templateAction<{ template: MeetingTemplateVersion }>("read", {
     template_id: templateId, ...(revision === undefined ? {} : { revision }),
   });
-  if (result.template?.id !== templateId || !Number.isSafeInteger(result.template.revision)) {
+  if (result.template?.id !== templateId
+    || !Number.isSafeInteger(result.template.revision) || result.template.revision < 1
+    || (revision !== undefined && result.template.revision !== revision)) {
     throw new Error("Template SQL readback identity was not confirmed");
   }
   return result.template;
