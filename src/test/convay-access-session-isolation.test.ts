@@ -69,6 +69,39 @@ describe("access snapshot account/session isolation", () => {
     expect(hasAccess("home_dashboard")).toBe(true);
   });
 
+  it("rejects delegated administration permissions on direct URLs and preserves ordinary governance access", () => {
+    const delegated = {
+      ...readAccessSnapshot(), loaded: true, is_super_admin: false,
+      effective_permissions: ["admin_users", "admin_roles", "admin_workflows", "admin_approvals",
+        "admin_config", "admin_templates", "admin_notifications", "admin_integrations", "admin_retention", "gov_org_view"],
+    };
+    const root = { ...delegated, is_super_admin: true };
+    const protectedRoutes = [
+      "administration", "administration/roles-permissions/roles",
+      "administration/roles-permissions/permissions", "administration/workflows/workflow-definitions",
+      "administration/workflows/approval-rules", "administration/workflows/review-revision-rules",
+      "administration/workflows/workflow-history", "administration/meeting-configuration/meeting-types",
+      "administration/meeting-configuration/quorum-rules", "administration/meeting-configuration/voting-methods",
+      "administration/meeting-configuration/statuses-numbering", "administration/templates/meeting-agenda-templates",
+      "administration/templates/minutes-resolution-templates", "administration/templates/document-templates",
+      "administration/templates/communication-templates", "administration/notifications/notification-rules",
+      "administration/notifications/message-templates", "administration/notifications/delivery-logs",
+      "administration/integrations", "administration/security-retention/security-policies",
+      "administration/security-retention/retention-legal-holds", "governance-org/user-management",
+    ];
+    for (const path of protectedRoutes) {
+      for (const candidate of [path, `/${path}`, `/${path}/`]) {
+        expect(mayVisitPath(candidate, delegated), candidate).toBe(false);
+        expect(mayVisitPath(candidate, root), candidate).toBe(true);
+        expect(mayVisitPath(candidate, { ...root, loaded: false }), candidate).toBe(false);
+      }
+    }
+    expect(mayVisitPath("/governance-org/organization-structure", delegated)).toBe(true);
+    expect(mayVisitPath("/company-management/overview", {
+      ...delegated, company_admin_tenant_ids: ["authorized-tenant"],
+    })).toBe(true);
+  });
+
   it("enforces sole-root administration routes with or without leading slash", () => {
     const roleAdmin = {
       ...readAccessSnapshot(), loaded: true, is_super_admin: false,

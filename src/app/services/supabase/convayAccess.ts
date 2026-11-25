@@ -207,7 +207,10 @@ export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   if (/^\/company-management(?:\/|$)/.test(normalizedPath))
     return (state.company_admin_tenant_ids?.length ?? 0) > 0;
   if (/^\/subscribers(?:\/|$)/.test(normalizedPath)) return state.is_super_admin;
-  if (/^\/(?:administration\/roles-permissions(?:\/|$)|administration\/integrations(?:\/|$)|governance-org\/users-assignments(?:\/|$))/.test(normalizedPath)) return false;
+  // AD-01–15 and NI-01–15 are non-delegable platform-root operations.
+  // Match the root-only navigation catalogue at direct URLs as well; a delegated
+  // permission code alone must not mount a configuration or provider page.
+  if (/^\/(?:administration(?:\/|$)|governance-org\/(?:users-assignments|user-management)(?:\/|$))/.test(normalizedPath)) return false;
   const required = permissionForPath(path);
   return !!required && hasAccess(required, state);
 }
