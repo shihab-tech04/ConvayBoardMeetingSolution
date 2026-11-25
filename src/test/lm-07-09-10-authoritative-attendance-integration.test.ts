@@ -128,4 +128,33 @@ describe("LM-07/09/10 authoritative online attendance gate", () => {
       reply({ ...initial, quorum: undefined }));
     await expect(readLiveAttendance("MTG-1", "actor-1")).rejects.toThrow(/complete attendance and quorum snapshot/);
   });
+
+  it.each([
+    { status: "Unknown" },
+    { status: ["Present"] },
+    { attendanceRevision: -1 },
+    { quorum: { ...quorum, revision: -1 } },
+    { quorum: { ...quorum, required: -1 } },
+    { quorum: { ...quorum, present: -1 } },
+    { attendanceMap: { "actor-1": "Unknown" } },
+    { attendanceMap: { "actor-1": ["Present"] } },
+    { quorum: { ...quorum, present: 1.2 } },
+    { attendanceRevision: 1.5 },
+    { attendanceMap: [] },
+    { quorum: { ...quorum, met: "true" } },
+    { quorum: undefined },
+  ])("fails closed on malformed attendance/quorum readback %j", async (patch) => {
+    vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async () =>
+      reply({ ...initial, ...patch }));
+    await expect(readLiveAttendance("MTG-1", "actor-1")).rejects.toThrow(/complete attendance and quorum snapshot/);
+  });
+
+  it.each(["Not Joined", "Present", "Left", "Temporarily Away", "Excused", "Recused"])(
+    "retains valid %s status and authoritative required-role quorum failure", async (status) => {
+      const snapshot = { ...receipt, status, attendanceMap: { "actor-1": status },
+        quorum: { ...quorum, required: 2, present: 2, met: false } };
+      vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async () => reply(snapshot));
+      await expect(readLiveAttendance("MTG-1", "actor-1")).resolves.toEqual(snapshot);
+    });
+
 });
