@@ -137,11 +137,11 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     setPendingSave(mode);
     try{
       if(editing){
-        const revised=await updateStagedCompanyDraft(tenantId,editing,title,values,requestId,progress);
+        const revised=await (progress ? updateStagedCompanyDraft(tenantId,editing,title,values,requestId,progress) : updateStagedCompanyDraft(tenantId,editing,title,values,requestId));
         setEditing(revised.draft);setLastSaved(revised.draft);
         toast.success("Revised company draft verified in SQL; meeting remains unactivated.");
       }else{
-        const saved=await saveStagedCompanyDraft(tenantId,template,title,values,requestId,progress);
+        const saved=await (progress ? saveStagedCompanyDraft(tenantId,template,title,values,requestId,progress) : saveStagedCompanyDraft(tenantId,template,title,values,requestId));
         // A verified create becomes an edit of the same stable identity. Do
         // not issue another create simply because the form remains open.
         setEditing(saved.draft);setLastSaved(saved.draft);setPendingSave(null);
