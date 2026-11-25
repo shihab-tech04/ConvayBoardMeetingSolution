@@ -65,6 +65,17 @@ export function prepareVersionedQuorumRule(
   };
 }
 
+/** An ACK may be lost after commit. Only the exact immutable policy intent,
+ * including its original identity and timestamp, can be recovered as success.
+ * Never treat another active rule or a conflicting ID as our own write.
+ */
+function assertExactPolicy(saved: VersionedQuorumRule, intended: VersionedQuorumRule): VersionedQuorumRule {
+  if ((Object.keys(intended) as (keyof VersionedQuorumRule)[]).some(key => !Object.is(saved[key], intended[key]))) {
+    throw new Error("The quorum rule SQL readback was inconsistent. Refresh before retrying.");
+  }
+  return saved;
+}
+
 export async function createVersionedQuorumRule(
   values: Record<string, unknown>,
   identity: { id: string; created_at: string },
@@ -72,17 +83,22 @@ export async function createVersionedQuorumRule(
   gateway: QuorumRuleGateway,
 ): Promise<VersionedQuorumRule> {
   const before = await gateway.list();
-  const intended = prepareVersionedQuorumRule(values, identity, bodies, before);
-  if (!await gateway.create(intended)) throw new Error("The quorum policy was not acknowledged by SQL.");
+  const previous = before.find(r => r.id === identity.id);
+  // Reconstruct the original intent without counting the same persisted version
+  // as a competing active rule. All other active-rule/version guards stay intact.
+  const intended = prepareVersionedQuorumRule(values, identity, bodies,
+    previous ? before.filter(r => r.id !== identity.id) : before);
+  if (previous) return assertExactPolicy(previous, intended);
+  let acknowledged = false;
+  let failure: unknown;
+  try { acknowledged = await gateway.create(intended); }
+  catch (error) { failure = error; }
   const after = await gateway.list();
   const saved = after.find(r => r.id === intended.id);
-  if (!saved || saved.rule_id !== intended.rule_id || saved.governance_body_id !== intended.governance_body_id ||
-      saved.policy_version !== intended.policy_version || saved.status !== "Active" ||
-      saved.minimum_members_count !== intended.minimum_members_count ||
-      saved.minimum_percentage !== intended.minimum_percentage) {
-    throw new Error("The quorum rule SQL readback was inconsistent. Refresh before retrying.");
-  }
-  return saved;
+  if (saved) return assertExactPolicy(saved, intended);
+  if (failure) throw failure;
+  if (!acknowledged) throw new Error("The quorum policy was not acknowledged by SQL.");
+  throw new Error("The quorum rule SQL readback was inconsistent. Refresh before retrying.");
 }
 
 export async function deactivateQuorumRule(
@@ -90,12 +106,25 @@ export async function deactivateQuorumRule(
 ): Promise<boolean> {
   const before = await gateway.list();
   const existing = before.find(r => r.id === id);
-  if (!existing || existing.status !== "Active")
+  if (!existing || !["Active", "Inactive"].includes(existing.status))
     throw new Error("The quorum policy is no longer active. Refresh before retrying.");
-  if (!await gateway.update(id, { status: "Inactive" } as Partial<VersionedQuorumRule>))
-    throw new Error("The quorum policy was not deactivated by SQL.");
+  // A previous deactivation may have committed even if its response was lost.
+  if (existing.status === "Inactive") return true;
+  let acknowledged = false;
+  let failure: unknown;
+  try { acknowledged = await gateway.update(id, { status: "Inactive" } as Partial<VersionedQuorumRule>); }
+  catch (error) { failure = error; }
   const readback = await gateway.list();
-  if (readback.find(r => r.id === id)?.status !== "Inactive")
-    throw new Error("Quorum rule deactivation SQL readback was not confirmed.");
-  return true;
+  const saved = readback.find(r => r.id === id);
+  if (saved?.status === "Inactive") {
+    const mutable = new Set(["status", "updated_at", "updated_by"]);
+    if ((Object.keys(existing) as (keyof VersionedQuorumRule)[]).some(key =>
+      !mutable.has(key) && !Object.is(saved[key], existing[key]))) {
+      throw new Error("Quorum rule deactivation SQL readback was inconsistent.");
+    }
+    return true;
+  }
+  if (failure) throw failure;
+  if (!acknowledged) throw new Error("The quorum policy was not deactivated by SQL.");
+  throw new Error("Quorum rule deactivation SQL readback was not confirmed.");
 }

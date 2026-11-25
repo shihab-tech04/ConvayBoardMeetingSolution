@@ -72,6 +72,39 @@ describe("AD-06/MT-04 authoritative quorum-policy creation", () => {
     })).rejects.toThrow("readback");
     await expect(deactivateQuorumRule(active.id, gateway)).rejects.toThrow("readback");
   });
+  it("recovers the same persisted policy after an ambiguous create response without another mutation", async () => {
+    const rows: VersionedQuorumRule[] = [];
+    const create = vi.fn(async (rule: VersionedQuorumRule) => { rows.push(rule); throw new Error("Connection lost"); });
+    const gateway = { list: async () => [...rows], create, update: async () => false };
+    await expect(createVersionedQuorumRule(input, identity, [body], gateway)).resolves.toMatchObject({ id: identity.id });
+    await expect(createVersionedQuorumRule(input, identity, [body], gateway)).resolves.toMatchObject({ id: identity.id });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(rows).toHaveLength(1);
+  });
+  it("rejects an existing ID with different intent even when thresholds match", async () => {
+    const saved = prepareVersionedQuorumRule(input, identity, [body], []);
+    const gateway = { list: async () => [saved], create: vi.fn(async () => true), update: async () => false };
+    await expect(createVersionedQuorumRule({ ...input, rule_name: "Different name" }, identity, [body], gateway)).rejects.toThrow("readback");
+    await expect(createVersionedQuorumRule(input, { ...identity, created_at: "2026-11-24T00:00:00Z" }, [body], gateway)).rejects.toThrow("readback");
+    expect(gateway.create).not.toHaveBeenCalled();
+  });
+  it("requires full immutable policy readback, not thresholds alone", async () => {
+    let saved: VersionedQuorumRule | undefined;
+    const gateway = {
+      list: async () => saved ? [saved] : [],
+      create: async (rule: VersionedQuorumRule) => { saved = { ...rule, exclude_recused_members: false }; return true; },
+      update: async () => false,
+    };
+    await expect(createVersionedQuorumRule(input, identity, [body], gateway)).rejects.toThrow("readback");
+  });
+  it("recovers a committed deactivation and does not repeat the mutation", async () => {
+    let saved = prepareVersionedQuorumRule(input, identity, [body], []);
+    const update = vi.fn(async () => { saved = { ...saved, status: "Inactive" }; return false; });
+    const gateway = { list: async () => [saved], create: async () => false, update };
+    await expect(deactivateQuorumRule(saved.id, gateway)).resolves.toBe(true);
+    await expect(deactivateQuorumRule(saved.id, gateway)).resolves.toBe(true);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
   it("SQL guard rejects unauthorized, duplicate, mutated or deleted policies and protects meetings", () => {
     expect(sql).toContain("has_permission('admin_config')");
     expect(sql).toContain("pg_advisory_xact_lock");
