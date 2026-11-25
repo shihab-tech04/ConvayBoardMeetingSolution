@@ -15,6 +15,7 @@ import type { GovernanceMembership, MembershipRole } from "../../data/governance
 import type { EntryFormValue } from "./EntryForm";
 import { buildPathLabel, resolveUnitUsers } from "../../utils/orgHierarchy";
 import { resolveMeetingLeadership } from "../../pages/return-register/meetingLeadership";
+import { appendParticipantSource, removeParticipantSource, hasParticipantSource, resolveSelectedBody, effectiveBoardMemberships, consistentParticipantClassification } from "../../pages/return-register/participantSourceSelection";
 import { leadershipRosterRoles, type LeaderParticipantRole } from "../../pages/return-register/leadershipRoster";
 import { ATTENDANCE_REQUIREMENT_VALUES, attendanceRequirementPatch, readAttendanceRequirement, type AttendanceRequirement } from "../../pages/return-register/attendanceRequirement";
 
@@ -97,6 +98,7 @@ function roleForField(field: string): MeetingRole {
 function membershipRoleToMeetingRole(role: MembershipRole): MeetingRole {
   if (role === "chair")       return "Chairperson";
   if (role === "secretary")   return "Meeting Secretary";
+  if (role === "observer")    return "Observer";
   return "Member";
 }
 
@@ -123,17 +125,6 @@ function buildDraft(
     quorum_eligible: quorum,
     selection_sources: [source],
   };
-}
-
-function mergeSource(
-  existing: DraftParticipantLink,
-  source: { type: string; source_id: string; source_label: string },
-): DraftParticipantLink {
-  const already = existing.selection_sources.some(
-    s => s.type === source.type && s.source_id === source.source_id,
-  );
-  if (already) return existing;
-  return { ...existing, selection_sources: [...existing.selection_sources, source] };
 }
 
 function sourceSummary(sources: DraftParticipantLink["selection_sources"]): string {
@@ -252,9 +243,10 @@ interface SelectedCardProps {
   link: DraftParticipantLink;
   onChange: (updated: DraftParticipantLink) => void;
   onRemove: (id: string) => void;
+  onRemoveSource: (id: string, type: string, sourceId: string) => void;
   leaderRoles?: readonly LeaderParticipantRole[];
 }
-function SelectedCard({ link, onChange, onRemove, leaderRoles }: SelectedCardProps) {
+function SelectedCard({ link, onChange, onRemove, onRemoveSource, leaderRoles }: SelectedCardProps) {
   const [open, setOpen] = useState(false);
   const initial = link.user_name.charAt(0).toUpperCase();
   const protectedLeader = Boolean(leaderRoles?.length);
@@ -360,7 +352,7 @@ function SelectedCard({ link, onChange, onRemove, leaderRoles }: SelectedCardPro
                 <input
                   type="checkbox"
                   checked={!!link[flag] || (flag === "is_required" && protectedLeader)}
-                  disabled={flag === "is_required" && protectedLeader}
+                  disabled={flag === "is_required" ? protectedLeader : link.participant_type === "Observer" || (flag === "quorum_eligible" && link.member_category === "general")}
                   onChange={e => onChange(flag === "is_required"
                     ? { ...link, ...attendanceRequirementPatch(e.target.checked ? "Mandatory" : "Optional") }
                     : { ...link, [flag]: e.target.checked })}
@@ -373,6 +365,13 @@ function SelectedCard({ link, onChange, onRemove, leaderRoles }: SelectedCardPro
           </div>
           <div className="text-[10px] text-[var(--muted-foreground)] italic">
             {sourceSummary(link.selection_sources)}
+            <div className="flex flex-wrap gap-1 mt-1">
+              {link.selection_sources.map(source => <button key={JSON.stringify([source.type,source.source_id])} type="button"
+                disabled={(protectedLeader || link.is_required) && (link.selection_sources.length === 1 || source.source_label === "Meeting Leadership")}
+                aria-label={"Remove " + source.source_label + " source for " + link.user_name}
+                className="rounded border border-[var(--border)] px-1.5 py-0.5 not-italic disabled:opacity-50"
+                onClick={() => onRemoveSource(link.id,source.type,source.source_id)}>{source.source_label} ×</button>)}
+            </div>
           </div>
         </div>
       )}
@@ -386,13 +385,13 @@ interface OrgUnitBlockProps {
   unit: OrgUnit;
   users: BmsUser[];
   orgUnits: OrgUnit[];
-  alreadySelectedIds: Set<string>;
-  pendingUserIds: Set<string>;
+  isSourceSelected: (userId: string, unitId: string) => boolean;
+  isSourcePending: (userId: string, unitId: string) => boolean;
   /** onToggle now receives the user AND the unit context (id + name) */
   onToggle: (u: BmsUser, unitId: string, unitName: string) => void;
   parentLabel?: string;
 }
-function OrgUnitBlock({ unit, users, orgUnits, alreadySelectedIds, pendingUserIds, onToggle, parentLabel }: OrgUnitBlockProps) {
+function OrgUnitBlock({ unit, users, orgUnits, isSourceSelected, isSourcePending, onToggle, parentLabel }: OrgUnitBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const activeUsers = users.filter(isActive);
   const uid = unit.id ?? unit.unit_id ?? "";
@@ -428,9 +427,9 @@ function OrgUnitBlock({ unit, users, orgUnits, alreadySelectedIds, pendingUserId
                 key={u.id}
                 user={u}
                 orgUnits={orgUnits}
-                checked={alreadySelectedIds.has(u.id) || pendingUserIds.has(u.id)}
+                checked={isSourceSelected(u.id,uid) || isSourcePending(u.id,uid)}
                 onToggle={(user) => onToggle(user, uid, unit.unit_name)}
-                disabled={alreadySelectedIds.has(u.id)}
+                disabled={isSourceSelected(u.id,uid)}
               />
             ))
           )}
@@ -453,33 +452,11 @@ export function ParticipantSelectorStep({
 
   const committeeValue = String(values.committee ?? "");
 
-  // Resolve the selected governance body (match by id or name)
-  const govBody = useMemo(
-    () => governanceBodies.find(
-      b => b.id === committeeValue || b.body_id === committeeValue || b.body_name === committeeValue,
-    ),
-    [governanceBodies, committeeValue],
-  );
-  const govBodyId = govBody?.id ?? govBody?.body_id ?? committeeValue;
-
-  // Filter quorum vs general memberships from canonical registry
-  const quorumMemberships = useMemo(
-    () => governanceMemberships.filter(
-      m => (m.gov_body_id === govBodyId || m.gov_body_name === committeeValue)
-        && m.counts_for_quorum
-        && m.status === "active",
-    ),
-    [governanceMemberships, govBodyId, committeeValue],
-  );
-
-  const generalMemberships = useMemo(
-    () => governanceMemberships.filter(
-      m => (m.gov_body_id === govBodyId || m.gov_body_name === committeeValue)
-        && !m.counts_for_quorum
-        && m.status === "active",
-    ),
-    [governanceMemberships, govBodyId, committeeValue],
-  );
+  const govBody = useMemo(() => resolveSelectedBody(governanceBodies,committeeValue),[governanceBodies,committeeValue]);
+  const meetingDate = String(values.meeting_date ?? "");
+  const boardMemberships = useMemo(() => effectiveBoardMemberships(govBody,governanceMemberships,meetingDate),[govBody,governanceMemberships,meetingDate]);
+  const quorumMemberships = useMemo(() => boardMemberships.filter(m=>m.counts_for_quorum && m.membership_role!=="observer"),[boardMemberships]);
+  const generalMemberships = useMemo(() => boardMemberships.filter(m=>!m.counts_for_quorum || m.membership_role==="observer"),[boardMemberships]);
 
   // Resolve BmsUser objects for memberships
   const quorumUsers = useMemo(
@@ -566,7 +543,7 @@ export function ParticipantSelectorStep({
         orgUnits,
       ));
     }
-    return [...stored, ...autoLeaders].map(protectLink);
+    return [...stored, ...autoLeaders.map(consistentParticipantClassification)].map(protectLink);
   });
 
   const updateLinks = useCallback((next: DraftParticipantLink[]) => {
@@ -585,34 +562,22 @@ export function ParticipantSelectorStep({
   // ── Source tab state ───────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<SourceTab>("quorum_members");
   const [search, setSearch]       = useState("");
-  const [pendingUserIds, setPendingUserIds] = useState<Set<string>>(new Set());
-  // Track the org unit each pending user was selected from (for real ID persistence)
-  const [pendingUserSources, setPendingUserSources] = useState<Map<string, { id: string; label: string }>>(new Map());
-
-  const alreadySelectedIds = useMemo(
-    () => new Set(links.map(l => l.user_id)),
-    [links],
-  );
-
+  const [pending, setPending] = useState<Map<string,{userId:string;unitId?:string;unitName?:string}>>(new Map());
+  const pendingKey = (userId:string,unitId?:string) => JSON.stringify([userId,unitId??""]);
+  const pendingUserIds = new Set([...pending.values()].map(p=>p.userId));
+  const isSourceSelected = (userId:string,type:string,sourceId:string) => links.some(link=>link.user_id===userId&&hasParticipantSource(link,type,sourceId));
   const togglePending = useCallback((user: BmsUser, unitId?: string, unitName?: string) => {
-    setPendingUserIds(prev => {
-      const next = new Set(prev);
-      if (next.has(user.id)) {
-        next.delete(user.id);
-        setPendingUserSources(prev2 => { const m = new Map(prev2); m.delete(user.id); return m; });
-      } else {
-        next.add(user.id);
-        if (unitId) setPendingUserSources(prev2 => new Map(prev2).set(user.id, { id: unitId, label: unitName ?? unitId }));
-      }
+    setPending(prev => {
+      const next = new Map(prev), key = JSON.stringify([user.id,unitId??""]);
+      if (next.has(key)) next.delete(key);
+      else next.set(key,{userId:user.id,unitId,unitName});
       return next;
     });
   }, []);
-
   const switchTab = (tab: SourceTab) => {
     setActiveTab(tab);
     setSearch("");
-    setPendingUserIds(new Set());
-    setPendingUserSources(new Map());
+    setPending(new Map());
   };
 
   // Filter helpers
@@ -638,12 +603,6 @@ export function ParticipantSelectorStep({
     [bmsUsers, filterBySearch],
   );
 
-  // Fallback list for quorum/general tabs when no committee members are configured
-  const filteredAllUsers = useMemo(
-    () => bmsUsers.filter(isActive).filter(filterBySearch).slice(0, 40),
-    [bmsUsers, filterBySearch],
-  );
-
   // Add all from a membership list
   const addMemberships = useCallback((
     entries: { membership: GovernanceMembership; user: BmsUser }[],
@@ -659,54 +618,58 @@ export function ParticipantSelectorStep({
       };
       const existingIdx = next.findIndex(l => l.user_id === user.id);
       if (existingIdx >= 0) {
-        next[existingIdx] = mergeSource(next[existingIdx], source);
+        next[existingIdx] = appendParticipantSource(next[existingIdx], source);
       } else {
         next.push(buildDraft(
           user,
           membershipRoleToMeetingRole(m.membership_role),
           category,
           false,
-          m.is_voting_member,
-          category === "quorum",
+          m.membership_role !== "observer" && m.is_voting_member,
+          category === "quorum" && m.membership_role !== "observer",
           source,
           orgUnits,
         ));
       }
     }
     updateLinks(next);
-    setPendingUserIds(new Set());
+    setPending(new Map());
   }, [links, orgUnits, updateLinks]);
 
   // Add pending users from org/individual tabs.
-  // For Division/Department tabs, reads real unit IDs from pendingUserSources.
-  const addPendingUsers = useCallback((category: MemberCategory, sourceLabel: string, sourceType: string, sourceId: string) => {
-    if (pendingUserIds.size === 0) return;
+  // Preserve real unit identity for every pending selection.
+  const addPendingUsers = useCallback((category: MemberCategory, sourceLabel: string, sourceType: string) => {
+    if (pending.size === 0) return;
     let next = [...links];
-    for (const uid of pendingUserIds) {
-      const user = resolveUserById(uid, bmsUsers);
-      if (!user) continue;
-      // Resolve real unit context when available (Division/Department tabs)
-      const unitCtx = pendingUserSources.get(uid);
-      const resolvedId    = unitCtx?.id    ?? sourceId;
-      const resolvedLabel = unitCtx?.label ?? sourceLabel;
+    for (const item of pending.values()) {
+      const uid = item.userId;
+      const user = resolveUserById(uid,bmsUsers);
+      if (!user || !isActive(user)) continue;
+      if (sourceType!=="individual" && (!item.unitId || !unitUsersMap.get(item.unitId)?.some(u=>u.id===uid))) continue;
+      const resolvedId = sourceType==="individual" ? uid : item.unitId!;
+      const resolvedLabel = item.unitName ?? sourceLabel;
       const source = { type: sourceType, source_id: resolvedId, source_label: resolvedLabel };
       const existingIdx = next.findIndex(l => l.user_id === uid);
       if (existingIdx >= 0) {
-        next[existingIdx] = mergeSource(next[existingIdx], source);
+        next[existingIdx] = appendParticipantSource(next[existingIdx], source);
       } else {
         next.push(buildDraft(user, "Member", category, false, false, category === "quorum", source, orgUnits));
       }
     }
     updateLinks(next);
-    setPendingUserIds(new Set());
-    setPendingUserSources(new Map());
-  }, [pendingUserIds, pendingUserSources, bmsUsers, links, orgUnits, updateLinks]);
+    setPending(new Map());
+  }, [pending, bmsUsers, links, orgUnits, unitUsersMap, updateLinks]);
 
   const removeLink = (id: string) => {
     if (links.some(link => link.id === id && protectedRoles.has(link.user_id))) return;
     updateLinks(links.filter(link => link.id !== id));
   };
-  const updateLink = (updated: DraftParticipantLink) => updateLinks(links.map(link => link.id === updated.id ? protectLink(updated) : link));
+  const updateLink = (updated: DraftParticipantLink) => updateLinks(links.map(link => link.id === updated.id ? consistentParticipantClassification(protectLink(updated)) : link));
+  const removeSource = (id:string,type:string,sourceId:string) => updateLinks(links.flatMap(link => {
+    if (link.id!==id) return [link];
+    const next=removeParticipantSource(link,type,sourceId,protectedRoles.has(link.user_id)||link.is_required);
+    return next?[next]:[];
+  }));
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -784,38 +747,21 @@ export function ParticipantSelectorStep({
                     {filteredQuorumUsers.length > 0 ? (
                       filteredQuorumUsers.map(({ user, membership: m }) => (
                         <AvailableUserRow key={user.id} user={user} orgUnits={orgUnits}
-                          checked={alreadySelectedIds.has(user.id) || pendingUserIds.has(user.id)}
+                          checked={isSourceSelected(user.id,"quorum",m.gov_body_id) || pendingUserIds.has(user.id)}
                           onToggle={togglePending} badge={m.membership_role}
-                          disabled={alreadySelectedIds.has(user.id)} />
+                          disabled={isSourceSelected(user.id,"quorum",m.gov_body_id)} />
                       ))
-                    ) : filteredAllUsers.length === 0 ? (
+                    ) : (
                       <div className="flex flex-col items-center py-8 gap-2 text-center">
                         <Users size={28} strokeWidth={1.5} className="text-[var(--muted-foreground)]/60" />
-                        <p className="text-sm text-[var(--muted-foreground)]">No members found</p>
+                        <p className="text-sm text-[var(--muted-foreground)]">{!govBody ? "Selected board is unavailable" : "No effective quorum members found"}</p>
                       </div>
-                    ) : (
-                      <>
-                        {quorumUsers.length === 0 && (
-                          <p className="text-[10px] text-[var(--muted-foreground)] italic px-1 pb-1">
-                            No committee quorum members configured — showing all users
-                          </p>
-                        )}
-                        {filteredAllUsers.map(u => (
-                          <AvailableUserRow key={u.id} user={u} orgUnits={orgUnits}
-                            checked={alreadySelectedIds.has(u.id) || pendingUserIds.has(u.id)}
-                            onToggle={togglePending} disabled={alreadySelectedIds.has(u.id)} />
-                        ))}
-                      </>
                     )}
                   </div>
                   {pendingUserIds.size > 0 && (
                     <button type="button"
                       onClick={() => {
-                        if (filteredQuorumUsers.some(e => pendingUserIds.has(e.user.id))) {
-                          addMemberships(filteredQuorumUsers.filter(e => pendingUserIds.has(e.user.id)), "quorum", govBody?.body_name ?? committeeValue);
-                        } else {
-                          addPendingUsers("quorum", govBody?.body_name ?? committeeValue, "quorum", govBodyId);
-                        }
+                        addMemberships(quorumUsers.filter(e => pendingUserIds.has(e.user.id)), "quorum", govBody?.body_name ?? committeeValue);
                       }}
                       className="w-full py-2.5 text-sm font-bold rounded-lg bg-[var(--primary)] text-white hover:opacity-90 transition-opacity shadow-sm">
                       Add {pendingUserIds.size} quorum member{pendingUserIds.size !== 1 ? "s" : ""} →
@@ -857,38 +803,21 @@ export function ParticipantSelectorStep({
                     {filteredGeneralUsers.length > 0 ? (
                       filteredGeneralUsers.map(({ user, membership: m }) => (
                         <AvailableUserRow key={user.id} user={user} orgUnits={orgUnits}
-                          checked={alreadySelectedIds.has(user.id) || pendingUserIds.has(user.id)}
+                          checked={isSourceSelected(user.id,"general",m.gov_body_id) || pendingUserIds.has(user.id)}
                           onToggle={togglePending} badge={m.membership_role}
-                          disabled={alreadySelectedIds.has(user.id)} />
+                          disabled={isSourceSelected(user.id,"general",m.gov_body_id)} />
                       ))
-                    ) : filteredAllUsers.length === 0 ? (
+                    ) : (
                       <div className="flex flex-col items-center py-8 gap-2 text-center">
                         <Users size={28} strokeWidth={1.5} className="text-[var(--muted-foreground)]/60" />
-                        <p className="text-sm text-[var(--muted-foreground)]">No members found</p>
+                        <p className="text-sm text-[var(--muted-foreground)]">{!govBody ? "Selected board is unavailable" : "No effective general members found"}</p>
                       </div>
-                    ) : (
-                      <>
-                        {generalUsers.length === 0 && (
-                          <p className="text-[10px] text-[var(--muted-foreground)] italic px-1 pb-1">
-                            No committee general members configured — showing all users
-                          </p>
-                        )}
-                        {filteredAllUsers.map(u => (
-                          <AvailableUserRow key={u.id} user={u} orgUnits={orgUnits}
-                            checked={alreadySelectedIds.has(u.id) || pendingUserIds.has(u.id)}
-                            onToggle={togglePending} disabled={alreadySelectedIds.has(u.id)} />
-                        ))}
-                      </>
                     )}
                   </div>
                   {pendingUserIds.size > 0 && (
                     <button type="button"
                       onClick={() => {
-                        if (filteredGeneralUsers.some(e => pendingUserIds.has(e.user.id))) {
-                          addMemberships(filteredGeneralUsers.filter(e => pendingUserIds.has(e.user.id)), "general", govBody?.body_name ?? committeeValue);
-                        } else {
-                          addPendingUsers("general", govBody?.body_name ?? committeeValue, "general", govBodyId);
-                        }
+                        addMemberships(generalUsers.filter(e => pendingUserIds.has(e.user.id)), "general", govBody?.body_name ?? committeeValue);
                       }}
                       className="w-full py-2.5 text-sm font-bold rounded-lg bg-[var(--primary)] text-white hover:opacity-90 transition-opacity shadow-sm">
                       Add {pendingUserIds.size} general member{pendingUserIds.size !== 1 ? "s" : ""} →
@@ -918,11 +847,11 @@ export function ParticipantSelectorStep({
                     {divisionUnits.filter(u => !search.trim() || u.unit_name.toLowerCase().includes(search.toLowerCase())).map(unit => {
                       const uid = unit.id ?? unit.unit_id ?? "";
                       return <OrgUnitBlock key={uid} unit={unit} users={unitUsersMap.get(uid) ?? []} orgUnits={orgUnits}
-                        alreadySelectedIds={alreadySelectedIds} pendingUserIds={pendingUserIds} onToggle={togglePending} />;
+                        isSourceSelected={(u,id)=>isSourceSelected(u,"division",id)} isSourcePending={(u,id)=>pending.has(pendingKey(u,id))} onToggle={togglePending} />;
                     })}
                   </div>
                   {pendingUserIds.size > 0 && (
-                    <button type="button" onClick={() => addPendingUsers("general", "Division", "division", "division")}
+                    <button type="button" onClick={() => addPendingUsers("general", "Division", "division")}
                       className="w-full py-2.5 text-sm font-bold rounded-lg bg-[var(--primary)] text-white hover:opacity-90 transition-opacity shadow-sm">
                       Add {pendingUserIds.size} participant{pendingUserIds.size !== 1 ? "s" : ""} →
                     </button>
@@ -951,12 +880,12 @@ export function ParticipantSelectorStep({
                     {departmentUnits.filter(u => !search.trim() || u.unit_name.toLowerCase().includes(search.toLowerCase())).map(unit => {
                       const uid = unit.id ?? unit.unit_id ?? "";
                       return <OrgUnitBlock key={uid} unit={unit} users={unitUsersMap.get(uid) ?? []} orgUnits={orgUnits}
-                        alreadySelectedIds={alreadySelectedIds} pendingUserIds={pendingUserIds} onToggle={togglePending}
+                        isSourceSelected={(u,id)=>isSourceSelected(u,"department",id)} isSourcePending={(u,id)=>pending.has(pendingKey(u,id))} onToggle={togglePending}
                         parentLabel={parentDivisionLabel(unit)} />;
                     })}
                   </div>
                   {pendingUserIds.size > 0 && (
-                    <button type="button" onClick={() => addPendingUsers("general", "Department", "department", "department")}
+                    <button type="button" onClick={() => addPendingUsers("general", "Department", "department")}
                       className="w-full py-2.5 text-sm font-bold rounded-lg bg-[var(--primary)] text-white hover:opacity-90 transition-opacity shadow-sm">
                       Add {pendingUserIds.size} participant{pendingUserIds.size !== 1 ? "s" : ""} →
                     </button>
@@ -986,13 +915,13 @@ export function ParticipantSelectorStep({
                 ) : (
                   filteredIndividualUsers.map(u => (
                     <AvailableUserRow key={u.id} user={u} orgUnits={orgUnits}
-                      checked={alreadySelectedIds.has(u.id) || pendingUserIds.has(u.id)}
-                      onToggle={togglePending} disabled={alreadySelectedIds.has(u.id)} />
+                      checked={isSourceSelected(u.id,"individual",u.id) || pendingUserIds.has(u.id)}
+                      onToggle={togglePending} disabled={isSourceSelected(u.id,"individual",u.id)} />
                   ))
                 )}
               </div>
               {pendingUserIds.size > 0 && (
-                <button type="button" onClick={() => addPendingUsers("general", "Individual", "individual", "individual")}
+                <button type="button" onClick={() => addPendingUsers("general", "Individual", "individual")}
                   className="w-full py-2.5 text-sm font-bold rounded-lg bg-[var(--primary)] text-white hover:opacity-90 transition-opacity shadow-sm">
                   Add {pendingUserIds.size} participant{pendingUserIds.size !== 1 ? "s" : ""} →
                 </button>
@@ -1015,7 +944,7 @@ export function ParticipantSelectorStep({
           </div>
           <div className="space-y-2">
             {links.map(link => (
-              <SelectedCard key={link.id} link={protectLink(link)} leaderRoles={protectedRoles.get(link.user_id)} onChange={updateLink} onRemove={removeLink} />
+              <SelectedCard key={link.id} link={protectLink(link)} leaderRoles={protectedRoles.get(link.user_id)} onChange={updateLink} onRemove={removeLink} onRemoveSource={removeSource} />
             ))}
           </div>
         </div>
