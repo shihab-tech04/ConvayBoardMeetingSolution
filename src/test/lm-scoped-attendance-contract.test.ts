@@ -6,7 +6,7 @@ const tenant = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const other = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const scope = { tenantId: tenant, sessionId: "SES-A-R2" };
 const initial = { ...scope, meetingId: "MTG-1", participantId: "actor-1", requestId: "initial_1234567890123456", status: "Not Joined", attendanceId: "", attendanceRevision: 0, quorum: { revision: 0, required: 1, present: 0, met: false }, attendanceMap: {} };
-const receipt = { ...initial, status: "Present", attendanceId: "ATT-a", attendanceRevision: 1, quorum: { revision: 1, required: 1, present: 1, met: true }, attendanceMap: { "actor-1": "Present" } };
+const receipt = { ...initial, attendanceMode: "Online", status: "Present", attendanceId: "ATT-a", attendanceRevision: 1, quorum: { revision: 1, required: 1, present: 1, met: true }, attendanceMap: { "actor-1": "Present" } };
 const reply = (data: unknown) => new Response(JSON.stringify(data), {status: 200});
 afterEach(() => vi.restoreAllMocks());
 describe("staged authoritative attendance tenant/session handshake", () => {
@@ -51,6 +51,24 @@ describe("staged authoritative attendance tenant/session handshake", () => {
     expect(calls.map(c=>c.expectedSessionId)).toEqual([scope.sessionId,scope.sessionId,scope.sessionId]);
     expect(calls.slice(1).map(c=>c.expectedTenantId)).toEqual([tenant,tenant]);
     expect(calls.every(c=>!("actorId" in c))).toBe(true);
+  });
+  it.each([undefined, "In-Person"])("rejects incorrect company SQL mode proof %j", mode => {
+    expect(() => verifyScopedReceipt({...receipt, attendanceMode: mode},scope,"MTG-1","actor-1","Online")).toThrow(/mode readback/);
+  });
+  it("keeps pre-rollout legacy receipts compatible", () => {
+    const legacy = {...receipt, tenantId: null, attendanceMode: undefined};
+    expect(verifyScopedReceipt(legacy,{tenantId:null,sessionId:scope.sessionId},"MTG-1","actor-1","Online")).toEqual(legacy);
+  });
+  it.each(["commit", "readback"])("rejects a company mode mismatch in %s", async failure => {
+    let calls=0; let requestId="";
+    vi.spyOn(convayAuth,"authenticatedRequest").mockImplementation(async (_path,init)=>{
+      const body=JSON.parse(String(init?.body));calls++;
+      if(calls===1)return reply(initial);
+      if(body.action==="commit")requestId=body.requestId;
+      return reply({...receipt,requestId,attendanceMode:body.action===failure?"In-Person":"Online"});
+    });
+    await expect(commitLiveAttendance("MTG-1","actor-1","Present","Online",()=>true,scope.sessionId)).rejects.toThrow(/mode/);
+    expect(calls).toBe(failure==="commit"?2:3);
   });
   it("rejects missing scope from old gateway", async () => {
     vi.spyOn(convayAuth,"authenticatedRequest").mockImplementation(async()=>reply({...initial,sessionId:undefined,tenantId:undefined}));

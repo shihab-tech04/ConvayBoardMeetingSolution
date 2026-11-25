@@ -16,6 +16,7 @@ export interface LiveAttendanceSnapshot extends RegularAttendanceReceipt {
   attendanceMap: Record<string, string>;
   tenantId?: string | null;
   sessionId?: string;
+  attendanceMode?: "Online" | "In-Person" | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -112,12 +113,18 @@ export async function commitLiveAttendance(
         ...(expectedSessionId ? { expectedSessionId, expectedTenantId: initial.tenantId } : {}),
       });
       if (expectedSessionId) assertScopedProof(ack, expectedSessionId, initial.tenantId);
+      if (expectedSessionId && initial.tenantId !== null && (!isRecord(ack) || ack.attendanceMode !== attendanceMode)) {
+        throw new Error("Attendance mode acknowledgement did not match the request.");
+      }
       return ack;
     },
     readback: async (id, participant) => {
       assertCurrentScope();
       const saved = await readLiveAttendance(id, participant, expectedSessionId, initial.tenantId);
       if (expectedSessionId) assertScopedProof(saved, expectedSessionId, initial.tenantId);
+      if (expectedSessionId && initial.tenantId !== null && saved.attendanceMode !== attendanceMode) {
+        throw new Error("Attendance mode readback differs from the committed command.");
+      }
       return saved;
     },
   });
