@@ -543,13 +543,12 @@ export function ParticipantSelectorStep({
         orgUnits,
       ));
     }
-    return [...stored, ...autoLeaders].map(protectLink).map(consistentParticipantClassification);
+    return [...stored, ...autoLeaders.map(consistentParticipantClassification)].map(protectLink);
   });
 
   const updateLinks = useCallback((next: DraftParticipantLink[]) => {
-    const normalized = next.map(consistentParticipantClassification);
-    setLinks(normalized);
-    onValuesChange({ participant_links_json: JSON.stringify(normalized) });
+    setLinks(next);
+    onValuesChange({ participant_links_json: JSON.stringify(next) });
   }, [onValuesChange]);
 
   useEffect(() => {
@@ -639,7 +638,7 @@ export function ParticipantSelectorStep({
 
   // Add pending users from org/individual tabs.
   // Preserve real unit identity for every pending selection.
-  const addPendingUsers = useCallback((category: MemberCategory, sourceLabel: string, sourceType: string, sourceId: string) => {
+  const addPendingUsers = useCallback((category: MemberCategory, sourceLabel: string, sourceType: string) => {
     if (pending.size === 0) return;
     let next = [...links];
     for (const item of pending.values()) {
@@ -665,7 +664,7 @@ export function ParticipantSelectorStep({
     if (links.some(link => link.id === id && protectedRoles.has(link.user_id))) return;
     updateLinks(links.filter(link => link.id !== id));
   };
-  const updateLink = (updated: DraftParticipantLink) => updateLinks(links.map(link => link.id === updated.id ? protectLink(updated) : link));
+  const updateLink = (updated: DraftParticipantLink) => updateLinks(links.map(link => link.id === updated.id ? consistentParticipantClassification(protectLink(updated)) : link));
   const removeSource = (id:string,type:string,sourceId:string) => updateLinks(links.flatMap(link => {
     if (link.id!==id) return [link];
     const next=removeParticipantSource(link,type,sourceId,protectedRoles.has(link.user_id)||link.is_required);
@@ -852,7 +851,7 @@ export function ParticipantSelectorStep({
                     })}
                   </div>
                   {pendingUserIds.size > 0 && (
-                    <button type="button" onClick={() => addPendingUsers("general", "Division", "division", "division")}
+                    <button type="button" onClick={() => addPendingUsers("general", "Division", "division")}
                       className="w-full py-2.5 text-sm font-bold rounded-lg bg-[var(--primary)] text-white hover:opacity-90 transition-opacity shadow-sm">
                       Add {pendingUserIds.size} participant{pendingUserIds.size !== 1 ? "s" : ""} →
                     </button>
@@ -886,7 +885,7 @@ export function ParticipantSelectorStep({
                     })}
                   </div>
                   {pendingUserIds.size > 0 && (
-                    <button type="button" onClick={() => addPendingUsers("general", "Department", "department", "department")}
+                    <button type="button" onClick={() => addPendingUsers("general", "Department", "department")}
                       className="w-full py-2.5 text-sm font-bold rounded-lg bg-[var(--primary)] text-white hover:opacity-90 transition-opacity shadow-sm">
                       Add {pendingUserIds.size} participant{pendingUserIds.size !== 1 ? "s" : ""} →
                     </button>
@@ -922,7 +921,7 @@ export function ParticipantSelectorStep({
                 )}
               </div>
               {pendingUserIds.size > 0 && (
-                <button type="button" onClick={() => addPendingUsers("general", "Individual", "individual", "individual")}
+                <button type="button" onClick={() => addPendingUsers("general", "Individual", "individual")}
                   className="w-full py-2.5 text-sm font-bold rounded-lg bg-[var(--primary)] text-white hover:opacity-90 transition-opacity shadow-sm">
                   Add {pendingUserIds.size} participant{pendingUserIds.size !== 1 ? "s" : ""} →
                 </button>
