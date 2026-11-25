@@ -55,9 +55,9 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
-  const [pendingCreate,setPendingCreate]=useState(false);
+  const [pendingSave,setPendingSave]=useState<"partial"|"complete"|null>(null);
   const saveLock=useRef(false);
-  const formLocked=busy||pendingCreate;
+  const formLocked=busy||pendingSave!==null;
   const [error,setError]=useState("");
   const [lastSaved,setLastSaved]=useState<StagedCompanyDraft|null>(null);
   const [inspected,setInspected]=useState<StagedCompanyDraft|null>(null);
@@ -69,7 +69,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     let active=true;
     setError("");setLoading(true);setSelectedId("");setTemplate(null);
     setDirectory([]);setOptions([]);setInspected(null);setLastSaved(null);
-    setEditing(null);setDiscardConfirmation(null);setPendingCreate(false);
+    setEditing(null);setDiscardConfirmation(null);setPendingSave(null);
     void Promise.all([listManagedTemplates(tenantId),listStagedCompanyDrafts(tenantId)])
       .then(([all,drafts])=>{if(!active)return;
         setOptions(all.filter(t=>t.tenant_id===tenantId&&t.published_revision!==null));
@@ -104,7 +104,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
     if(formLocked)return;
     setValues(previous=>{
       const next={...previous};
-      if(value===undefined)delete next[key];
+      if(value===undefined||value==="")delete next[key];
       else next[key]=value;
       return next;
     });
@@ -112,7 +112,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
   };
   const current=template?.definition.steps[step];
   const next=()=>{
-    if(!template||!current)return;
+    if(!template||!current||formLocked)return;
     for(const field of current.fields){
       if(!supportedFields.has(field.type)) {
         setError(field.label+" requires linked SQL integration before it can be saved.");
@@ -120,40 +120,43 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
       }
       if(missingRequired(field,values[field.id])){setError(field.label+" is required.");return;}
     }
-    setError("");setStep(Math.min(step+1,template.definition.steps.length-1));
+    setError("");setRequestId(crypto.randomUUID());setStep(Math.min(step+1,template.definition.steps.length-1));
   };
-  const save=async()=>{
-    if(!template||busy||loading||saveLock.current)return;
-    const failure=firstError(template,values);
+  const save=async(partial=false)=>{
+    const mode=partial?"partial":"complete";
+    if(!template||!current||busy||loading||saveLock.current||(pendingSave!==null&&pendingSave!==mode))return;
+    const progress={stepId:current.id,partial};
+    const failure=partial?null:firstError(template,values);
     if(failure){setError(failure);return;}
     if(title.trim().length<3||title.trim().length>160){
       setError("Enter a draft title between 3 and 160 characters.");return;
     }
     saveLock.current=true;setBusy(true);setError("");
-    if(!editing)setPendingCreate(true);
+    setPendingSave(mode);
     try{
       if(editing){
-        const revised=await updateStagedCompanyDraft(tenantId,editing,title,values,requestId);
+        const revised=await updateStagedCompanyDraft(tenantId,editing,title,values,requestId,progress);
         setEditing(revised.draft);setLastSaved(revised.draft);
         toast.success("Revised company draft verified in SQL; meeting remains unactivated.");
       }else{
-        const saved=await saveStagedCompanyDraft(tenantId,template,title,values,requestId);
+        const saved=await saveStagedCompanyDraft(tenantId,template,title,values,requestId,progress);
         // A verified create becomes an edit of the same stable identity. Do
         // not issue another create simply because the form remains open.
-        setEditing(saved.draft);setLastSaved(saved.draft);setPendingCreate(false);
+        setEditing(saved.draft);setLastSaved(saved.draft);setPendingSave(null);
         toast.success("Company template draft verified in SQL. No meeting was scheduled.");
       }
-      setRequestId(crypto.randomUUID());
+      setPendingSave(null);setRequestId(crypto.randomUUID());
       try{setDirectory(await listStagedCompanyDrafts(tenantId));}
       catch{setError("Draft saved and verified in SQL. Unable to refresh the draft directory; reopen this workspace to refresh.");}
     }catch(e){
       const message=e instanceof Error?e.message:"Unable to save company meeting draft";
-      if(!editing && (pendingCreate || !(e instanceof Error && e.name==="StagedDraftCreateRejected"))){
+      const definitive=e instanceof Error && e.name===(editing?"StagedDraftUpdateRejected":"StagedDraftCreateRejected");
+      if(pendingSave!==null || !definitive){
         // Preserve the original request ID AND intent until SQL confirms it.
         // Changing either could create a second draft after a lost response.
         setError(message+" Retry the same save before editing or starting another draft.");
       }else{
-        setPendingCreate(false);setError(message);
+        setPendingSave(null);setError(message);
       }
     }finally{saveLock.current=false;setBusy(false);}
   };
@@ -177,14 +180,16 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
         revision:persisted.template_revision,state:"published",published_at:persisted.created_at,
         definition:persisted.definition,
       };
+      const savedStep=persisted.wizard_step_id==null?0:persisted.definition.steps.findIndex(item=>item.id===persisted.wizard_step_id);
+      if(savedStep<0)throw new Error("Saved wizard step is not in the immutable template");
       setTemplate(snapshot);setEditing(persisted);setValues(persisted.values);
-      setTitle(persisted.title);setStep(0);setLastSaved(null);setInspected(null);
+      setTitle(persisted.title);setStep(savedStep);setLastSaved(null);setInspected(null);
       setRequestId(crypto.randomUUID());
     }catch(e){setError(e instanceof Error?e.message:"Unable to resume SQL draft");}
     finally{setBusy(false);}
   };
   const startNew=()=>{
-    if(pendingCreate)return;
+    if(pendingSave!==null)return;
     setEditing(null);setInspected(null);setLastSaved(null);setTitle("");setValues({});
     setTemplate(null);setSelectedId("");setStep(0);setError("");
     setRequestId(crypto.randomUUID());
@@ -256,7 +261,7 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
   return <section aria-label="Company meeting draft configuration" style={panel}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
       <h3 style={{fontSize:17,fontWeight:650}}>{editing?"Revise an existing company draft":"Create a company meeting draft"}</h3>
-      {editing&&<Button size="sm" variant="secondary" disabled={busy} onClick={startNew}>Start new draft</Button>}
+      {editing&&<Button size="sm" variant="secondary" disabled={formLocked} onClick={startNew}>Start new draft</Button>}
     </div>
     <p style={{...note,margin:"8px 0 14px"}}>
       Choose a published company template, enter its configured fields, and save a SQL-staged draft.
@@ -283,9 +288,9 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
         value={title} disabled={formLocked} onChange={v=>{if(formLocked)return;setTitle(v);setRequestId(crypto.randomUUID());setError("");setLastSaved(null);}}/>
       <nav aria-label="Configured company meeting steps" style={{display:"flex",gap:8,flexWrap:"wrap"}}>
         {template.definition.steps.map((item,index)=><Button key={item.id} size="sm"
-          variant={step===index?"primary":"secondary"} disabled={busy}
+          variant={step===index?"primary":"secondary"} disabled={formLocked}
           aria-current={step===index?"step":undefined}
-          onClick={()=>{setStep(index);setError("");}}>{index+1}. {item.title}</Button>)}
+          onClick={()=>{setStep(index);setRequestId(crypto.randomUUID());setError("");}}>{index+1}. {item.title}</Button>)}
       </nav>
       <section aria-label="Current configured meeting draft step" style={{...panel,padding:14}}>
         <h4 style={{fontSize:15,fontWeight:650,marginBottom:12}}>
@@ -297,11 +302,14 @@ export function CompanyMeetingDraftWizard({tenantId}:{tenantId:string}){
           </div>}
       </section>
       <div style={{display:"flex",gap:10,justifyContent:"space-between",flexWrap:"wrap"}}>
-        <Button variant="secondary" disabled={busy||step===0}
-          onClick={()=>{setStep(s=>Math.max(0,s-1));setError("");}}>Previous step</Button>
+        <Button variant="secondary" disabled={formLocked||step===0}
+          onClick={()=>{setStep(s=>Math.max(0,s-1));setRequestId(crypto.randomUUID());setError("");}}>Previous step</Button>
+        <Button variant="secondary" loading={busy&&pendingSave==="partial"} disabled={loading||busy||pendingSave==="complete"} onClick={()=>void save(true)}>
+          {pendingSave==="partial"?"Retry saving draft":"Save draft and continue later"}
+        </Button>
         {step<template.definition.steps.length-1
-          ?<Button disabled={busy} onClick={next}>Next step</Button>
-          :<Button loading={busy} disabled={loading||busy} onClick={()=>void save()}>
+          ?<Button disabled={formLocked} onClick={next}>Next step</Button>
+          :<Button loading={busy&&pendingSave==="complete"} disabled={loading||busy||pendingSave==="partial"} onClick={()=>void save(false)}>
             {editing?"Save revised draft in SQL":"Save staged draft in SQL"}
           </Button>}
       </div>
