@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readDraftWizardStep } from "../app/components/forms/draftWizardStep";
-import { readMeetingDraftSnapshot, restoreMeetingDraftRow } from "../app/pages/return-register/meetingDraftResume";
+import { readMeetingDraftSnapshot, restoreMeetingDraftRow, assertResumedDraftRevision, assertDraftRelationshipReadback } from "../app/pages/return-register/meetingDraftResume";
+import { normalizeDraftRelationships } from "../app/pages/return-register/draftRelationshipPayload";
 
 const meeting = {id:"draft-record",meeting_id:"MTG-42",approval_status:"Draft",draft_current_step:"3",meeting_title:"Saved meeting",committee:"body-1"};
 const parent = {record_id:meeting.id,tenant_id:"tenant-a",revision:7,payload:meeting};
@@ -80,5 +81,23 @@ describe("MT-13 restored canonical links",()=>{
     const {read}=fixture({participants:[participant,duplicate]});
     const snapshot=await read();
     expect(()=>restoreMeetingDraftRow(snapshot,[],[])).toThrow(/Conflicting/);
+  });
+});
+
+describe("MT-13 stale write and SQL readback comparison",()=>{
+  it("carries canonical meeting ID and exact revision into the resumed wizard",async()=>{
+    const row=restoreMeetingDraftRow(await fixture().read(),[],[]);
+    expect(row.meeting_id).toBe("MTG-42");expect(row.draft_revision).toBe("7");
+    expect(()=>assertResumedDraftRevision({revision:7},row.draft_revision)).not.toThrow();
+  });
+  it("rejects stale or missing revisions before changing relationships",()=>{
+    for(const value of [undefined,"",6,"6","7.0","7x",true]) expect(()=>assertResumedDraftRevision({revision:7},value)).toThrow(/changed/);
+  });
+  it("confirms saved step, roster provenance, agenda order and selected document versions",async()=>{
+    const snapshot=await fixture().read();
+    const expected=normalizeDraftRelationships(restoreMeetingDraftRow(snapshot,[],[]));
+    expect(()=>assertDraftRelationshipReadback(snapshot,expected,3)).not.toThrow();
+    expect(()=>assertDraftRelationshipReadback(snapshot,expected,4)).toThrow(/did not match/);
+    expect(()=>assertDraftRelationshipReadback(snapshot,{...expected,documents:[{...expected.documents[0],version:"99"}]},3)).toThrow(/did not match/);
   });
 });
