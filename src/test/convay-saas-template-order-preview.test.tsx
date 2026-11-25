@@ -47,6 +47,11 @@ describe("SQL meeting template step/field ordering and preview",()=>{
     expect(moveTemplateItem(objects,0,-1)).toEqual(objects);
     expect(moveTemplateItem(objects,1,1)).toEqual(objects);
     expect(moveTemplateItem(objects,-1,1)).toEqual(objects);
+    // Stale reorder indices must never insert an undefined entry or extend the array.
+    expect(moveTemplateItem(objects,objects.length,-1)).toEqual(objects);
+    expect(moveTemplateItem(objects,objects.length+1,-1)).toEqual(objects);
+    expect(moveTemplateItem([objects[0]],1,-1)).toEqual([objects[0]]);
+    expect(moveTemplateItem([],0,-1)).toEqual([]);
   });
   it("sends the reordered steps and fields to the existing SQL versioned save contract",async()=>{
     render(<MeetingTemplateMarketplace/>);
