@@ -182,9 +182,24 @@ const direct: Record<string, string> = {
   "administration/security-retention/retention-legal-holds": "admin_retention",
   "administration/time-extension": "admin_retention",
 };
+// Match React Router's case-insensitive, per-segment decoded pathname matching.
+// Keep encoded slashes inside their segment; never turn them into route separators.
+function canonicalPermissionPath(path: string): string | null {
+  try {
+    return path.replace(/^\/+|\/+$/g, "").split("/")
+      .map(segment => decodeURIComponent(segment).replace(/\//g, "%2F"))
+      .join("/").toLowerCase();
+  } catch {
+    return null; // malformed path cannot grant broader fallback permissions
+  }
+}
+
 // Parent/redirect URLs resolve to their child authorization boundary.
 export function permissionForPath(path: string): string | null {
-  const clean = path.replace(/^\/+|\/+$/g, "");
+  const clean = canonicalPermissionPath(path);
+  return clean === null ? null : permissionForCanonicalPath(clean);
+}
+function permissionForCanonicalPath(clean: string): string | null {
   if (direct[clean]) return direct[clean];
   if (/^meetings\/quick-meeting\/[^/]+$/.test(clean)) return "mtg_create";
   if (/^meetings\/[^/]+\/(live|record)$/.test(clean))
@@ -203,7 +218,9 @@ export function permissionForPath(path: string): string | null {
 export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   if (!state.loaded) return false;
   if (state.is_super_admin) return true;
-  const normalizedPath = "/" + path.replace(/^\/+|\/+$/g, "");
+  const clean = canonicalPermissionPath(path);
+  if (clean === null) return false;
+  const normalizedPath = "/" + clean;
   if (/^\/company-management(?:\/|$)/.test(normalizedPath))
     return (state.company_admin_tenant_ids?.length ?? 0) > 0;
   if (/^\/subscribers(?:\/|$)/.test(normalizedPath)) return state.is_super_admin;
@@ -211,6 +228,6 @@ export function mayVisitPath(path: string, state: AccessSnapshot = current) {
   // Match the root-only navigation catalogue at direct URLs as well; a delegated
   // permission code alone must not mount a configuration or provider page.
   if (/^\/(?:administration(?:\/|$)|governance-org\/(?:users-assignments|user-management)(?:\/|$))/.test(normalizedPath)) return false;
-  const required = permissionForPath(path);
+  const required = permissionForCanonicalPath(clean);
   return !!required && hasAccess(required, state);
 }
