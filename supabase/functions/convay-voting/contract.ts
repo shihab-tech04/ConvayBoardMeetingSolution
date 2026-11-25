@@ -2,9 +2,9 @@
 export type Scope = { tenantId: string; meetingId: string; sessionId: string };
 export type Choice = 'For' | 'Against' | 'Abstain';
 export type Command =
-  | { action: 'motion'; agendaId: string; title: string; wording: string; seconderId?: string | null; notes?: string; requestId: string }
-  | { action: 'open'; motionId: string; policyId: string; policyVersion: number; requestId: string }
-  | { action: 'reopen'; motionId: string; policyId: string; policyVersion: number; priorRoundId: string; reason: string; requestId: string }
+  | { action: 'motion'; agendaId: string; title: string; wording: string; seconderId?: string | null; notes?: string; amendments?: string; votingRequired?: boolean; requestId: string }
+  | { action: 'open'; motionId: string; policyId: string; policyVersion: number; voteTitle?:string; voteNotes?:string; requestId: string }
+  | { action: 'reopen'; motionId: string; policyId: string; policyVersion: number; priorRoundId: string; reason: string; voteTitle?:string; voteNotes?:string; requestId: string }
   | { action: 'cast'; roundId: string; choice: Choice; requestId: string }
   | { action: 'close'; roundId: string; requestId: string }
   | { action: 'read'; roundId: string }
@@ -18,13 +18,17 @@ const wording = (x: unknown, max: number) => typeof x === 'string' && !!x.trim()
 const choice = (x: unknown): x is Choice => x === 'For' || x === 'Against' || x === 'Abstain';
 const keys = (x: Record<string,unknown>, allowed: string[]) => Object.keys(x).every(k => allowed.includes(k));
 const integer = (x: unknown): x is number => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0;
+export function parseDiscovery(raw:unknown):{meetingId:string;sessionId:string}|null {
+ if(!record(raw)||!keys(raw,['meetingId','sessionId','command'])||!identity(raw.meetingId)||!identity(raw.sessionId)||!record(raw.command)||!keys(raw.command,['action'])||raw.command.action!=='discover')return null;
+ return {meetingId:raw.meetingId,sessionId:raw.sessionId};
+}
 export function parseRequest(raw: unknown): { scope: Scope; command: Command } | null {
   if (!record(raw) || !keys(raw,['tenantId','meetingId','sessionId','command']) || !uuid(raw.tenantId) || !identity(raw.meetingId) || !identity(raw.sessionId) || !record(raw.command)) return null;
   const c=raw.command;
   let valid=false;
   switch(c.action) {
-    case 'motion': valid=keys(c,['action','agendaId','title','wording','seconderId','notes','requestId']) && identity(c.agendaId) && wording(c.title,500) && wording(c.wording,20000) && (c.seconderId===undefined || c.seconderId===null || uuid(c.seconderId)) && (c.notes===undefined || (typeof c.notes==='string' && c.notes.length<=20000)) && requestId(c.requestId); break;
-    case 'open': case 'reopen': valid=keys(c,c.action==='open'?['action','motionId','policyId','policyVersion','requestId']:['action','motionId','policyId','policyVersion','priorRoundId','reason','requestId']) && uuid(c.motionId) && identity(c.policyId) && integer(c.policyVersion) && c.policyVersion>0 && requestId(c.requestId) && (c.action==='open' || (uuid(c.priorRoundId) && wording(c.reason,2000))); break;
+    case 'motion': valid=keys(c,['action','agendaId','title','wording','seconderId','notes','requestId','amendments','votingRequired']) && identity(c.agendaId) && wording(c.title,500) && wording(c.wording,20000) && (c.seconderId===undefined || c.seconderId===null || uuid(c.seconderId)) && (c.notes===undefined || (typeof c.notes==='string' && c.notes.length<=20000)) && (c.amendments===undefined||(typeof c.amendments==='string'&&c.amendments.length<=20000)) && (c.votingRequired===undefined||typeof c.votingRequired==='boolean') && requestId(c.requestId); break;
+    case 'open': case 'reopen': valid=keys(c,c.action==='open'?['action','motionId','policyId','policyVersion','requestId','voteTitle','voteNotes']:['action','motionId','policyId','policyVersion','priorRoundId','reason','requestId','voteTitle','voteNotes']) && uuid(c.motionId) && identity(c.policyId) && integer(c.policyVersion) && c.policyVersion>0 && (c.voteTitle===undefined||wording(c.voteTitle,500)) && (c.voteNotes===undefined||(typeof c.voteNotes==='string'&&c.voteNotes.length<=20000)) && requestId(c.requestId) && (c.action==='open' || (uuid(c.priorRoundId) && wording(c.reason,2000))); break;
     case 'cast': valid=keys(c,['action','roundId','choice','requestId']) && uuid(c.roundId) && choice(c.choice) && requestId(c.requestId); break;
     case 'close': valid=keys(c,['action','roundId','requestId']) && uuid(c.roundId) && requestId(c.requestId); break;
     case 'read': valid=keys(c,['action','roundId']) && uuid(c.roundId); break;
@@ -57,6 +61,8 @@ export function projectReceipt(raw: unknown, scope: Scope, c: Command): Record<s
   if(c.action==='close') return raw.outcome==='Passed'||raw.outcome==='Rejected'?{...base,roundId:c.roundId,outcome:raw.outcome}:null;
   if(!uuid(raw.motionId) || !integer(raw.round) || raw.round<1 || !identity(raw.policyId) || !integer(raw.policyVersion) || raw.policyVersion<1 || !['Open','Closed'].includes(String(raw.state)) || !['Open','Secret Ballot'].includes(String(raw.method)) || typeof raw.myRecorded!=='boolean' || !(raw.priorRound===null || uuid(raw.priorRound)) || !(raw.reopenReason===null || typeof raw.reopenReason==='string')) return null;
   const out:Record<string,unknown>={...base,roundId:c.roundId,motionId:raw.motionId,round:raw.round,state:raw.state,method:raw.method,policyId:raw.policyId,policyVersion:raw.policyVersion,priorRound:raw.priorRound,reopenReason:raw.reopenReason,myRecorded:raw.myRecorded};
+  if(typeof raw.voteTitle==='string'&&typeof raw.voteNotes==='string')Object.assign(out,{voteTitle:raw.voteTitle,voteNotes:raw.voteNotes});
+  ;
   const hasCounts=['for','against','abstain'].some(k=>k in raw);
   if(raw.state==='Closed' || (raw.method==='Open' && hasCounts)) {
     if(!integer(raw.for)||!integer(raw.against)||!integer(raw.abstain)) return null;
@@ -70,10 +76,10 @@ export function projectReceipt(raw: unknown, scope: Scope, c: Command): Record<s
   return out;
 }
 
-export type MotionView={motionId:string;agendaId:string;title:string;wording:string;proposerId:string;seconderId:string|null;notes:string;createdAt:string};
+export type MotionView={motionId:string;agendaId:string;title:string;wording:string;proposerId:string;seconderId:string|null;notes:string;amendments:string;votingRequired:boolean;createdAt:string};
 export type PolicyView={policyId:string;version:number;method:'Open'|'Secret Ballot';numerator:number;denominator:number;basis:'decisive'|'cast'|'electorate';comparison:'gt'|'gte';seconderRequired:boolean;reopenAllowed:boolean};
-export type RoundView={roundId:string;motionId:string;round:number;state:'Open'|'Closed';method:'Open'|'Secret Ballot';policyId:string;policyVersion:number;priorRound:string|null;reopenReason:string|null;myRecorded:boolean;canCast:boolean;reopenAllowed:boolean;for?:number;against?:number;abstain?:number;outcome?:'Passed'|'Rejected'|null;ballots?:{voter:string;choice:Choice}[]};
-export type WorkspaceView=Scope&{motions:MotionView[];rounds:RoundView[];policies:PolicyView[];canManage:boolean;quorumMet:boolean};
+export type RoundView={roundId:string;motionId:string;round:number;state:'Open'|'Closed';method:'Open'|'Secret Ballot';policyId:string;policyVersion:number;priorRound:string|null;reopenReason:string|null;myRecorded:boolean;voteTitle?:string;voteNotes?:string;canCast:boolean;reopenAllowed:boolean;for?:number;against?:number;abstain?:number;outcome?:'Passed'|'Rejected'|null;ballots?:{voter:string;choice:Choice}[]};
+export type WorkspaceView=Scope&{motions:MotionView[];rounds:RoundView[];policies:PolicyView[];eligibleAgendaIds:string[];canManage:boolean;quorumMet:boolean};
 const string=(x:unknown):x is string=>typeof x==='string';
 const date=(x:unknown):x is string=>string(x)&&Number.isFinite(Date.parse(x));
 function policy(x:unknown):PolicyView|null {
@@ -81,11 +87,11 @@ function policy(x:unknown):PolicyView|null {
  return {policyId:x.policyId,version:x.version,method:x.method,numerator:x.numerator,denominator:x.denominator,basis:x.basis,comparison:x.comparison,seconderRequired:x.seconderRequired,reopenAllowed:x.reopenAllowed} as PolicyView;
 }
 function motion(x:unknown):MotionView|null {
- if(!record(x)||!uuid(x.motionId)||!identity(x.agendaId)||!string(x.title)||!string(x.wording)||!uuid(x.proposerId)||!(x.seconderId===null||uuid(x.seconderId))||!string(x.notes)||!date(x.createdAt))return null;
- return {motionId:x.motionId,agendaId:x.agendaId,title:x.title,wording:x.wording,proposerId:x.proposerId,seconderId:x.seconderId,notes:x.notes,createdAt:x.createdAt};
+ if(!record(x)||!uuid(x.motionId)||!identity(x.agendaId)||!string(x.title)||!string(x.wording)||!uuid(x.proposerId)||!(x.seconderId===null||uuid(x.seconderId))||!string(x.notes)||!string(x.amendments)||typeof x.votingRequired!=='boolean'||!date(x.createdAt))return null;
+ return {motionId:x.motionId,agendaId:x.agendaId,title:x.title,wording:x.wording,proposerId:x.proposerId,seconderId:x.seconderId,notes:x.notes,amendments:x.amendments,votingRequired:x.votingRequired,createdAt:x.createdAt};
 }
 function projectWorkspace(raw:Record<string,unknown>,scope:Scope):WorkspaceView|null {
- if(!Array.isArray(raw.motions)||!Array.isArray(raw.rounds)||!Array.isArray(raw.policies)||typeof raw.canManage!=='boolean'||typeof raw.quorumMet!=='boolean')return null;
+ if(!Array.isArray(raw.motions)||!Array.isArray(raw.rounds)||!Array.isArray(raw.policies)||typeof raw.canManage!=='boolean'||typeof raw.quorumMet!=='boolean'||!Array.isArray(raw.eligibleAgendaIds)||!raw.eligibleAgendaIds.every(identity))return null;
  const motions=raw.motions.map(motion),policies=raw.policies.map(policy);
  if(motions.some(x=>!x)||policies.some(x=>!x))return null;
  const rounds=raw.rounds.map(r=>{
@@ -95,7 +101,7 @@ function projectWorkspace(raw:Record<string,unknown>,scope:Scope):WorkspaceView|
   return {...round,canCast:r.canCast,reopenAllowed:r.reopenAllowed} as RoundView;
  });
  if(rounds.some(x=>!x)||rounds.filter(r=>r?.state==='Open').length>1||rounds.some(r=>!motions.some(m=>m?.motionId===r?.motionId)))return null;
- return {...scope,motions:motions as MotionView[],policies:policies as PolicyView[],rounds:rounds as RoundView[],canManage:raw.canManage,quorumMet:raw.quorumMet};
+ return {...scope,motions:motions as MotionView[],policies:policies as PolicyView[],rounds:rounds as RoundView[],eligibleAgendaIds:raw.eligibleAgendaIds as string[],canManage:raw.canManage,quorumMet:raw.quorumMet};
 }
 function projectArchive(raw:Record<string,unknown>,scope:Scope):Record<string,unknown>|null {
  if(!Array.isArray(raw.rounds))return null;

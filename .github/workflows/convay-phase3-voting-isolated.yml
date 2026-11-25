@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: 22
       - name: Run voting Edge contract tests
-        run: node --experimental-strip-types --test supabase/tests/live_voting_transaction/edge_contract.test.mjs
+        run: node --experimental-strip-types --test supabase/tests/live_voting_transaction/edge_contract.node.mjs
       - name: Start disposable PostgreSQL 17
         run: |
           docker run -d --name convay-voting -e POSTGRES_PASSWORD=isolated-fixture-only -e POSTGRES_DB=fixture -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine

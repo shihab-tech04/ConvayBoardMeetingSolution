@@ -1,3 +1,5 @@
+import { useRegularMeetingVoting } from "./useRegularMeetingVoting";
+import { ScopedVotingPanel } from "./ScopedVotingPanel";
 import { LIVE_MEETINGS_RELEASED } from "../../services/liveMeetingReleaseGate";
 import "../../../styles/live-meeting-responsive.css";
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
@@ -60,6 +62,8 @@ type MeetingCtrlStatus = "not-started" | "in-progress" | "paused" | "on-break" |
 
 // Spec-aligned attendance states (Section 6)
 type AttendanceStatus  = "Not Joined" | "Present" | "Temporarily Away" | "Left" | "Excused" | "Recused";
+const EMPTY_LIVE_MOTIONS: LiveMotion[] = [];
+const EMPTY_LOCAL_BALLOTS: Record<string, Record<string, "For" | "Against" | "Abstain">> = Object.freeze({});
 const EMPTY_ATTENDANCE: Record<string, AttendanceStatus> = Object.freeze({});
 type AgendaStatus      = "Not Started" | "In Discussion" | "Completed" | "Deferred" | "Skipped";
 type ViewMode          = "speaker" | "grid" | "document";
@@ -600,7 +604,14 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   const [activeIdx,      setActiveIdx]        = useState(initSession.activeIdx);
   const [agendaStatuses, setAgendaStatuses]   = useState<Record<number, AgendaStatus>>(initSession.agendaStatuses);
   const [notes,          setNotes]            = useState<Record<number, string>>(initSession.notes);
-  const [motions,        setMotions]          = useState<LiveMotion[]>(initSession.motions);
+  const votingRelease = import.meta.env.VITE_CONVAY_TRANSACTIONAL_VOTING_ENABLED === "true";
+  const votingSessions = liveSessions.filter(session => session.meeting_id === meetingId && ["active", "paused"].includes(session.session_status));
+  const votingSessionId = votingSessions.length === 1 && access.loaded && !access.error ? votingSessions[0].id : "";
+  const votingAccessKey = JSON.stringify([access.loaded, !!access.error, access.is_super_admin, [...access.effective_permissions].sort(), [...access.user_role_ids].sort(), [...(access.company_admin_tenant_ids ?? [])].sort()]);
+  const scopedVoting = useRegularMeetingVoting(votingRelease, meetingId ?? "", votingSessionId, currentUser.id, votingAccessKey);
+  const scopedVotingRequired = votingRelease && scopedVoting.mode !== "legacy";
+  const [legacyMotions, setMotions] = useState<LiveMotion[]>(initSession.motions);
+  const motions = scopedVotingRequired ? EMPTY_LIVE_MOTIONS : legacyMotions;
   // Online attendance is never restored from browser-local session cache.
   const [physicalAttendance, setAttendanceMap] = useState<Record<string, AttendanceStatus>>(isOnlineMeeting ? {} : initSession.attendance);
   const onlineRosterKey = meetingLinks.map(link => link.user_id).join("|");
@@ -644,7 +655,8 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // Confirmed LiveKit transitions can arrive before the preceding SQL ACK.
   // Never discard a later Left/rejoin while Present is still pending.
   const attendanceQueue = useMemo(() => new RegularAttendanceTransitionQueue(), [attendanceGate, meetingId, currentUser.id]);
-  const [activeVote,     setActiveVote]       = useState<ActiveVote | null>(initSession.activeVote);
+  const [legacyActiveVote, setActiveVote] = useState<ActiveVote | null>(initSession.activeVote);
+  const activeVote = scopedVotingRequired ? null : legacyActiveVote;
   const [timeline,       setTimeline]         = useState<Record<string, string>>(initSession.timeline);
   const [agendaRecusals, setAgendaRecusals]   = useState<Record<string, string[]>>(initSession.agendaRecusals);
   const applyVerifiedAttendance = useCallback((snapshot: LiveAttendanceSnapshot, ticket: AttendanceReadbackTicket) => {
@@ -786,9 +798,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   // ── Persist to localStorage on every state change ─────────────────────────
   useEffect(() => {
-    if (!meetingId) return;
+    if (!meetingId || scopedVotingRequired) return;
     saveSession(meetingId, { ctrlStatus, elapsed, activeIdx, agendaStatuses, notes, motions, attendance: isOnlineMeeting ? EMPTY_ATTENDANCE : attendanceMap, activeVote, timeline, agendaRecusals });
-  }, [meetingId, ctrlStatus, elapsed, activeIdx, agendaStatuses, notes, motions, attendanceMap, activeVote, timeline, agendaRecusals, isOnlineMeeting]);
+  }, [meetingId, ctrlStatus, elapsed, activeIdx, agendaStatuses, notes, motions, attendanceMap, activeVote, timeline, agendaRecusals, isOnlineMeeting, scopedVotingRequired]);
 
   // ── UI state (not persisted — transient display only) ─────────────────────
   // "readiness" → only for start_meeting with not-started status
@@ -873,9 +885,11 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     return byAgenda;
   }, [interactionItems, meetingId]);
   const [agendaCommentInputs, setAgendaCommentInputs] = useState<Record<string, string>>({});
-  const [agendaItemMotions, setAgendaItemMotions] = useState<LiveMotion[]>([]);
+  const [legacyAgendaItemMotions, setLegacyAgendaItemMotions] = useState<LiveMotion[]>([]);
+  const agendaItemMotions = scopedVotingRequired ? EMPTY_LIVE_MOTIONS : legacyAgendaItemMotions;
   const [agendaMotionForms, setAgendaMotionForms] = useState<Record<string, { open: boolean; text: string; proposedBy: string; secondedBy: string }>>({});
-  const [agendaMotionVotes, setAgendaMotionVotes] = useState<Record<string, Record<string, "For" | "Against" | "Abstain">>>({});
+  const [legacyAgendaMotionVotes, setLegacyAgendaMotionVotes] = useState<Record<string, Record<string, "For" | "Against" | "Abstain">>>({});
+  const agendaMotionVotes = scopedVotingRequired ? EMPTY_LOCAL_BALLOTS : legacyAgendaMotionVotes;
   const [activeSpeakerId, setActiveSpeakerId] = useState<string>("");
   const [docSidebarTab,  setDocSidebarTab]  = useState<"comments" | "motions" | "voting">("comments");
   const [agendaSidebarTab, setAgendaSidebarTab] = useState<"comments" | "motions" | "voting">("comments");
@@ -904,6 +918,9 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     return () => window.removeEventListener("keydown", closeOnEscape, { capture: true });
   }, [panelOpen]);
   const [panelTab, setPanelTab]       = useState<PanelTab>("agenda");
+  const redirectScopedVoting = () => { setPanelTab("motions"); setPanelOpen(true); };
+  const setAgendaItemMotions: typeof setLegacyAgendaItemMotions = value => { if (scopedVotingRequired) redirectScopedVoting(); else setLegacyAgendaItemMotions(value); };
+  const setAgendaMotionVotes: typeof setLegacyAgendaMotionVotes = value => { if (scopedVotingRequired) redirectScopedVoting(); else setLegacyAgendaMotionVotes(value); };
   const [chatOpen, setChatOpen]       = useState(false);
   const [reactionsOpen, setReactionsOpen] = useState(false);
   const [speakingQueue, setSpeakingQueue] = useState<string[]>([]);
@@ -1142,6 +1159,10 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // unreviewed browser notes/votes must not be promoted to official evidence.
   const endRequest = useRef<Promise<boolean> | null>(null);
   const handleEnd = useCallback((): Promise<boolean> => {
+    if (scopedVotingRequired && (!scopedVoting.workspace || scopedVoting.busy || scopedVoting.pending || scopedVoting.workspace.rounds.some(round => round.state === "Open"))) {
+      toast.error("Confirm voting status and close all open rounds before ending the meeting.");
+      return Promise.resolve(false);
+    }
     if (endRequest.current) return endRequest.current;
     const request = (async () => {
       const session = liveSessions.find(item => item.meeting_id === meetingId && (item.session_status === "active" || item.session_status === "paused"));
@@ -1183,7 +1204,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     endRequest.current = request;
     void request.finally(() => { endRequest.current = null; });
     return request;
-  }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions]);
+  }, [meeting, meetingId, liveSessions, currentUser.id, refreshMeetings, refreshLiveSessions, scopedVotingRequired, scopedVoting.workspace, scopedVoting.busy, scopedVoting.pending]);
 
   const closureAllChecked = CLOSURE_CHECKLIST.every(i => closureChecked[i.key]);
 
@@ -1290,6 +1311,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   // ── Vote lifecycle ─────────────────────────────────────────────────────────
 
   const openVoteForMotion = (motion: LiveMotion, voteType: string, threshold: string) => {
+    if (scopedVotingRequired) { redirectScopedVoting(); return; }
     if (!canManageVotes) { toast.error("Voting management permission required."); return; }
     if (activeVote?.status === "Open") { toast.error("A vote is already open. Close it first."); return; }
     const thresholdPct = calcThresholdPct(threshold);
@@ -1477,6 +1499,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   // ── Record creators ────────────────────────────────────────────────────────
   const handleMotionSubmit = async (values: Record<string, EntryFormValue>) => {
+    if (scopedVotingRequired) { redirectScopedVoting(); return; }
     const motion: LiveMotion = {
       id: `MOT-${crypto.randomUUID()}`, title: String(values.motion_title ?? "Motion"),
       proposedBy: String(values.proposed_by ?? ""), secondedBy: String(values.seconded_by ?? ""),
@@ -1492,6 +1515,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
   };
 
   const handleVoteSubmit = (values: Record<string, EntryFormValue>) => {
+    if (scopedVotingRequired) { redirectScopedVoting(); return; }
     if (!canManageVotes) { toast.error("Voting management permission required."); return; }
     const motionId = String(values.related_motion ?? "");
     const motion   = motions.find(m => m.id === motionId) ?? { id: "", title: String(values.vote_title ?? "Vote"), proposedBy: "", secondedBy: "", status: "Proposed" as const };
@@ -3692,7 +3716,10 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
               })()}
 
               {/* ── MOTIONS & VOTING TAB ─────────────────────────────────── */}
-              {panelTab === "motions" && (
+              {panelTab === "motions" && scopedVotingRequired && (
+                <ScopedVotingPanel key={JSON.stringify([meetingId, votingSessionId, currentUser.id, votingAccessKey])} voting={scopedVoting} agendaId={agendaItems[activeIdx]?.key ?? ""} actorId={currentUser.id} actorName={currentUser.name} participants={baseParticipants.map(p => ({value:p.id,label:p.name}))} />
+              )}
+              {panelTab === "motions" && !scopedVotingRequired && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", flexShrink: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
                     <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>Motions & Voting</p>
@@ -4178,7 +4205,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       )}
 
       {/* ── MODALS ───────────────────────────────────────────────────────────── */}
-      {motionOpen && (
+      {motionOpen && !scopedVotingRequired && (
         <AppModal open title="Add Motion" size="lg" onClose={() => { setMotionOpen(false); setMotionProposer(""); }} footer={<><SecondaryButton style={{ marginRight: "auto" }} onClick={() => { setMotionOpen(false); setMotionProposer(""); }}>Cancel</SecondaryButton><PrimaryButton type="submit" form="live-motion-form">Record Motion</PrimaryButton></>}>
           <EntryForm
             formId="live-motion-form"
@@ -4195,7 +4222,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
         </AppModal>
       )}
 
-      {voteOpen && (
+      {voteOpen && !scopedVotingRequired && (
         <AppModal open title="Open Vote" size="lg" onClose={() => setVoteOpen(false)} footer={<><SecondaryButton style={{ marginRight: "auto" }} onClick={() => setVoteOpen(false)}>Cancel</SecondaryButton><PrimaryButton type="submit" form="live-vote-form">Open Vote</PrimaryButton></>}>
           <EntryForm
             formId="live-vote-form"
@@ -4344,7 +4371,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       })()}
 
       {/* Reopen vote modal */}
-      {reopenOpen && (
+      {reopenOpen && !scopedVotingRequired && (
         <AppModal open title="Reopen Vote" onClose={() => setReopenOpen(false)} footer={
           <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
             <Button type="button" variant="ghost" size="lg" onClick={() => setReopenOpen(false)}>Cancel</Button>
