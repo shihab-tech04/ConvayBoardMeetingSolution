@@ -141,3 +141,62 @@ describe("authenticated token refresh account-session isolation", () => {
       .toBe("refreshed-previous");
   });
 });
+
+describe("password sign-in and profile restore session isolation", () => {
+  const oldProfile = { ...nextProfile, user_id: OLD_ID, account_role: "super_admin" };
+  function seedCurrentSession() {
+    localStorage.setItem(KEY, JSON.stringify({ accessToken: "previous-access",
+      refreshToken: "previous-refresh", userId: OLD_ID, expiresAt: Date.now() + 3_600_000 }));
+  }
+  it("rejects a profile for a different authenticated identity", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => url.includes("grant_type=password")
+      ? json(signedInNext) : json([oldProfile])));
+    await expect(convayAuth.signIn("next@example.org", "password", true)).rejects.toThrow(/authenticated identity/);
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+  it("does not resurrect a password sign-in after logout", async () => {
+    const started = deferred<void>(); const pending = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("grant_type=password")) { started.resolve(); return pending.promise; }
+      return json([oldProfile]);
+    }));
+    const first = convayAuth.signIn("old@example.org", "password", true);
+    const rejection = expect(first).rejects.toThrow(/superseded/);
+    await started.promise; await convayAuth.signOut(); pending.resolve(json(refreshedOld));
+    await rejection; expect(localStorage.getItem(KEY)).toBeNull();
+  });
+  it("preserves the newer account when the older profile completes late", async () => {
+    const started = deferred<void>(); const pending = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("grant_type=password")) return String(init?.body).includes("old@example.org")
+        ? json(refreshedOld) : json(signedInNext);
+      if (String((init?.headers as Record<string,string>)?.Authorization).includes("refreshed-previous")) {
+        started.resolve(); return pending.promise;
+      }
+      return json([nextProfile]);
+    }));
+    const first = convayAuth.signIn("old@example.org", "password", true);
+    const rejection = expect(first).rejects.toThrow(/superseded/);
+    await started.promise;
+    await convayAuth.signIn("next@example.org", "password", true);
+    pending.resolve(json([oldProfile])); await rejection;
+    expect(JSON.parse(localStorage.getItem(KEY) ?? "{}").userId).toBe(NEW_ID);
+  });
+  for (const status of [200, 401]) {
+    it(`ignores an obsolete restore (${status}) without altering the next account`, async () => {
+      seedCurrentSession(); const started = deferred<void>(); const pending = deferred<Response>();
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("grant_type=password")) return json(signedInNext);
+        if ((init?.headers as Record<string,string>)?.Authorization === "Bearer previous-access") {
+          started.resolve(); return pending.promise;
+        }
+        return json([nextProfile]);
+      }));
+      const restore = convayAuth.restore(); await started.promise;
+      await convayAuth.signIn("next@example.org", "password", true);
+      pending.resolve(json(status === 200 ? [oldProfile] : { message: "expired" }, status));
+      expect(await restore).toBeNull();
+      expect(JSON.parse(localStorage.getItem(KEY) ?? "{}").userId).toBe(NEW_ID);
+    });
+  }
+});
