@@ -1,4 +1,5 @@
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
+import { normalizeDraftRelationships } from "./draftRelationshipPayload";
 import type { Meeting, MeetingParticipantLink, MeetingAgendaLink, MeetingDocumentLink } from "../../data/boardMeetingData";
 import type { DraftParticipantLink } from "../../components/forms/ParticipantSelectorStep";
 import type { AttendanceRequirement } from "./attendanceRequirement";
@@ -96,12 +97,44 @@ export function restoreMeetingDraftRow(snapshot: DraftSnapshot, users: readonly 
       voting_eligible: link.voting_eligible, quorum_eligible: link.quorum_eligible, selection_sources: sources,
     };
   });
-  return {
-    ...meeting,
+  const raw = {
     participant_links_json: JSON.stringify(roster),
     selected_agenda_ids_json: JSON.stringify([...agendas].sort((a,b) => a.display_order-b.display_order)
       .map(link => ({ agenda_id: link.agenda_id, display_order: link.display_order }))),
     additional_doc_ids_json: JSON.stringify(links.filter(link => link.source === "additional").sort((a,b) => a.display_order-b.display_order)
       .map(link => ({ doc_id: link.document_id, version: link.version, source_label: documents.find(doc => (doc.doc_id ?? doc.id) === link.document_id)?.doc_name ?? link.document_id }))),
   };
+  const normalized = normalizeDraftRelationships(raw);
+  return { ...meeting, draft_revision: String(snapshot.revision), participant_links_json: JSON.stringify(normalized.participants),
+    selected_agenda_ids_json: JSON.stringify(normalized.agendas), additional_doc_ids_json: JSON.stringify(normalized.documents) };
+}
+
+/** Client stale-write preflight. The server must still enforce an atomic revision
+ * comparison inside the mutation transaction; this check is not a SQL CAS. */
+export function assertResumedDraftRevision(snapshot: Pick<DraftSnapshot,"revision">, saved: unknown): void {
+  const revision = typeof saved === "number" ? saved
+    : typeof saved === "string" && /^[1-9][0-9]*$/.test(saved) ? Number(saved) : NaN;
+  if (!Number.isSafeInteger(revision) || revision < 1 || snapshot.revision !== revision)
+    throw new Error("The saved draft changed. Reopen it before saving; no links were changed.");
+}
+
+/** Compare the persisted canonical relationships, not local display names or synthetic UI IDs. */
+export function assertDraftRelationshipReadback(snapshot: DraftSnapshot,
+  expected: ReturnType<typeof normalizeDraftRelationships>, step: number): void {
+  const actual = normalizeDraftRelationships(restoreMeetingDraftRow(snapshot, [], []));
+  const participantKey = (p: typeof expected.participants[number]) => ({
+    user_id:p.user_id,participant_type:p.participant_type,member_category:p.member_category,
+    is_required:p.is_required,attendance_requirement:p.attendance_requirement,
+    voting_eligible:p.voting_eligible,quorum_eligible:p.quorum_eligible,
+    selection_sources:(p.selection_sources.length ? p.selection_sources : [{type:"individual",source_id:p.user_id,source_label:"individual"}])
+      .map(s=>[s.type,s.source_id,s.source_label]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))),
+  });
+  const canonical = (r: typeof expected) => ({
+    participants:r.participants.map(participantKey).sort((a,b)=>a.user_id.localeCompare(b.user_id)),
+    agendas:r.agendas,
+    documents:r.documents.map(d=>({doc_id:d.doc_id,version:d.version})),
+  });
+  if (String(snapshot.meeting.draft_current_step ?? "") !== String(step) ||
+      JSON.stringify(canonical(actual)) !== JSON.stringify(canonical(expected)))
+    throw new Error("The draft write was acknowledged but saved step or relationships did not match. Reopen the saved draft before editing.");
 }

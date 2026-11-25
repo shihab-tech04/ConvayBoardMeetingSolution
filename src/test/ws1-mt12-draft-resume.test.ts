@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readDraftWizardStep } from "../app/components/forms/draftWizardStep";
-import { readMeetingDraftSnapshot, restoreMeetingDraftRow } from "../app/pages/return-register/meetingDraftResume";
+import { readMeetingDraftSnapshot, restoreMeetingDraftRow, assertResumedDraftRevision, assertDraftRelationshipReadback } from "../app/pages/return-register/meetingDraftResume";
+import { normalizeDraftRelationships } from "../app/pages/return-register/draftRelationshipPayload";
 
 const meeting = {id:"draft-record",meeting_id:"MTG-42",approval_status:"Draft",draft_current_step:"3",meeting_title:"Saved meeting",committee:"body-1"};
 const parent = {record_id:meeting.id,tenant_id:"tenant-a",revision:7,payload:meeting};
@@ -63,5 +64,40 @@ describe("MT-12 current authorized draft snapshot",()=>{
   });
   it("rejects duplicate readback rather than silently dropping saved records",async()=>{
     const f=fixture({participants:[participant,participant]});await expect(f.read()).rejects.toThrow(/Duplicate/);
+  });
+});
+
+describe("MT-13 restored canonical links",()=>{
+  it("merges duplicate canonical participant provenance during actual draft reconstruction",async()=>{
+    const duplicate={...participant,record_id:"p2",payload:{...participant.payload,id:"p2",selection_sources_json:JSON.stringify([{type:"department",source_id:"dept-2",source_label:"Department"}])}};
+    const {read}=fixture({participants:[participant,duplicate]});
+    const row=restoreMeetingDraftRow(await read(),[{id:"user-1",name:"Member"}],[]);
+    const roster=JSON.parse(row.participant_links_json);
+    expect(roster).toHaveLength(1);expect(roster[0].selection_sources).toHaveLength(3);
+    expect(roster[0].attendance_requirement).toBe("By Invitation");
+  });
+  it("denies conflicting persisted rights rather than silently discarding a canonical row",async()=>{
+    const duplicate={...participant,record_id:"p2",payload:{...participant.payload,id:"p2",voting_eligible:false}};
+    const {read}=fixture({participants:[participant,duplicate]});
+    const snapshot=await read();
+    expect(()=>restoreMeetingDraftRow(snapshot,[],[])).toThrow(/Conflicting/);
+  });
+});
+
+describe("MT-13 stale write and SQL readback comparison",()=>{
+  it("carries canonical meeting ID and exact revision into the resumed wizard",async()=>{
+    const row=restoreMeetingDraftRow(await fixture().read(),[],[]);
+    expect(row.meeting_id).toBe("MTG-42");expect(row.draft_revision).toBe("7");
+    expect(()=>assertResumedDraftRevision({revision:7},row.draft_revision)).not.toThrow();
+  });
+  it("rejects stale or missing revisions before changing relationships",()=>{
+    for(const value of [undefined,"",6,"6","7.0","7x",true]) expect(()=>assertResumedDraftRevision({revision:7},value)).toThrow(/changed/);
+  });
+  it("confirms saved step, roster provenance, agenda order and selected document versions",async()=>{
+    const snapshot=await fixture().read();
+    const expected=normalizeDraftRelationships(restoreMeetingDraftRow(snapshot,[],[]));
+    expect(()=>assertDraftRelationshipReadback(snapshot,expected,3)).not.toThrow();
+    expect(()=>assertDraftRelationshipReadback(snapshot,expected,4)).toThrow(/did not match/);
+    expect(()=>assertDraftRelationshipReadback(snapshot,{...expected,documents:[{...expected.documents[0],version:"99"}]},3)).toThrow(/did not match/);
   });
 });

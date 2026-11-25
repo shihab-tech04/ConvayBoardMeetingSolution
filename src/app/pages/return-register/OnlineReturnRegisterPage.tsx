@@ -10,7 +10,8 @@ import { normalizeMeetingSchedule, validateMeetingSchedule } from "./meetingSche
 import { meetingAccessBlockers, meetingUpdateAccessBlockers } from "./meetingAccess";
 import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "./meetingAgendaSelection";
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
-import { readMeetingDraftSnapshot, restoreMeetingDraftRow } from "./meetingDraftResume";
+import { readMeetingDraftSnapshot, restoreMeetingDraftRow, assertResumedDraftRevision, assertDraftRelationshipReadback } from "./meetingDraftResume";
+import { normalizeDraftRelationships } from "./draftRelationshipPayload";
 import { readDraftWizardStep } from "../../components/forms/draftWizardStep";
 import { readAccessSnapshot } from "../../services/supabase/convayAccess";
 import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDeletion";
@@ -41,7 +42,6 @@ import { MeetingReviewPanel } from "../../components/forms/MeetingReviewPanel";
 import { ParticipantSelectorStep } from "../../components/forms/ParticipantSelectorStep";
 import type { DraftParticipantLink } from "../../components/forms/ParticipantSelectorStep";
 import { AgendaDocumentStep } from "../../components/forms/AgendaDocumentStep";
-import type { SelectedAgendaEntry, AdditionalDocEntry } from "../../components/forms/AgendaDocumentStep";
 import { QuorumAndAccessPanel } from "../../components/forms/QuorumAndAccessPanel";
 import { liveMeetingInvitation, liveMeetingUrl } from "../../utils/liveMeetingLink";
 import { DocumentComposerModal } from "../../components/documents/DocumentComposerModal";
@@ -709,6 +709,24 @@ export function OnlineReturnRegisterPage() {
     ],
   });
 
+  // Read through the existing actor-scoped transport. After a write, RLS still
+  // determines whether the actor may read its receipt; no administrative fallback.
+  const readCurrentDraft = async (recordId: string, meetingId: string, requireContinue = true) => {
+    const access = readAccessSnapshot();
+    if (!access.loaded) throw new Error("Verify your session before accessing a draft.");
+    const request = async (path: string, init?: RequestInit) => {
+      if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
+      const response = await convayAuth.authenticatedRequest(path, init);
+      if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
+      return response;
+    };
+    const snapshot = await readMeetingDraftSnapshot(request, recordId, meetingId,
+      meeting => !requireContinue || resolveMeetingActions({ ...meeting, status: meeting.approval_status })
+        .some(action => action.id === "continue_setup" && action.visible && action.enabled));
+    if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
+    return snapshot;
+  };
+
   // ── Page config ─────────────────────────────────────────────────────────────
   const cfg: PageCfg = {
     title:       "All Meetings",
@@ -923,17 +941,7 @@ export function OnlineReturnRegisterPage() {
     },
 
     onResumeDraft: async (row) => {
-      const access = readAccessSnapshot();
-      if (!access.loaded) throw new Error("Verify your session before resuming a draft.");
-      const request = async (path: string, init?: RequestInit) => {
-        if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
-        const response = await convayAuth.authenticatedRequest(path, init);
-        if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
-        return response;
-      };
-      const snapshot = await readMeetingDraftSnapshot(request, String(row.id ?? ""), String(row.meeting_id ?? row.id ?? ""),
-        meeting => resolveMeetingActions({ ...meeting, status: meeting.approval_status }).some(action => action.id === "continue_setup" && action.visible && action.enabled));
-      if (readAccessSnapshot() !== access) throw new Error("Access changed. Reopen the draft.");
+      const snapshot = await readCurrentDraft(String(row.id ?? ""), String(row.meeting_id ?? row.id ?? ""));
       return restoreMeetingDraftRow(snapshot, bmsUserRegistry.items, documentRegistry.items);
     },
 
@@ -946,6 +954,8 @@ export function OnlineReturnRegisterPage() {
       if (savedStep.recovered) throw new Error("The current wizard step is invalid. Reopen the draft and retry.");
       const leadership = resolveMeetingLeadership(values, bmsUserRegistry.items);
       const draftOrg = leadership.names.organizer;
+      // Validate all selections before assembling any destructive replacement batch.
+      const relationships = normalizeDraftRelationships(values, !existingDraftId);
 
       const meetingPayload: Record<string, unknown> = {
         meeting_title:    title,
@@ -974,17 +984,15 @@ export function OnlineReturnRegisterPage() {
 
       let mid: string;
       const draftTarget = resolveMeetingDraftTarget(existingDraftId, registry.items);
-      if (draftTarget) {
+      const savedSnapshot = draftTarget ? await readCurrentDraft(draftTarget.recordId,draftTarget.meetingId) : undefined;
+      if (savedSnapshot) assertResumedDraftRevision(savedSnapshot,values.draft_revision);
+      if (draftTarget && savedSnapshot) {
         // Upsert — update existing draft record
         batch.push({ entity_key: "bms.meetings", action: "update", record_id: draftTarget.recordId, payload: meetingPayload });
         mid = draftTarget.meetingId;
         // Remove old child links before re-adding (clean slate for participants/agendas)
-        participantLinkRegistry.items
-          .filter(l => l.meeting_id === mid)
-          .forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
-        agendaLinkRegistry.items
-          .filter(l => l.meeting_id === mid)
-          .forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
+        savedSnapshot.participants.forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
+        savedSnapshot.agendas.forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
       } else {
         // Insert — new draft
         mid = generateId("MTG", registry.items.map(m => m.meeting_id));
@@ -998,15 +1006,8 @@ export function OnlineReturnRegisterPage() {
       }
 
       // Participants — synchronize canonical participant links
-      const draftLinks: DraftParticipantLink[] = (() => {
-        try { return JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
-        catch { return []; }
-      })();
-      if (!Array.isArray(draftLinks) || hasInvalidAttendanceRequirement(draftLinks)) throw new Error("Correct invalid attendance requirements before saving the draft.");
-      const seenDraft = new Set<string>();
+      const draftLinks = relationships.participants;
       draftLinks.forEach((link, idx) => {
-        if (!link.user_id || seenDraft.has(link.user_id)) return;
-        seenDraft.add(link.user_id);
         const primarySrc = link.selection_sources[0] ?? { type: "individual", source_id: link.user_id, source_label: "Individual" };
         batch.push({ entity_key: "bms.meetingParticipantLinks", action: "create", payload: {
           id: `${mid}-LNK${String(idx + 1).padStart(3, "0")}`,
@@ -1026,14 +1027,8 @@ export function OnlineReturnRegisterPage() {
       });
 
       // Agenda links
-      const draftAgendas: SelectedAgendaEntry[] = (() => {
-        try { return JSON.parse(String(values.selected_agenda_ids_json ?? "[]")) as SelectedAgendaEntry[]; }
-        catch { return []; }
-      })();
-      const seenDraftAgenda = new Set<string>();
+      const draftAgendas = relationships.agendas;
       draftAgendas.forEach((e, idx) => {
-        if (seenDraftAgenda.has(e.agenda_id)) return;
-        seenDraftAgenda.add(e.agenda_id);
         batch.push({ entity_key: "bms.meetingAgendaLinks", action: "create", payload: {
           id: `${mid}-MAL${String(idx + 1).padStart(2, "0")}`,
           meeting_id: mid, agenda_id: e.agenda_id,
@@ -1043,17 +1038,11 @@ export function OnlineReturnRegisterPage() {
       });
 
       // Document links — sync additional docs (agenda docs will be computed at schedule time)
-      meetingDocLinkRegistry.items
-        .filter(l => l.meeting_id === mid && l.source === "additional")
+      (savedSnapshot?.documents ?? [])
+        .filter(l => l.source === "additional")
         .forEach(l => batch.push({ entity_key: "bms.meetingDocumentLinks", action: "delete", record_id: l.id }));
-      const draftAdditionalDocs: AdditionalDocEntry[] = (() => {
-        try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")); }
-        catch { return []; }
-      })();
-      const seenDraftDocIds = new Set<string>();
+      const draftAdditionalDocs = relationships.documents;
       draftAdditionalDocs.forEach((ad, idx) => {
-        if (seenDraftDocIds.has(ad.doc_id)) return;
-        seenDraftDocIds.add(ad.doc_id);
         batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
           id: `${mid}-MDL-D${String(idx + 1).padStart(3, "0")}`,
           meeting_id: mid,
@@ -1067,8 +1056,21 @@ export function OnlineReturnRegisterPage() {
       });
 
       await convayAuth.applyBatch(batch);
-      await Promise.all([registry.refresh?.(), participantLinkRegistry.refresh?.(), agendaLinkRegistry.refresh?.(), meetingDocLinkRegistry.refresh?.()]);
-      toast.success(`"${title}" saved as Draft.`);
+      // SQL already acknowledged the transaction. If readback or refresh fails,
+      // keep the saved identity and warn, rather than offering a duplicate create.
+      try {
+        const verified = await readCurrentDraft(draftTarget?.recordId ?? mid,mid,false);
+        assertDraftRelationshipReadback(verified,relationships,savedStep.index);
+        toast.success(`"${title}" saved as Draft.`);
+      } catch (error) {
+        toast.warning(error instanceof Error && error.message.includes("write was acknowledged")
+          ? error.message : "Draft write acknowledged, but readback could not be verified. Reopen the saved draft before editing.");
+      }
+      try {
+        await Promise.all([registry.refresh?.(), participantLinkRegistry.refresh?.(), agendaLinkRegistry.refresh?.(), meetingDocLinkRegistry.refresh?.()]);
+      } catch {
+        toast.warning("The draft list could not refresh. Reload to reopen the saved record.");
+      }
       return mid;
     },
 
@@ -1099,16 +1101,11 @@ export function OnlineReturnRegisterPage() {
       const approvalStatus = "Scheduled";
 
       // Parse canonical participant/agenda/doc blobs for validation and persistence
-      const draftLinksRaw: DraftParticipantLink[] = (() => {
-        try { return JSON.parse(String(values.participant_links_json ?? "[]")) as DraftParticipantLink[]; }
-        catch { return []; }
-      })();
-      const agendaEntriesParsed = parseOptionalMeetingAgendas(values.selected_agenda_ids_json);
-      const agendaEntriesRaw: SelectedAgendaEntry[] = agendaEntriesParsed ?? [];
-      const additionalDocsRaw: AdditionalDocEntry[] = (() => {
-        try { return JSON.parse(String(values.additional_doc_ids_json ?? "[]")) as AdditionalDocEntry[]; }
-        catch { return []; }
-      })();
+      const relationships = normalizeDraftRelationships(values, !values._draft_meeting_id);
+      const draftLinksRaw = relationships.participants;
+      const agendaEntriesParsed = parseOptionalMeetingAgendas(JSON.stringify(relationships.agendas));
+      const agendaEntriesRaw = relationships.agendas;
+      const additionalDocsRaw = relationships.documents;
       // ── Schedule Meeting validation ─────────────────────────────────────────
       {
         const blockers: string[] = [];
@@ -1145,6 +1142,8 @@ export function OnlineReturnRegisterPage() {
       // Meeting record — upsert existing draft if _draft_meeting_id present, else create new
       const existingDraftId = String(values._draft_meeting_id ?? "");
       const draftTarget = resolveMeetingDraftTarget(existingDraftId, registry.items);
+      const savedSnapshot = draftTarget ? await readCurrentDraft(draftTarget.recordId,draftTarget.meetingId) : undefined;
+      if (savedSnapshot) assertResumedDraftRevision(savedSnapshot,values.draft_revision);
       const newId = draftTarget?.meetingId ?? generateId("MTG", registry.items.map(m => m.meeting_id));
 
       const meetingCorePayload = {
@@ -1168,14 +1167,14 @@ export function OnlineReturnRegisterPage() {
         updated_at:      now,
       };
 
-      if (draftTarget) {
+      if (draftTarget && savedSnapshot) {
         batch.push({ entity_key: "bms.meetings", action: "update", record_id: draftTarget.recordId, payload: meetingCorePayload });
-        // Reconcile child records — remove old links before re-adding
-        participantLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
+        // Reconcile the freshly read canonical child records, not stale cache rows.
+        savedSnapshot.participants.forEach(l => batch.push({ entity_key: "bms.meetingParticipantLinks", action: "delete", record_id: l.id }));
         participantRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.participants", action: "delete", record_id: l.id }));
         rsvpRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.rsvp", action: "delete", record_id: l.id }));
-        agendaLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
-        meetingDocLinkRegistry.items.filter(l => l.meeting_id === newId).forEach(l => batch.push({ entity_key: "bms.meetingDocumentLinks", action: "delete", record_id: l.id }));
+        savedSnapshot.agendas.forEach(l => batch.push({ entity_key: "bms.meetingAgendaLinks", action: "delete", record_id: l.id }));
+        savedSnapshot.documents.forEach(l => batch.push({ entity_key: "bms.meetingDocumentLinks", action: "delete", record_id: l.id }));
       } else {
         batch.push({ entity_key: "bms.meetings", action: "create", payload: {
           id: newId, meeting_id: newId,
