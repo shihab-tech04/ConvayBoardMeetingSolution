@@ -66,7 +66,7 @@ begin
   where p.account_status='active'
     and (p.account_role='super_admin' or not exists (
       select 1 from convay_private.tenant_memberships m
-      where m.user_id=p.user_id and m.membership_state='active'
+      where m.user_id=p.user_id
     ))
   order by p.display_name;
 end
