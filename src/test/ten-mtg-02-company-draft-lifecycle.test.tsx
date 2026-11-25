@@ -248,5 +248,5 @@ it("keeps the existing complete save available when paired SQL progress is not a
  fireEvent.change(screen.getByLabelText("Meeting title"),{target:{value:"Budget 2026"}});
  expect(screen.queryByRole("button",{name:"Save draft and continue later"})).not.toBeInTheDocument();
  fireEvent.click(screen.getByRole("button",{name:"Save staged draft in SQL"}));
- await waitFor(()=>expect(state.save).toHaveBeenCalledWith(tenant,expect.objectContaining({id:templateId}),draft.title,{field_title:"Budget 2026"},expect.any(String),undefined));
+ await waitFor(()=>expect(state.save).toHaveBeenCalledWith(tenant,expect.objectContaining({id:templateId}),draft.title,{field_title:"Budget 2026"},expect.any(String)));
 });
