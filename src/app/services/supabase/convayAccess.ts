@@ -79,6 +79,18 @@ export async function reloadAccessSnapshot(): Promise<AccessSnapshot> {
       if (epoch !== sessionEpoch) {
         throw new Error("Access verification superseded by a session change");
       }
+      // A typed HTTP response is not runtime validation. In particular a string
+      // permission list would turn includes() into a substring authorization check.
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+          typeof payload.is_super_admin !== "boolean" ||
+          !Array.isArray(payload.effective_permissions) ||
+          !payload.effective_permissions.every(code => typeof code === "string" && code.trim().length > 0) ||
+          (payload.user_role_ids !== undefined && (!Array.isArray(payload.user_role_ids) ||
+            !payload.user_role_ids.every(id => typeof id === "string" && id.trim().length > 0))) ||
+          [payload.roles, payload.permissions, payload.user_assignments].some(
+            value => value !== undefined && !Array.isArray(value))) {
+        throw new Error("Invalid access verification response");
+      }
       // Company administration is an independent SQL entitlement.
       // A failure to read it must never grant tenant scope or break existing
       // non-company roles; only an exact server-scoped directory can add ids.
