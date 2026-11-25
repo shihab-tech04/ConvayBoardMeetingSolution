@@ -26,6 +26,8 @@ begin
  ('bms.meetingAgendaLinks','agenda-link-A',a,'{"meeting_id":"MTG-SHARED","agenda_id":"AG-1"}'),
  ('bms.meetingAgendaLinks','agenda-link-B',b,'{"meeting_id":"MTG-SHARED","agenda_id":"AG-2"}');
  update convay_private.live_attendance_release_gate set enabled=true where singleton=true;
+ -- Synthetic activation only; the hosted company gate remains default-off.
+ update convay_private.live_attendance_company_gate set enabled=true where singleton=true;
  perform public.convay_commit_live_attendance_scoped(h,'MTG-SHARED',h::text,'Present',0,'fixture_present_host_001',true,'Online',a,'SES-A');
  perform public.convay_commit_live_attendance_scoped(v,'MTG-SHARED',v::text,'Present',0,'fixture_present_voter_01',true,'Online',a,'SES-A');
  perform public.convay_commit_live_attendance_scoped(f,'MTG-SHARED',f::text,'Present',0,'fixture_present_foreign_1',true,'Online',b,'SES-B');

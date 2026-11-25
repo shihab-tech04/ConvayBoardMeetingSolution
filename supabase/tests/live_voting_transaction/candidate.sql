@@ -82,9 +82,17 @@ end loop; end$$;
 -- accessing a round. No caller-supplied actor, quorum, tally or role is accepted.
 create function convay_private.vote_scope(p_tenant uuid,p_meeting text,p_session text,p_leader boolean,p_quorum boolean) returns text
 language plpgsql security definer set search_path='' as $$
-declare s record; m public.convay_entity_records%rowtype; actor uuid:=auth.uid();
+declare s record; m public.convay_entity_records%rowtype; actor uuid:=auth.uid(); legacy_enabled boolean; company_enabled boolean;
 begin
   if p_tenant is null or p_session is null or actor is null then raise exception 'Explicit authenticated company/session scope required' using errcode='42501';end if;
+  -- Lock release rows in attendance's order before meeting/session locks, even
+  -- for a read or idempotent receipt lookup that may later require quorum.
+  -- Suspension cannot race a new ballot or deadlock against a scope lock.
+  select enabled into legacy_enabled from convay_private.live_attendance_release_gate where singleton=true for share;
+  select enabled into company_enabled from convay_private.live_attendance_company_gate where singleton=true for share;
+  if p_quorum and (legacy_enabled is distinct from true or company_enabled is distinct from true) then
+    raise exception 'Authoritative company attendance gate required' using errcode='42501';
+  end if;
   perform 1 from convay_private.tenants where id=p_tenant and lifecycle_state='active' for share;
   if not found then raise exception 'Active company required' using errcode='42501';end if;
   perform 1 from convay_private.tenant_memberships where tenant_id=p_tenant and user_id=actor and membership_state='active' and revoked_at is null for share;
@@ -98,8 +106,6 @@ begin
   if (select count(*) from public.convay_entity_records where entity_key='bms.meetingParticipantLinks' and tenant_id=p_tenant and payload->>'meeting_id'=s.canonical_meeting_id and payload->>'user_id'=actor::text)<>1 then raise exception 'Meeting participant required' using errcode='42501';end if;
   if p_leader and (not convay_private.has_permission('mtg_start') or not convay_private.is_meeting_leader(actor,m.payload,m.created_by)) then raise exception 'Assigned meeting leader required' using errcode='42501';end if;
   if p_quorum then
-    perform 1 from convay_private.live_attendance_release_gate where singleton=true and enabled=true for share;
-    if not found then raise exception 'Authoritative attendance gate required' using errcode='42501';end if;
     perform 1 from convay_private.live_quorum_snapshots where tenant_id=p_tenant and meeting_id=s.canonical_meeting_id and session_id=p_session and met=true for share;
     if not found then raise exception 'Authoritative quorum required' using errcode='42501';end if;
     if not exists(select 1 from public.convay_entity_records where entity_key='bms.liveSessions' and tenant_id=p_tenant and record_id=p_session and lower(payload->>'session_status')='active') then raise exception 'Active proceedings required' using errcode='23514';end if;

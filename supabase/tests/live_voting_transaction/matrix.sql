@@ -27,10 +27,21 @@ begin
  ('bms.meetingAgendaLinks','agenda-link-A',a,'{"meeting_id":"MTG-SHARED","agenda_id":"AG-1"}'),
  ('bms.meetingAgendaLinks','agenda-link-B',b,'{"meeting_id":"MTG-SHARED","agenda_id":"AG-2"}');
  update convay_private.live_attendance_release_gate set enabled=true where singleton=true;
+ -- Test default-off company attendance before explicitly activating this disposable fixture.
+ begin
+   perform public.convay_commit_live_attendance_scoped(h,'MTG-SHARED',h::text,'Present',0,'fixture_present_host_001',true,'Online',a,'SES-A');
+   raise exception 'Disabled company attendance accepted';
+ exception when insufficient_privilege then n:=n+1;end;
+ update convay_private.live_attendance_company_gate set enabled=true where singleton=true;
  perform public.convay_commit_live_attendance_scoped(h,'MTG-SHARED',h::text,'Present',0,'fixture_present_host_001',true,'Online',a,'SES-A');
  perform public.convay_commit_live_attendance_scoped(v,'MTG-SHARED',v::text,'Present',0,'fixture_present_voter_01',true,'Online',a,'SES-A');
  perform public.convay_commit_live_attendance_scoped(f,'MTG-SHARED',f::text,'Present',0,'fixture_present_foreign_1',true,'Online',b,'SES-B');
  perform set_config('request.jwt.claim.sub',h::text,true);
+ -- Even a deliberately stale quorum row in the isolated fixture cannot bypass suspension.
+ update convay_private.live_attendance_company_gate set enabled=false where singleton=true;
+ update convay_private.live_quorum_snapshots set met=true where tenant_id=a and meeting_id='MTG-SHARED' and session_id='SES-A';
+ begin perform convay_private.vote_create_motion(a,'MTG-SHARED','SES-A','AG-1','Disabled fixture','Fixture wording',v,'','disabled_motion_00001');raise exception 'Voting bypassed suspended attendance';exception when insufficient_privilege then n:=n+1;end;
+ update convay_private.live_attendance_company_gate set enabled=true where singleton=true;
  m:=convay_private.vote_create_motion(a,'MTG-SHARED','SES-A','AG-1','Fixture title','Fixture wording',v,'Fixture notes','motion_request_000001');
  if m is distinct from convay_private.vote_create_motion(a,'MTG-SHARED','SES-A','AG-1','Fixture title','Fixture wording',v,'Fixture notes','motion_request_000001') then raise exception 'Motion replay changed ID';end if;n:=n+1;
  begin perform convay_private.vote_create_motion(a,'MTG-SHARED','SES-A','AG-2','Wrong agenda','Fixture wording',v,'','motion_request_000002');raise exception 'Foreign agenda accepted';exception when insufficient_privilege then n:=n+1;end;

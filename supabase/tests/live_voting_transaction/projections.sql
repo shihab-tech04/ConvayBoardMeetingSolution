@@ -8,6 +8,7 @@ declare mid text; m public.convay_entity_records%rowtype; actor uuid:=auth.uid()
  leader:=convay_private.has_permission('mtg_start') and convay_private.is_meeting_leader(actor,m.payload,m.created_by);
  quorum:=exists(select 1 from convay_private.live_quorum_snapshots where tenant_id=p_tenant and meeting_id=mid and session_id=p_session and met=true)
   and exists(select 1 from convay_private.live_attendance_release_gate where singleton=true and enabled=true)
+  and exists(select 1 from convay_private.live_attendance_company_gate where singleton=true and enabled=true)
   and exists(select 1 from convay_private.transactional_voting_gate where singleton=true and enabled=true)
   and exists(select 1 from public.convay_entity_records where tenant_id=p_tenant and entity_key='bms.liveSessions' and record_id=p_session and lower(payload->>'session_status')='active');
  -- Limit is explicit: never silently omit a round that might be open.
