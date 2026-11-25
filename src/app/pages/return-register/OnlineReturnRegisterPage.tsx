@@ -12,6 +12,7 @@ import { parseOptionalMeetingAgendas, validateOptionalMeetingAgendas } from "./m
 import { resolveMeetingDraftTarget } from "./meetingDraftTarget";
 import { readMeetingDraftSnapshot, restoreMeetingDraftRow, assertResumedDraftRevision, assertDraftRelationshipReadback } from "./meetingDraftResume";
 import { normalizeDraftRelationships } from "./draftRelationshipPayload";
+import { buildMeetingDocumentPlan } from "./meetingDocumentPlan";
 import { readDraftWizardStep } from "../../components/forms/draftWizardStep";
 import { readAccessSnapshot } from "../../services/supabase/convayAccess";
 import { deleteDraftMeeting, loadDraftDeletionSnapshot } from "./meetingDraftDeletion";
@@ -32,7 +33,7 @@ import {
   useMeetingAgendaLinkRegistry, useQuorumRuleRegistry,
   useMeetingParticipantLinkRegistry,
   useOrgUnitRegistry, useAgendaDocumentLinkRegistry,
-  useMeetingDocumentLinkRegistry,
+  useMeetingDocumentLinkRegistry, useDocumentVersionRegistry,
   generateId,
 } from "../../data/boardMeetingData";
 import { useGovernanceMembershipRegistry } from "../../data/governanceMemberships";
@@ -99,6 +100,7 @@ export function OnlineReturnRegisterPage() {
   const orgUnitRegistry         = useOrgUnitRegistry();
   const agendaDocLinkRegistry   = useAgendaDocumentLinkRegistry();
   const meetingDocLinkRegistry  = useMeetingDocumentLinkRegistry();
+  const documentVersionRegistry = useDocumentVersionRegistry();
 
   // Any required registry error must not be misrepresented as an empty register.
   const meetingSources = [
@@ -795,6 +797,7 @@ export function OnlineReturnRegisterPage() {
         allAgendas={agendaRegistry.items}
         agendaDocLinks={agendaDocLinkRegistry.items}
         allDocuments={documentRegistry.items}
+        documentVersions={documentVersionRegistry.items}
         governanceBodies={govRegistry.items}
         quorumRules={quorumRuleRegistry.items}
         bmsUsers={bmsUserRegistry.items}
@@ -1106,6 +1109,7 @@ export function OnlineReturnRegisterPage() {
       const agendaEntriesParsed = parseOptionalMeetingAgendas(JSON.stringify(relationships.agendas));
       const agendaEntriesRaw = relationships.agendas;
       const additionalDocsRaw = relationships.documents;
+      const documentPlan = buildMeetingDocumentPlan(agendaEntriesRaw,additionalDocsRaw,agendaRegistry.items,agendaDocLinkRegistry.items,documentRegistry.items,documentVersionRegistry.items,draftLinksRaw);
       // ── Schedule Meeting validation ─────────────────────────────────────────
       {
         const blockers: string[] = [];
@@ -1128,6 +1132,8 @@ export function OnlineReturnRegisterPage() {
         // No agenda is required; malformed or explicitly selected invalid agendas
         // remain blocked in the final server-backed scheduling path.
         blockers.push(...validateOptionalMeetingAgendas(agendaEntriesParsed, agendaRegistry.items));
+        blockers.push(...documentPlan.errors);
+        if (documentPlan.accessConflicts > 0) blockers.push("Resolve role-based document access conflicts before scheduling");
 
         blockers.push(...meetingAccessBlockers(values));
 
@@ -1258,57 +1264,11 @@ export function OnlineReturnRegisterPage() {
         } as never });
       });
 
-      // ── Document links ────────────────────────────────────────────────────────
-      let docLinkOrder = 0;
-
-      // Agenda documents (auto-derived: all docs linked to selected agendas + their children)
-      const relevantAgendaIds = new Set<string>(agendaEntries.map(e => e.agenda_id));
-      agendaRegistry.items.forEach(a => {
-        if (relevantAgendaIds.has(a.parent_agenda_id ?? "")) relevantAgendaIds.add(a.agenda_id ?? a.id);
-      });
-      const agendaDocIds = new Set(
-        agendaDocLinkRegistry.items.filter(l => relevantAgendaIds.has(l.agenda_id)).map(l => l.document_id),
-      );
-      // Also include docs with related_agenda pointing to a relevant agenda
-      documentRegistry.items.forEach(d => {
-        if (d.related_agenda && relevantAgendaIds.has(d.related_agenda)) agendaDocIds.add(d.doc_id ?? d.id);
-      });
-      const seenDocIds = new Set<string>();
-      agendaDocIds.forEach(docId => {
-        if (seenDocIds.has(docId)) return;
-        seenDocIds.add(docId);
-        docLinkOrder++;
-        const mlId = `${newId}-MDL${String(docLinkOrder).padStart(3, "0")}`;
-        const doc = documentRegistry.items.find(d => (d.doc_id ?? d.id) === docId);
+      // ── Document links: exactly the same plan shown in Review ──────────────────
+      documentPlan.documents.forEach(({document_name,confidentiality,...link}) => {
         batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
-          id: mlId,
-          meeting_id: newId,
-          document_id: docId,
-          version: doc?.version ?? "1.0",
-          source: "agenda",
-          source_agenda_id: doc?.related_agenda ?? "",
-          display_order: docLinkOrder,
-          added_by: organizerName || "Current User",
-          added_at: now,
-        } as never });
-      });
-
-      // Additional documents (from additional_doc_ids_json — already parsed above)
-      const additionalDocs = additionalDocsRaw;
-      additionalDocs.forEach(ad => {
-        if (seenDocIds.has(ad.doc_id)) return;
-        seenDocIds.add(ad.doc_id);
-        docLinkOrder++;
-        const mlId = `${newId}-MDL${String(docLinkOrder).padStart(3, "0")}`;
-        batch.push({ entity_key: "bms.meetingDocumentLinks", action: "create", payload: {
-          id: mlId,
-          meeting_id: newId,
-          document_id: ad.doc_id,
-          version: ad.version,
-          source: "additional",
-          display_order: docLinkOrder,
-          added_by: organizerName || "Current User",
-          added_at: now,
+          id: `${newId}-MDL${String(link.display_order).padStart(3,"0")}`,
+          meeting_id:newId, ...link, added_by:organizerName || "Current User", added_at:now,
         } as never });
       });
 
