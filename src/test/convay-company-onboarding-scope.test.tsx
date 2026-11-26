@@ -114,3 +114,59 @@ describe("TEN-02 / UAM-14 company onboarding selection scope",()=>{
     expect(screen.getByLabelText("Verified user email")).toHaveValue("");
   });
 });
+
+describe("TEN-01/TEN-02 verified company writes with independent directory recovery",()=>{
+  it("keeps a verified membership when secondary directory refresh fails",async()=>{
+    await openAlpha();
+    const member={user_id:"33333333-3333-4333-8333-333333333333",display_name:"Verified Member",email:"member@example.com",membership_role:"member",membership_state:"active",revoked_at:null};
+    hooks.enroll.mockResolvedValueOnce({member,profile:{...profile(a),members:[member]}});
+    hooks.list.mockRejectedValueOnce(new Error("Directory offline"));
+    fireEvent.change(screen.getByLabelText("Verified user email"),{target:{value:"member@example.com"}});
+    fireEvent.click(screen.getByRole("button",{name:"Assign verified account"}));
+    fireEvent.click(within(screen.getByRole("dialog",{name:"Assign company role?"})).getByRole("button",{name:"Assign account"}));
+    await screen.findByText(/Company directory refresh failed: Directory offline/);
+    expect(screen.queryByRole("dialog",{name:"Assign company role?"})).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Verified user email")).toHaveValue("");
+    expect(screen.getByText("Verified Member")).toBeInTheDocument();
+    expect(hooks.enroll).toHaveBeenCalledTimes(1);
+    const section=screen.getByRole("region",{name:"Verified company directory and 360 profile"});
+    fireEvent.click(within(section).getByRole("button",{name:"Refresh SQL"}));
+    await waitFor(()=>expect(screen.queryByText(/Company directory refresh failed/)).not.toBeInTheDocument());
+    expect(hooks.enroll).toHaveBeenCalledTimes(1);
+  });
+  it("pins provisioning intent and does not repeat a verified create after directory failure",async()=>{
+    render(<SubscribersPage/>);
+    fireEvent.click(screen.getByRole("button",{name:"Companies"}));
+    await screen.findByRole("button",{name:"Alpha Company"});
+    const input=screen.getByLabelText("Company name");
+    fireEvent.change(input,{target:{value:"Alpha Company"}});
+    fireEvent.click(screen.getByRole("button",{name:"Create provisioning record"}));
+    const dialog=screen.getByRole("dialog",{name:"Create a provisioning company?"});
+    expect(input).toBeDisabled();
+    expect(dialog).toHaveTextContent('Register "Alpha Company"');
+    hooks.provision.mockResolvedValueOnce(profile(a));
+    hooks.list.mockRejectedValueOnce(new Error("Directory offline"));
+    fireEvent.click(within(dialog).getByRole("button",{name:"Create provisioning record"}));
+    await screen.findByText(/Company directory refresh failed: Directory offline/);
+    expect(hooks.provision).toHaveBeenCalledWith("Alpha Company",expect.any(String));
+    expect(hooks.provision).toHaveBeenCalledTimes(1);
+    expect(input).toHaveValue("");
+    expect(screen.queryByRole("dialog",{name:"Create a provisioning company?"})).not.toBeInTheDocument();
+  });
+  it("does not clear profile loading when a concurrent directory request completes",async()=>{
+    await openAlpha();
+    fireEvent.click(screen.getByRole("button",{name:"Overview"}));
+    const pending=deferred<ReturnType<typeof profile>>();
+    const directory=deferred<{companies:ReturnType<typeof company>[]} & typeof flags>();
+    hooks.read.mockImplementationOnce(()=>pending.promise);
+    hooks.list.mockImplementationOnce(()=>directory.promise);
+    fireEvent.click(screen.getByRole("button",{name:"Companies"}));
+    await waitFor(()=>expect(hooks.read).toHaveBeenCalledTimes(2));
+    const section=screen.getByRole("region",{name:"Verified company directory and 360 profile"});
+    await act(async()=>directory.resolve({companies:[company(a),company(b)],...flags}));
+    expect(within(section).getByRole("button",{name:"Refresh SQL"})).toBeDisabled();
+    await act(async()=>pending.resolve(profile(a)));
+    await screen.findByText("Alpha Company · Company 360");
+    expect(within(section).getByRole("button",{name:"Refresh SQL"})).not.toBeDisabled();
+  });
+});
