@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useGovernanceCreateRecovery } from "../governance/governanceCreateRecovery";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
@@ -11,7 +11,7 @@ import { GOVERNANCE_BODY_FORM_FIELDS } from "../boardMeetingFormFields";
 
 export function InvalidListPage() {
   const registry = useGovernanceRegistry();
-  const pendingCreate = useRef<{ signature: string; id: string; created_at: string } | null>(null);
+  const recovery = useGovernanceCreateRecovery();
   const gateway: GovernanceBodyGateway = {
     list: async () => (await convayAuth.registry<GovernanceBody>("bms.govbodies", "list")).records.map(row => row.payload),
     create: async body => (await registry.add(body)) === true,
@@ -64,17 +64,11 @@ export function InvalidListPage() {
       return updateGovernanceBody(id, values, gateway);
     },
     async onRowCreate(values) {
-      const signature = JSON.stringify(values);
-      if (!pendingCreate.current || pendingCreate.current.signature !== signature) {
-        pendingCreate.current = {
-          signature,
-          id: generateId("GB", registry.items.map(g => g.body_id)),
-          created_at: new Date().toISOString(),
-        };
-      }
-      const identity = pendingCreate.current;
-      await createGovernanceBody(values, identity, gateway);
-      pendingCreate.current = null;
+      const attempt = recovery.begin(values, () => generateId("GB", registry.items.map(g => g.body_id)));
+      await createGovernanceBody(values, attempt, gateway, attempt);
+      attempt.assertCurrent();
+      if (attempt.recovered) await registry.refresh?.();
+      recovery.complete(attempt);
       return true;
     },
   };

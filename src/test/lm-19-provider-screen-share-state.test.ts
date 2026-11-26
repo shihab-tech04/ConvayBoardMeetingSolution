@@ -41,7 +41,27 @@ describe("LM-19 provider-authoritative screen-sharing UI", () => {
 
   it("serializes asynchronous media commands and ignores stale callbacks", () => {
     expect(media).toContain("shareOperations.current.catch(() => undefined).then(async () => {");
-    expect(media).toContain('if (!active) return;');
+    // The current provider room identity is part of the cancellation guard.
+    // Assert the guard at every async boundary, not merely anywhere in the file.
+    const operationStart = media.indexOf("const operation = shareOperations.current.catch(() => undefined).then(async () => {");
+    const operationEnd = media.indexOf("shareOperations.current = operation;", operationStart);
+    expect(operationStart).toBeGreaterThanOrEqual(0);
+    expect(operationEnd).toBeGreaterThan(operationStart);
+    const operation = media.slice(operationStart, operationEnd);
+    const guard = "if (!active || currentProviderRoom.current !== room) return;";
+    expect(operation.split(guard)).toHaveLength(4);
+    const beforeCall = operation.indexOf(guard);
+    const call = operation.indexOf("await room.localParticipant.setScreenShareEnabled(sharing);");
+    const afterCall = operation.indexOf(guard, call);
+    const providerState = operation.indexOf("confirmedLocalScreenShare(room.localParticipant)");
+    const catchBoundary = operation.indexOf("catch (cause)");
+    expect(beforeCall).toBeGreaterThanOrEqual(0);
+    expect(call).toBeGreaterThan(beforeCall);
+    expect(afterCall).toBeGreaterThan(call);
+    expect(providerState).toBeGreaterThan(afterCall);
+    expect(catchBoundary).toBeGreaterThan(providerState);
+    expect(operation.indexOf(guard, catchBoundary)).toBeGreaterThan(catchBoundary);
+    expect(media).toContain("return () => { active = false; };");
     expect(media).toContain("confirmedLocalScreenShare(room.localParticipant)");
   });
 });
