@@ -1,13 +1,14 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { toast } from "sonner";
 import { Eye, Package, Upload, Download, Pencil, Archive } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS, dg } from "../modulePageUtils";
-import { useBoardPackRegistry, useMeetingRegistry } from "../../data/boardMeetingData";
+import { useBoardPackRegistry, useMeetingRegistry, type BoardPack } from "../../data/boardMeetingData";
 import { BOARD_PACK_FORM_FIELDS } from "../boardMeetingFormFields";
-import { useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { convayAuth } from "../../services/supabase/convayAuth";
-import { assembleBoardPackDraft, assembleBoardPackDraftUpdate } from "./boardPackDraftPersistence";
+import { assembleBoardPackDraft, assembleBoardPackDraftUpdate, assertSameBoardPackDraftIntent, persistBoardPackDraft } from "./boardPackDraftPersistence";
 import { useBoardPackDocumentLinkRegistry } from "../../data/documentWorkspaceData";
 import { activeBoardPackDocumentCount } from "./boardPackActiveDocumentCount";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
@@ -45,19 +46,62 @@ export function BoardPacksPage() {
   const packLinks = useBoardPackDocumentLinkRegistry();
   const canCreate = access.loaded && (access.is_super_admin || access.effective_permissions.includes("pack_create"));
 
+  const pending = useRef<{ actorId: string; draft: BoardPack; dispatched: boolean } | null>(null);
+  const scopeEpoch = useRef(0);
+  useEffect(() => {
+    const invalidate = () => { scopeEpoch.current += 1; pending.current = null; };
+    window.addEventListener("convay:entity-cache-cleared", invalidate);
+    return () => { window.removeEventListener("convay:entity-cache-cleared", invalidate); invalidate(); };
+  }, []);
+
   const createDraft = async (values: Record<string, unknown>): Promise<boolean> => {
     if (!canCreate) throw new Error("Board-pack creation permission could not be verified.");
-    if (reg.loading || meetings.loading || reg.error || meetings.error) {
+    if (meetings.loading || meetings.error || ((reg.loading || reg.error) && !pending.current)) {
       throw new Error("Board-pack and meeting records must load successfully before saving.");
     }
+    const epoch = scopeEpoch.current;
+    const assertCurrent = () => {
+      const current = readAccessSnapshot();
+      if (scopeEpoch.current !== epoch || !current.loaded || current.error ||
+          !(current.is_super_admin || current.effective_permissions.includes("pack_create"))) {
+        throw new Error("Board-pack authority changed. Reopen the page before saving.");
+      }
+    };
+    assertCurrent();
     const actor = await convayAuth.restore();
+    assertCurrent();
     if (!actor) throw new Error("Session expired. Sign in again.");
-    const draft = assembleBoardPackDraft(
-      values, meetings.items, reg.items, globalThis.crypto.randomUUID(),
-      actor.display_name || actor.username || actor.user_id, new Date(),
-    );
-    const ack = await reg.add(draft);
-    if (ack !== true) throw new Error("Board-pack draft was not confirmed by SQL.");
+    const list = async () => {
+      assertCurrent();
+      const result = await convayAuth.registry<BoardPack>("bms.boardpacks", "list");
+      assertCurrent();
+      return result.records.map(row => row.payload);
+    };
+    let attempt = pending.current;
+    if (attempt) {
+      if (attempt.actorId !== actor.user_id) throw new Error("Board-pack save belongs to a different account. Reopen the page.");
+      assertSameBoardPackDraftIntent(values, attempt.draft, meetings.items);
+    } else {
+      const existing = await list();
+      attempt = {
+        actorId: actor.user_id,
+        draft: assembleBoardPackDraft(values, meetings.items, existing, globalThis.crypto.randomUUID(),
+          actor.display_name || actor.username || actor.user_id, new Date()),
+        dispatched: false,
+      };
+    }
+    const currentAttempt = attempt;
+    await persistBoardPackDraft(currentAttempt.draft, {
+      list, assertCurrent, create: async draft => (await reg.add(draft)) === true,
+    }, currentAttempt.dispatched, () => {
+      currentAttempt.dispatched = true;
+      pending.current = currentAttempt;
+    });
+    assertCurrent();
+    pending.current = null;
+    try { await reg.refresh?.(); }
+    catch { toast.warning("Board-pack draft saved. Refresh the list to see the latest records."); }
+    assertCurrent();
     return true;
   };
 
