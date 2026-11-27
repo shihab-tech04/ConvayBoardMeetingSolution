@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { LiveMeetingMedia } from "../app/pages/meetings/LiveMeetingMedia";
 
 // A deterministic in-memory provider facade is used ONLY to exercise browser UI
@@ -95,6 +95,38 @@ describe("LiveKit incoming audio browser-autoplay recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Enable incoming meeting audio" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Browser permission required"));
     expect(screen.getByRole("button", { name: "Enable incoming meeting audio" })).toBeTruthy();
+  });
+
+  it("clears disconnected room state and ignores late provider events before and after rejoin", async () => {
+    const presence = vi.fn();
+    const participants = vi.fn();
+    const share = vi.fn();
+    render(<LiveMeetingMedia meetingId="MTG-TEST" micOn={false} camOn={false} sharing={false}
+      onMicChange={vi.fn()} onCamChange={vi.fn()} onSharingChange={share}
+      onPresence={presence} onParticipants={participants}
+      requestAdmission={async () => ({serverUrl: "wss://test.invalid", participantToken: "test-provider-token"})}
+    />);
+    await screen.findByText("Connected");
+    const old = room;
+    act(() => old.emit("Disconnected"));
+    await screen.findByText("Disconnected");
+    expect(participants).toHaveBeenLastCalledWith([]);
+    expect(presence).toHaveBeenLastCalledWith(false, "test-user");
+    expect(screen.queryByLabelText("Microphone device")).toBeNull();
+    const previousEvents = participants.mock.calls.length;
+    act(() => { old.emit("ParticipantConnected"); old.emit("Reconnected"); old.emit("audioPlaybackChanged"); });
+    expect(participants.mock.calls.length).toBe(previousEvents);
+    expect(screen.getByText("Disconnected")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", {name: "Rejoin"}));
+    await screen.findByText("Connected");
+    expect(room).not.toBe(old);
+    await waitFor(() => expect(room.localParticipant.setScreenShareEnabled).toHaveBeenCalled());
+    const currentEvents = participants.mock.calls.length;
+    const currentPresence = presence.mock.calls.length;
+    act(() => { old.emit("ParticipantConnected"); old.emit("Reconnected"); old.emit("Disconnected"); });
+    expect(participants.mock.calls.length).toBe(currentEvents);
+    expect(presence.mock.calls.length).toBe(currentPresence);
+    expect(screen.getByText("Connected")).toBeTruthy();
   });
 
   it("responds to a later provider AudioPlaybackStatusChanged event", async () => {
