@@ -198,10 +198,9 @@ assert call(path,at)==[] and call(path,bt)==[] and len(call(path,lt))==1 and len
 rpc("convay_member_directory",at,{},expected=(403,))
 print("LOCAL_REAL_AUTH_REST_PASS: company creation, A/B authorization, template publish, partial draft idempotency/readback, revoked membership, legacy registry denial", flush=True)
 
-# A native PostgreSQL archive of the local synthetic app schemas; restore a
-# selected self-contained app/auth relationship in a fresh isolated database.
+# A native PostgreSQL archive of the local synthetic app schemas.
 # This does not back up hosted data or Storage object bytes.
-# Verify the full local app schema archive is readable; actual production
+# Verify the local archive table of contents is readable; actual production
 # restoration remains a distinct mandatory gate.
 dump = subprocess.run(["docker","exec",db,"pg_dump","-U","postgres","-d","postgres","-Fc","-n","public","-n","convay_private","-n","auth","-n","storage"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True).stdout
 assert dump.startswith(b"PGDMP") and len(dump)>1024
