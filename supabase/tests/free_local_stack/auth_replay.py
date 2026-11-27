@@ -48,7 +48,7 @@ def sql(source, dbname="postgres", tuples=False, local_restore_admin=False):
 def call(path, token, data=None, method=None, expected=(200, 201, 204), service_call=False):
     assert path.startswith("/") and not path.startswith("//")
     headers = {"apikey": service if service_call else anon, "Authorization": "Bearer " + token, "Content-Type": "application/json"}
-    if method == "POST" and path.startswith("/rest/v1/") and "/rpc/" not in path:
+    if method in ("POST","PATCH","DELETE") and path.startswith("/rest/v1/") and "/rpc/" not in path:
         headers["Prefer"] = "return=representation"
     req = Request(base + path, json.dumps(data).encode() if data is not None else None, headers, method=method)
     try:
@@ -140,7 +140,7 @@ profiles = ",\n".join(f"('{u['id']}','fixture-{i}','Fixture {i}','user','active'
 sql(f"""
 INSERT INTO public.user_profiles(user_id,username,display_name,account_role,account_status,email) VALUES {profiles};
 INSERT INTO public.convay_roles(id,name,description) VALUES ('{role}','Local fixture role','Disposable Auth REST test');
-INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('{role}','admin_templates'),('{role}','mtg_view'),('{role}','gov_org_view');
+INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('{role}','admin_templates'),('{role}','mtg_view'),('{role}','gov_org_view'),('{role}','doc_view'),('{role}','doc_upload'),('{role}','doc_edit'),('{role}','doc_archive'),('{role}','admin_notifications'),('{role}','admin_integrations');
 INSERT INTO public.convay_user_roles(user_id,role_id,assigned_by) SELECT user_id,'{role}','{root['id']}' FROM public.user_profiles WHERE account_role='user';
 NOTIFY pgrst,'reload schema';
 """)
@@ -201,6 +201,83 @@ assert call(path,at)==[] and call(path,bt)==[] and len(call(path,lt))==1 and len
 # Same genuine access token after revocation; do not mint a test claim.
 rpc("convay_member_directory",at,{},expected=(403,))
 print("LOCAL_REAL_AUTH_REST_PASS: company creation, A/B authorization, template publish, partial draft idempotency/readback, revoked membership, legacy registry denial", flush=True)
+
+# Actual authenticated PostgREST and Storage operations with synthetic data.
+# Root and delegated users have the module permission; the scope boundary
+# must independently reject tenant B and the revoked A account.
+doc_id = "local-legacy-doc-" + rid()
+doc = {"entity_key":"bms.documents","record_id":doc_id,"payload":{"id":doc_id,"doc_id":doc_id,"title":"Local fixture document","confidentiality":"Public"}}
+call("/rest/v1/convay_entity_records",rt,doc,method="POST")
+content_id = "local-content-" + rid()
+content = {"id":content_id,"document_id":doc_id,"content_type":"editor_json","content":"{\"type\":\"doc\",\"content\":[]}"}
+call("/rest/v1/convay_document_content",rt,content,method="POST")
+content_path = "/rest/v1/convay_document_content?select=id,document_id,content&id=eq." + content_id
+assert len(call(content_path,rt)) == 1 and len(call(content_path,lt)) == 1
+assert call(content_path,at) == [] and call(content_path,bt) == []
+assert call(content_path,at,{"content":"denied"},method="PATCH") == []
+assert call(content_path,bt,method="DELETE") == []
+assert call(content_path,rt)[0]["content"] == content["content"]
+call("/rest/v1/convay_document_content",at,{**content,"id":"denied-"+rid()},method="POST",expected=(403,))
+object_bytes=b"Disposable Convay document content"
+object_path="/storage/v1/object/convay-documents/"+doc_id+"/fixture.txt"
+def storage(path,token,method="GET",data=None,expected=(200,201)):
+    req=Request(base+path,data,{"apikey":anon,"Authorization":"Bearer "+token,"Content-Type":"text/plain"},method=method)
+    try:
+        with urlopen(req,timeout=30) as resp:
+            status,raw=resp.status,resp.read()
+    except HTTPError as exc:
+        status,raw=exc.code,exc.read()
+    assert status in expected, f"Storage {method}: unexpected HTTP {status}"
+    return raw
+storage(object_path,rt,"POST",object_bytes)
+assert storage(object_path,rt)==object_bytes and storage(object_path,lt)==object_bytes
+storage(object_path,at,expected=(400,403,404))
+storage(object_path,bt,expected=(400,403,404))
+storage("/storage/v1/object/convay-documents/"+doc_id+"/denied.txt",at,"POST",object_bytes,expected=(400,403))
+print("LOCAL_DOCUMENT_REST_STORAGE_PASS: real upload/readback, legitimate legacy access, revoked and foreign tenant read/write denial",flush=True)
+
+# NI-01: real authenticated create/read/update with immutable lifecycle.
+# This is draft-only, no provider send or notification delivery.
+rule_id=rid()
+payload={"id":rule_id,"rule_id":"LOCAL-QA","rule_name":"Local notification draft","trigger_event":"Test","channels":"In-App","recipients":"Nobody","timing":"None","template":"Test","entity_type":"Meeting","status":"Draft"}
+rule={"entity_key":"bms.notifyrules","record_id":rule_id,"payload":payload}
+registry="/rest/v1/convay_entity_records"
+rule_path=registry+"?entity_key=eq.bms.notifyrules&record_id=eq."+rule_id
+call(registry,rt,rule,method="POST")
+assert call(rule_path,rt)[0]["payload"]["status"]=="Draft"
+updated={**payload,"rule_name":"Revised local draft"}
+call(rule_path,rt,{"payload":updated},method="PATCH")
+assert call(rule_path,rt)[0]["payload"]==updated
+call(rule_path,rt,{"payload":{**updated,"status":"Active"}},method="PATCH",expected=(400,409))
+call(rule_path,rt,method="DELETE",expected=(400,409))
+assert call(rule_path,lt)==[] and call(rule_path,bt)==[]
+assert call(rule_path,lt,{"payload":{**updated,"rule_name":"Denied"}},method="PATCH")==[]
+denied_id=rid()
+call(registry,lt,{"entity_key":"bms.notifyrules","record_id":denied_id,"payload":{**payload,"id":denied_id}},method="POST",expected=(403,))
+assert call(rule_path,rt)[0]["payload"]==updated
+print("LOCAL_NOTIFICATION_REST_PASS: draft create/edit/readback, activation/deletion denied, delegated module permission cannot bypass root boundary",flush=True)
+
+# NI-15: trusted fixture writes Pending Setup, never fabricated Connected
+# provider evidence. Verify real browser-role PostgREST reads and denials.
+sql("INSERT INTO public.convay_provider_connections(provider_id,status) VALUES ('smtp-email','Pending Setup');")
+provider_path="/rest/v1/convay_provider_connections?select=provider_id,status,verified_at&provider_id=eq.smtp-email"
+assert call(provider_path,rt)==[{"provider_id":"smtp-email","status":"Pending Setup","verified_at":None}]
+assert call(provider_path,lt)==[] and call(provider_path,bt)==[]
+call(provider_path,rt,{"status":"Disconnected"},method="PATCH",expected=(403,))
+assert call(provider_path,rt)[0]["status"]=="Pending Setup"
+print("LOCAL_PROVIDER_REST_PASS: root read, nonroot denial and browser-write denial; actual provider connectivity not tested",flush=True)
+
+# Deny-by-default and public privileged-function catalog audit. Do not add
+# policies or remove intentional RPC privileges merely to silence advisors.
+assert sql("""SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+WHERE n.nspname IN ('public','convay_private') AND c.relkind IN ('r','p')
+AND c.relrowsecurity AND NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid)
+AND (has_table_privilege('anon',c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+OR has_table_privilege('authenticated',c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'));""",tuples=True)=="0"
+assert sql("""SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon',p.oid,'EXECUTE');""",tuples=True)=="0"
+print("LOCAL_DENY_DEFAULT_CATALOG_PASS: policyless RLS tables have no direct browser-role grants; no anonymous public privileged RPC execution",flush=True)
+
 
 # A native PostgreSQL archive of the local synthetic app schemas.
 # This does not back up hosted data or Storage object bytes.
