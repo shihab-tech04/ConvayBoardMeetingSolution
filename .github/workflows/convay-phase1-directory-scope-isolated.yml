@@ -26,6 +26,14 @@ jobs:
         run: bash supabase/tests/phase1_directory_scope/concurrency.sh
       - name: Reproduce revoked legacy access and verify registry and Storage RLS correction
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path("supabase/migrations/20261104171825_convay_document_workspace_registry_parity.sql").read_text()
+          start=src.index("CREATE OR REPLACE FUNCTION convay_private.document_scope_authorized(")
+          end=src.index("end $function$;",start)+len("end $function$;")
+          fixture=Path("supabase/tests/phase1_directory_scope/document_scope_baseline.sql").read_text()
+          assert src[start:end] in fixture, "Document baseline differs from source"
+          PY
           docker exec convay-phase1-scope createdb -U postgres fixture_legacy_scope
           docker exec convay-phase1-scope psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture_legacy_scope -f /workspace/supabase/tests/phase1_directory_scope/legacy_scope_revocation.psql
       - name: Destroy disposable PostgreSQL

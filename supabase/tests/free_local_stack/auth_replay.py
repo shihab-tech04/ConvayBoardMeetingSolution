@@ -193,6 +193,7 @@ assert companies(at)==set()
 read_draft(at,ta,expected=(403,))
 assert len(call(path,at))==1, "Existing fallback was not reproduced"
 sql((ROOT/"supabase/tests/phase1_directory_scope/legacy_scope_candidate.sql").read_text())
+sql((ROOT/"supabase/tests/phase1_directory_scope/document_scope_candidate.sql").read_text())
 assert call(path,at)==[] and call(path,bt)==[] and len(call(path,lt))==1 and len(call(path,rt))==1
 # Same genuine access token after revocation; do not mint a test claim.
 rpc("convay_member_directory",at,{},expected=(403,))
