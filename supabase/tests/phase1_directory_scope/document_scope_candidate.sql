@@ -1,11 +1,8 @@
 -- Staged only; no hosted SQL change. Preserve owner, ACL and existing permission/share semantics.
--- A read-only VOLATILE helper takes a current command snapshot for PostgREST
--- INSERT ... RETURNING. STABLE sees the pre-insert snapshot and falsely denies
--- the newly inserted document's SELECT policy. All scope checks remain intact.
 CREATE OR REPLACE FUNCTION convay_private.document_scope_authorized(p_doc text, p_action text)
  RETURNS boolean
  LANGUAGE plpgsql
- VOLATILE SECURITY DEFINER
+ STABLE SECURITY DEFINER
  SET search_path TO ''
 AS $function$
 declare

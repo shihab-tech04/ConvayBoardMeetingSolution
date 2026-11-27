@@ -733,15 +733,23 @@ export const convayAuth = {
     }
     if (action !== "create") mutatingUrl.searchParams.set("revision", "eq." + version);
     const method = action === "create" ? "POST" : action === "update" ? "PATCH" : "DELETE";
+    // Document metadata needs a committed parent for its existing SELECT RLS.
+    // The invoker-rights RPC inserts and reads back in one transaction; no
+    // fallback or second write is allowed after a denied/ambiguous response.
+    const atomicDocumentCreate = entity === "bms.documents" && action === "create";
     headers.Prefer = "return=representation";
-    const body = action === "create"
+    const body = atomicDocumentCreate
+      ? JSON.stringify({ p_record: record })
+      : action === "create"
       ? JSON.stringify({ entity_key: entity, record_id: record.id, payload: record })
       : action === "update" ? JSON.stringify({ payload: record }) : undefined;
-    const url = action === "create" ? new URL(SUPABASE_URL + "/rest/v1/convay_entity_records?select=record_id,revision") : mutatingUrl;
+    const url = atomicDocumentCreate
+      ? new URL(SUPABASE_URL + "/rest/v1/rpc/convay_create_document_record")
+      : action === "create" ? new URL(SUPABASE_URL + "/rest/v1/convay_entity_records?select=record_id,revision") : mutatingUrl;
     const res = await fetch(url.toString(), { method, headers, body });
     if (!res.ok) throw new Error(errorMessage(await responseBody(res), "Unable to save " + entity));
     const result = await res.json() as Array<{ record_id: string; revision: number }>;
-    if (!Array.isArray(result) || result.length !== 1 || result[0].record_id !== record.id) {
+    if (!Array.isArray(result) || result.length !== 1 || result[0].record_id !== record.id || (atomicDocumentCreate && (!Number.isSafeInteger(result[0].revision) || result[0].revision < 1))) {
       throw new Error("The record changed or is inaccessible. Reload and try again.");
     }
     return { records: [], revision: result[0].revision };

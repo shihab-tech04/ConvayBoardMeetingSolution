@@ -197,6 +197,8 @@ read_draft(at,ta,expected=(403,))
 assert len(call(path,at))==1, "Existing fallback was not reproduced"
 sql((ROOT/"supabase/tests/phase1_directory_scope/legacy_scope_candidate.sql").read_text())
 sql((ROOT/"supabase/tests/phase1_directory_scope/document_scope_candidate.sql").read_text())
+sql((ROOT/"supabase/tests/phase1_directory_scope/document_create_candidate.sql").read_text())
+sql("NOTIFY pgrst,\'reload schema\';")
 assert call(path,at)==[] and call(path,bt)==[] and len(call(path,lt))==1 and len(call(path,rt))==1
 # Same genuine access token after revocation; do not mint a test claim.
 rpc("convay_member_directory",at,{},expected=(403,))
@@ -207,7 +209,14 @@ print("LOCAL_REAL_AUTH_REST_PASS: company creation, A/B authorization, template 
 # must independently reject tenant B and the revoked A account.
 doc_id = "local-legacy-doc-" + rid()
 doc = {"entity_key":"bms.documents","record_id":doc_id,"payload":{"id":doc_id,"doc_id":doc_id,"title":"Local fixture document","confidentiality":"Public"}}
-call("/rest/v1/convay_entity_records",rt,doc,method="POST")
+receipt=rpc("convay_create_document_record",rt,{"p_record":doc["payload"]})
+assert receipt==[{"record_id":doc_id,"revision":1}]
+rpc("convay_create_document_record",rt,{"p_record":doc["payload"]},expected=(409,))
+for token in (at,bt,anon):
+    denied_doc_id="denied-"+rid()
+    rpc("convay_create_document_record",token,{"p_record":{"id":denied_doc_id,"doc_id":denied_doc_id,"title":"Denied","confidentiality":"Public"}},expected=(401,403))
+    assert sql("SELECT count(*) FROM public.convay_entity_records WHERE record_id='"+denied_doc_id+"';",tuples=True)=="0"
+print("LOCAL_ATOMIC_DOCUMENT_CREATE_PASS: authorized receipt, duplicate identity rejected, revoked/foreign/anonymous writes denied and rolled back",flush=True)
 content_id = "local-content-" + rid()
 content = {"id":content_id,"document_id":doc_id,"content_type":"editor_json","content":"{\"type\":\"doc\",\"content\":[]}"}
 call("/rest/v1/convay_document_content",rt,content,method="POST")

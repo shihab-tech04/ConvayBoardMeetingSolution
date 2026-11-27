@@ -134,3 +134,40 @@ describe("company draft rejection through the real authenticated transport",()=>
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("atomic document registry create",()=>{
+  const doc={id:"DOC-LOCAL-1",doc_id:"DOC-LOCAL-1",title:"Board paper"};
+  const seed=()=>sessionStorage.setItem("convay.supabase.session.v1",JSON.stringify({
+    accessToken:"test-access",refreshToken:"test-refresh",userId:"test-user",expiresAt:Date.now()+3600000,
+  }));
+  it("uses one invoker-rights RPC and verifies its exact receipt",async()=>{
+    seed();
+    const fetchMock=vi.fn(async()=>json([{record_id:doc.id,revision:1}]));
+    vi.stubGlobal("fetch",fetchMock);
+    await expect(convayAuth.registry("bms.documents","create",doc)).resolves.toEqual({records:[],revision:1});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/rest/v1/rpc/convay_create_document_record"),
+      expect.objectContaining({method:"POST",body:JSON.stringify({p_record:doc}),headers:expect.objectContaining({Authorization:"Bearer test-access"})}));
+  });
+  it("rejects an invalid receipt without repeating the mutation",async()=>{
+    seed();
+    const fetchMock=vi.fn(async()=>json([{record_id:doc.id,revision:0}]));
+    vi.stubGlobal("fetch",fetchMock);
+    await expect(convayAuth.registry("bms.documents","create",doc)).rejects.toThrow("changed or is inaccessible");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("does not fall back to the old write after a permission denial",async()=>{
+    seed();
+    const fetchMock=vi.fn(async()=>json({message:"Denied",code:"42501"},403));
+    vi.stubGlobal("fetch",fetchMock);
+    await expect(convayAuth.registry("bms.documents","create",doc)).rejects.toThrow("Denied");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("preserves other registry create contracts",async()=>{
+    seed();
+    const fetchMock=vi.fn(async()=>json([{record_id:doc.id,revision:1}]));
+    vi.stubGlobal("fetch",fetchMock);
+    await expect(convayAuth.registry("bms.templates","create",doc)).resolves.toEqual({records:[],revision:1});
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/rest/v1/convay_entity_records?select=record_id"),expect.objectContaining({body:JSON.stringify({entity_key:"bms.templates",record_id:doc.id,payload:doc})}));
+  });
+});
