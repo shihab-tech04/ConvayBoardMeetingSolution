@@ -1,0 +1,105 @@
+\set ON_ERROR_STOP on
+-- DISPOSABLE PG17 ONLY. Synthetic identities and an intentionally permissive
+-- baseline simulate a delegated administrator. This is not real Auth UAT,
+-- a native restore, or a complete copy of production schema or policies.
+CREATE ROLE anon NOLOGIN;
+CREATE ROLE authenticated NOLOGIN;
+CREATE ROLE service_role NOLOGIN BYPASSRLS;
+CREATE SCHEMA auth;
+CREATE SCHEMA convay_private;
+CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
+ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid
+$$;
+GRANT USAGE ON SCHEMA auth TO authenticated, anon, service_role;
+GRANT USAGE ON SCHEMA convay_private TO authenticated;
+CREATE TABLE public.user_profiles (
+  user_id uuid PRIMARY KEY,
+  account_role text NOT NULL CHECK(account_role IN ('super_admin','user')),
+  account_status text NOT NULL CHECK(account_status IN ('active','inactive','suspended'))
+);
+ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.user_profiles FROM PUBLIC,anon,authenticated;
+GRANT SELECT ON public.user_profiles TO authenticated;
+CREATE POLICY "authenticated users see own profile" ON public.user_profiles
+  FOR SELECT TO authenticated USING (user_id = (SELECT auth.uid()));
+INSERT INTO public.user_profiles VALUES
+ ('00000000-0000-4000-8000-000000000001','super_admin','active'),
+ ('00000000-0000-4000-8000-000000000002','user','active');
+
+CREATE TABLE public.convay_entity_records (
+ entity_key text NOT NULL,
+ record_id text NOT NULL,
+ tenant_id uuid,
+ payload jsonb NOT NULL CHECK (jsonb_typeof(payload)='object'),
+ PRIMARY KEY(entity_key,record_id),
+ CHECK(payload->>'id'=record_id)
+);
+ALTER TABLE public.convay_entity_records ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.convay_entity_records FROM PUBLIC,anon,authenticated;
+GRANT SELECT,DELETE ON public.convay_entity_records TO authenticated;
+GRANT INSERT(entity_key,record_id,payload),UPDATE(payload) ON public.convay_entity_records TO authenticated;
+-- Both synthetic principals have delegated baseline registry access.
+-- The candidate's RESTRICTIVE policy must override this permissive grant.
+CREATE POLICY fixture_delegated_registry_access ON public.convay_entity_records
+ FOR ALL TO authenticated
+ USING (EXISTS(SELECT 1 FROM public.user_profiles p WHERE p.user_id=(SELECT auth.uid()) AND p.account_status='active'))
+ WITH CHECK (EXISTS(SELECT 1 FROM public.user_profiles p WHERE p.user_id=(SELECT auth.uid()) AND p.account_status='active'));
+
+-- Verify the fixture's delegated member is not accidentally denied by baseline.
+BEGIN;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000002',true);
+SET LOCAL ROLE authenticated;
+INSERT INTO public.convay_entity_records(entity_key,record_id,payload)
+ VALUES ('bms.notifyrules','baseline-probe','{"id":"baseline-probe"}');
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM public.convay_entity_records WHERE record_id='baseline-probe')
+ THEN RAISE EXCEPTION 'Fixture baseline did not permit delegated access'; END IF;
+END $$;
+RESET ROLE;
+ROLLBACK;
+
+-- Exercise the exact existing notification candidate and rollback test.
+\ir ../ni01_notification_draft_lifecycle_rollback.psql
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM public.convay_entity_records) OR
+    to_regprocedure('convay_private.enforce_notification_draft_lifecycle()') IS NOT NULL
+ THEN RAISE EXCEPTION 'Notification rehearsal left state behind'; END IF;
+END $$;
+
+-- Apply the exact provider registry migration in this disposable database.
+\ir ../../migrations/20261121110000_convay_provider_connection_registry.sql
+\ir ../ni15_provider_connection_registry.sql
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM public.convay_provider_connections)
+ THEN RAISE EXCEPTION 'Provider rehearsal left state behind'; END IF;
+ IF has_function_privilege('anon','convay_private.is_active_platform_super_admin()','EXECUTE')
+ THEN RAISE EXCEPTION 'Anonymous provider authority helper executable'; END IF;
+ IF has_table_privilege('authenticated','public.convay_provider_connections','INSERT') OR
+    has_table_privilege('authenticated','public.convay_provider_connections','UPDATE') OR
+    has_table_privilege('authenticated','public.convay_provider_connections','DELETE')
+ THEN RAISE EXCEPTION 'Browser provider state mutation privilege'; END IF;
+END $$;
+
+-- Rehearse suspension after a previously authorized read, using the same
+-- principal claim. This is SQL role simulation, not native Auth revocation.
+BEGIN;
+SET LOCAL ROLE service_role;
+INSERT INTO public.convay_provider_connections(provider_id,status,verified_at)
+ VALUES ('smtp-email','Connected',statement_timestamp());
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000001',true);
+SET LOCAL ROLE authenticated;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM public.convay_provider_connections WHERE provider_id='smtp-email')
+ THEN RAISE EXCEPTION 'Root read unexpectedly denied'; END IF;
+END $$;
+RESET ROLE;
+UPDATE public.user_profiles SET account_status='suspended' WHERE account_role='super_admin';
+SET LOCAL ROLE authenticated;
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM public.convay_provider_connections)
+ THEN RAISE EXCEPTION 'Suspended root still authorized'; END IF;
+END $$;
+RESET ROLE;
+ROLLBACK;
+SELECT 'NI-01/NI-15 exact candidate isolated SQL rollback and authorization checks PASS' AS result;
