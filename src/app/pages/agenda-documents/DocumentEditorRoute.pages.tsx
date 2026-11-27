@@ -20,7 +20,7 @@ class DocumentEditorLoadBoundary extends Component<{ children: ReactNode }, { fa
       return (
         <div className="table-page" role="alert">
           <h1>Unable to load the document editor</h1>
-          <p>Your document has not been modified by this loading error. Reload to try again.</p>
+          <p>Reload to try again, then verify the last saved document version.</p>
           <Button variant="secondary" onClick={() => window.location.reload()}>Reload page</Button>
         </div>
       );
