@@ -45,6 +45,31 @@ describe("TEN-ONB-03: pending company invitation to verified SQL membership",()=
       p_member_role:"tenant_admin",p_request_id:requestId,
     });
   });
+  it("recovers an idempotent queue replay only with matching request and audit evidence",async()=>{
+    const {audit_event_id:_,...replay}=receipt();
+    const event={id:12,action:"company_invite_queued",request_id:requestId,target_user_id:member};
+    request.mockResolvedValueOnce(ok(replay)).mockResolvedValueOnce(ok({tenant_id:tenant,invites:[invitation()]}))
+      .mockResolvedValueOnce(ok({company:{id:tenant},members:[],templates:[],events:[event],tenant_isolation_certified:false,workspace_activation_enabled:false,subscription_activated:false}));
+    const result=await queuePendingCompanyInvitation(tenant,email,"tenant_admin",requestId);
+    expect(result.receipt.audit_event_id).toBe(12);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(request.mock.calls[2][1]?.body as string)).toEqual({p_action:"read",p_tenant_id:tenant});
+  });
+  it("rejects queue readback from a different request even if identity and role match",async()=>{
+    request.mockResolvedValueOnce(ok(receipt())).mockResolvedValueOnce(ok({tenant_id:tenant,invites:[{...invitation(),request_id:member}]}));
+    await expect(queuePendingCompanyInvitation(tenant,email,"tenant_admin",requestId)).rejects.toThrow("SQL readback is stale");
+  });
+  it.each([
+    [], [{id:12,action:"company_invite_queued",request_id:member,target_user_id:member}],
+    [{id:12,action:"company_invite_cancelled",request_id:requestId,target_user_id:member}],
+    [{id:12,action:"company_invite_queued",request_id:requestId,target_user_id:tenant}],
+    [{id:0,action:"company_invite_queued",request_id:requestId,target_user_id:member}],
+  ].map(events=>({events})))("does not claim replay success from missing or mismatched audit: %#",async({events})=>{
+    const {audit_event_id:_,...replay}=receipt();
+    request.mockResolvedValueOnce(ok(replay)).mockResolvedValueOnce(ok({tenant_id:tenant,invites:[invitation()]}))
+      .mockResolvedValueOnce(ok({company:{id:tenant},members:[],templates:[],events,tenant_isolation_certified:false,workspace_activation_enabled:false,subscription_activated:false}));
+    await expect(queuePendingCompanyInvitation(tenant,email,"tenant_admin",requestId)).rejects.toThrow("replay audit could not be verified");
+  });
   it("cancels the pending company assignment without cancelling the independent Auth invitation",async()=>{
     request.mockResolvedValueOnce(ok(receipt("cancelled"))).mockResolvedValueOnce(ok({
       tenant_id:tenant,invites:[invitation("cancelled")],

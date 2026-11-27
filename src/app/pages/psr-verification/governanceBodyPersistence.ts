@@ -4,6 +4,7 @@
  * owns the server uniqueness, actor/tenant and immutable audit contracts.
  */
 import type { GovernanceBody } from "../../data/boardMeetingData";
+import type { GovernanceCreateAttempt } from "../governance/governanceCreateRecovery";
 
 export interface GovernanceBodyGateway {
   list: () => Promise<GovernanceBody[]>;
@@ -69,17 +70,14 @@ function assertReadback(actual: GovernanceBody | undefined, expected: Partial<Go
 }
 export async function createGovernanceBody(
   values: GovernanceBodyValues, identity: { id: string; created_at: string }, gateway: GovernanceBodyGateway,
+  attempt?: GovernanceCreateAttempt,
 ): Promise<GovernanceBody> {
   const patch = toPatch(values);
   validate(values, patch);
   if (!required(identity.id) || !required(patch.body_name ?? "") ||
       !required(patch.body_type ?? "") || !required(patch.chairperson ?? ""))
     throw new Error("A unique body ID, name, type and chairperson are required.");
-  const current = await gateway.list();
-  if (current.some((row) => row.id === identity.id || row.body_id === identity.id) ||
-      duplicates(current, patch.body_name!, patch.body_type!))
-    throw new Error("That governance body or reference already exists. Refresh before retrying.");
-
+  attempt?.assertCurrent();
   const body: GovernanceBody = {
     id: identity.id, body_id: identity.id, body_name: patch.body_name!,
     body_type: patch.body_type!, chairperson: patch.chairperson!,
@@ -88,10 +86,26 @@ export async function createGovernanceBody(
     establishment_date: patch.establishment_date ?? "", mandate: patch.mandate ?? "",
     status: patch.status ?? "Active", created_at: identity.created_at,
   };
-  if (await gateway.create(body) !== true) {
+  const current = await gateway.list();
+  attempt?.assertCurrent();
+  const collisions = current.filter(row => row.id === identity.id || row.body_id === identity.id ||
+    (norm(row.body_name) === norm(body.body_name) && norm(row.body_type) === norm(body.body_type)));
+  if (collisions.length > 0) {
+    if (!attempt?.dispatched || collisions.length !== 1 || collisions[0].id !== identity.id ||
+        collisions[0].body_id !== identity.id)
+      throw new Error("That governance body or reference already exists. Refresh before retrying.");
+    assertReadback(collisions[0], body);
+    attempt.recovered = true;
+    return collisions[0];
+  }
+  if (attempt) attempt.dispatched = true;
+  const acknowledged = await gateway.create(body);
+  attempt?.assertCurrent();
+  if (acknowledged !== true) {
     // A second administrator may have saved the same name/type between our
     // preflight read and the server write. Re-read before giving recovery advice.
     const latest = await gateway.list().catch(() => [] as GovernanceBody[]);
+    attempt?.assertCurrent();
     if (latest.some(row => row.id === body.id || row.body_id === body.id) ||
         duplicates(latest, body.body_name, body.body_type)) {
       throw new Error("This governance body already exists. Refresh the list instead of creating a duplicate.");
@@ -99,6 +113,7 @@ export async function createGovernanceBody(
     throw new Error("The governance body was not saved by SQL.");
   }
   const readback = await gateway.list();
+  attempt?.assertCurrent();
   assertReadback(readback.find((item) => item.id === body.id), body);
   return body;
 }

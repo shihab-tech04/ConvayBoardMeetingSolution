@@ -1,5 +1,5 @@
 import { beforeEach,describe,expect,it,vi } from "vitest";
-import { fireEvent,render,screen,waitFor,within } from "@testing-library/react";
+import { act,fireEvent,render,screen,waitFor,within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -7,8 +7,10 @@ const tenantId="11111111-1111-4111-8111-111111111111";
 const memberId="22222222-2222-4222-8222-222222222222";
 const hooks=vi.hoisted(()=>({
   access:{loaded:true,is_super_admin:false,company_admin_tenant_ids:["11111111-1111-4111-8111-111111111111"]},
+  auth:{isAuthenticated:true,userId:"actor-one"},
   directory:vi.fn(),profile:vi.fn(),enroll:vi.fn(),revoke:vi.fn(),toast:vi.fn(),
 }));
+vi.mock("../app/hooks/useAuth",()=>({useAuth:()=>hooks.auth}));
 vi.mock("../app/services/supabase/convayAccess",()=>({
   useAccessSnapshot:()=>hooks.access,
 }));
@@ -58,6 +60,7 @@ const profile=()=>({
  subscription_activated:false,subscription_note:"Not active",
 });
 beforeEach(()=>{
+ hooks.auth={isAuthenticated:true,userId:"actor-one"};
  hooks.access={loaded:true,is_super_admin:false,company_admin_tenant_ids:[tenantId]};
  hooks.directory.mockReset();hooks.profile.mockReset();
  hooks.enroll.mockReset();hooks.revoke.mockReset();hooks.toast.mockReset();
@@ -121,6 +124,56 @@ describe("Company Super Admin self-service, production SQL only",()=>{
    const editor=screen.getByTestId("company-template-editor");
    expect(editor).toHaveAttribute("data-scope",tenantId);
    expect(editor).toHaveTextContent("Company-only template editor");
+ });
+ it("discards pending profile for the previous actor sharing the same tenant",async()=>{
+   let finish!:(v:ReturnType<typeof profile>)=>void;
+   hooks.profile.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+   const view=render(<CompanyAdminWorkspacePage/>);
+   await waitFor(()=>expect(hooks.profile).toHaveBeenCalledOnce());
+   hooks.auth={isAuthenticated:true,userId:"actor-two"};
+   hooks.profile.mockResolvedValue({...profile(),members:[{...member,display_name:"New roster"}]});
+   view.rerender(<CompanyAdminWorkspacePage/>);
+   await screen.findByText("New roster");
+   await act(async()=>finish(profile()));
+   expect(screen.queryByText("Member Alpha")).not.toBeInTheDocument();
+ });
+ it("discards pending confirmation and late mutation result after scope or actor change",async()=>{
+   let finish!:(v:unknown)=>void;
+   hooks.enroll.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+   const view=render(<CompanyAdminWorkspacePage/>);
+   await screen.findByText("Member Alpha");
+   fireEvent.change(screen.getByLabelText("Verified user email"),{target:{value:"user@example.com"}});
+   fireEvent.click(screen.getByRole("button",{name:"Add company member"}));
+   fireEvent.click(screen.getByRole("button",{name:"Assign member"}));
+   await waitFor(()=>expect(hooks.enroll).toHaveBeenCalledOnce());
+   hooks.access={loaded:true,is_super_admin:false,company_admin_tenant_ids:[]};
+   view.rerender(<CompanyAdminWorkspacePage/>);
+   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+   expect(screen.queryByText("Member Alpha")).not.toBeInTheDocument();
+   hooks.auth={isAuthenticated:true,userId:"actor-two"};
+   hooks.access={loaded:true,is_super_admin:false,company_admin_tenant_ids:[tenantId]};
+   view.rerender(<CompanyAdminWorkspacePage/>);
+   await screen.findByText("Member Alpha");
+   const count=hooks.directory.mock.calls.length;
+   await act(async()=>finish({member,profile:profile()}));
+   expect(hooks.directory).toHaveBeenCalledTimes(count);
+   expect(hooks.toast).not.toHaveBeenCalled();
+   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+   expect(screen.getByLabelText("Verified user email")).toHaveValue("");
+ });
+ it("recovers from initial directory failure and rejects a foreign tenant on refresh",async()=>{
+   hooks.directory.mockRejectedValueOnce(new Error("Directory unavailable"));
+   render(<CompanyAdminWorkspacePage/>);
+   expect(await screen.findByRole("alert")).toHaveTextContent("Directory unavailable");
+   await waitFor(()=>expect(screen.getByRole("button",{name:"Refresh SQL"})).toBeEnabled());
+   fireEvent.click(screen.getByRole("button",{name:"Refresh SQL"}));
+   await screen.findByText("Member Alpha");
+   hooks.directory.mockResolvedValueOnce({companies:[company,{...company,id:memberId,display_name:"Foreign company"}],
+     tenant_isolation_certified:false,workspace_activation_enabled:false});
+   fireEvent.click(screen.getByRole("button",{name:"Refresh SQL"}));
+   expect(await screen.findByRole("alert")).toHaveTextContent(/permission no longer exists/);
+   expect(screen.queryByText("Member Alpha")).not.toBeInTheDocument();
+   expect(screen.queryByText("Foreign company")).not.toBeInTheDocument();
  });
  it("keeps Platform Super Admin separation and SQL authorization on route and navigation",()=>{
    const nav=readFileSync(resolve(process.cwd(),"src/app/data/navigation.ts"),"utf8");

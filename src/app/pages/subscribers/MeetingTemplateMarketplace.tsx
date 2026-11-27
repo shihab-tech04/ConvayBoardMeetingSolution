@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "../../components/buttons/Button";
 import { AppTextField } from "../../components/forms/AppTextField";
 import { AppSelectField } from "../../components/forms/AppSelectField";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
-import { listCompanies, type CompanyDirectory } from "../../services/saas/companyDirectory";
+import { listCompanies, readCompany, type CompanySummary } from "../../services/saas/companyDirectory";
 import { moveTemplateItem } from "../../services/saas/templateEditorOrdering";
 import {
   listManagedTemplates,readManagedTemplate,saveTemplateVersion,
@@ -37,9 +37,11 @@ const freshDraft=():Draft=>({
 export function MeetingTemplateMarketplace({
   companyOnly=false,initialCompanyId,
 }: { companyOnly?: boolean; initialCompanyId?: string }) {
-  const [scope,setScope]=useState(companyOnly&&initialCompanyId?initialCompanyId:"global");
-  const tenantId=scope==="global"?null:scope;
-  const [companies,setCompanies]=useState<CompanyDirectory|null>(null);
+  const [scope,setScope]=useState("global");
+  const tenantId=companyOnly?(initialCompanyId??null):(scope==="global"?null:scope);
+  const scopeKey=companyOnly&&!tenantId?"missing-company":tenantId??"global";
+  const [loadedScope,setLoadedScope]=useState<string|null>(null);
+  const [companies,setCompanies]=useState<Array<Pick<CompanySummary,"id"|"display_name"|"lifecycle_state">>>([]);
   const [templates,setTemplates]=useState<MeetingTemplateDirectoryEntry[]>([]);
   const [starters,setStarters]=useState<MeetingTemplateDirectoryEntry[]>([]);
   const [draft,setDraft]=useState<Draft>(freshDraft);
@@ -47,14 +49,21 @@ export function MeetingTemplateMarketplace({
   const [sourceId,setSourceId]=useState("");
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
+  const mutationLock=useRef(false);
+  const [pendingSave,setPendingSave]=useState<"create"|"revise"|"copy"|null>(null);
+  const [pendingPublish,setPendingPublish]=useState(false);
   const [error,setError]=useState("");
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const [confirmPublish,setConfirmPublish]=useState<{template:MeetingTemplateVersion;requestId:string}|null>(null);
   const [previewOpen,setPreviewOpen]=useState(false);
   const [previewStep,setPreviewStep]=useState(0);
   const activePreviewStep=Math.min(previewStep,Math.max(0,draft.definition.steps.length-1));
+  const scopeReady=loadedScope===scopeKey&&!loading;
+  const formLocked=busy||pendingSave!==null||confirmPublish!==null||!scopeReady;
+  const hasUnsavedChanges=!!selected&&(draft.title!==selected.title||draft.description!==selected.description||JSON.stringify(draft.definition)!==JSON.stringify(selected.definition));
 
   const updateDraft=(update:(previous:Draft)=>Draft)=>{
+    if(formLocked)return;
     setDraft(update);setRequestId(crypto.randomUUID());setError("");
   };
   const updateSteps=(steps:MeetingTemplateDefinition["steps"])=>
@@ -86,32 +95,40 @@ export function MeetingTemplateMarketplace({
       id:"field_"+crypto.randomUUID().slice(0,8),label:"New field",type:"text",required:false,
     }]});
   };
-  const reload=async()=>{
-    const [own,global,allCompanies]=await Promise.all([
-      listManagedTemplates(tenantId),listManagedTemplates(null),listCompanies(),
+  const loadScope=async()=>{
+    if(companyOnly&&!tenantId)throw new Error("Verified company scope is required");
+    const [own,global,owners]=await Promise.all([
+      listManagedTemplates(tenantId),listManagedTemplates(null),
+      companyOnly?readCompany(tenantId!).then(profile=>[profile.company]):listCompanies().then(directory=>directory.companies),
     ]);
-    setTemplates(own);
-    setStarters(global.filter(t=>t.published_revision!==null));
-    setCompanies(allCompanies);
+    if(companyOnly&&(owners.length!==1||owners[0].id!==tenantId||owners[0].lifecycle_state==="offboarded"))
+      throw new Error("Company template owner could not be verified");
+    return {own,starters:global.filter(t=>t.published_revision!==null),owners};
+  };
+  const reload=async()=>{
+    const result=await loadScope();
+    setTemplates(result.own);setStarters(result.starters);setCompanies(result.owners);
+    setLoadedScope(scopeKey);
   };
   useEffect(()=>{
     let active=true;
-    setError("");setLoading(true);setSelected(null);setSourceId("");setDraft(freshDraft());setPreviewOpen(false);setPreviewStep(0);
-    void Promise.all([listManagedTemplates(tenantId),listManagedTemplates(null),listCompanies()])
-      .then(([own,global,allCompanies])=>{
-        if(!active)return;
-        setTemplates(own);
-        setStarters(global.filter(t=>t.published_revision!==null));
-        setCompanies(allCompanies);
-      })
-      .catch(reason=>{if(active)setError(reason instanceof Error?reason.message:"Unable to verify SQL meeting templates");})
+    setLoadedScope(null);setTemplates([]);setStarters([]);
+    if(companyOnly)setCompanies([]);
+    setError("");setLoading(true);setSelected(null);setSourceId("");setDraft(freshDraft());
+    setConfirmPublish(null);setPendingSave(null);setPendingPublish(false);
+    setRequestId(crypto.randomUUID());setPreviewOpen(false);setPreviewStep(0);
+    void loadScope().then(result=>{
+      if(!active)return;
+      setTemplates(result.own);setStarters(result.starters);setCompanies(result.owners);
+      setLoadedScope(scopeKey);
+    }).catch(reason=>{if(active)setError(reason instanceof Error?reason.message:"Unable to verify SQL meeting templates");})
       .finally(()=>{if(active)setLoading(false);});
     return ()=>{active=false;};
-  },[scope]);
+  },[scopeKey,companyOnly]);
 
   const edit=async(item:MeetingTemplateDirectoryEntry)=>{
-    if(busy)return;
-    setBusy(true);setError("");
+    if(formLocked||mutationLock.current||item.tenant_id!==tenantId)return;
+    mutationLock.current=true;setBusy(true);setError("");
     try{
       const detail=await readManagedTemplate(item.id,item.revision);
       if(detail.tenant_id!==tenantId) throw new Error("Template tenant scope changed");
@@ -120,11 +137,11 @@ export function MeetingTemplateMarketplace({
         definition:detail.definition});
       setRequestId(crypto.randomUUID());
     }catch(reason){setError(reason instanceof Error?reason.message:"Unable to load template revision");}
-    finally{setBusy(false);}
+    finally{mutationLock.current=false;setBusy(false);}
   };
   const save=async(action:"create"|"revise"|"copy")=>{
-    if(busy)return;
-    setBusy(true);setError("");
+    if(busy||!scopeReady||confirmPublish||mutationLock.current||(pendingSave!==null&&pendingSave!==action))return;
+    setError("");
     try{
       if(companyOnly&&!tenantId) throw new Error("Verified company scope is required");
       if(draft.title.trim().length<3||draft.title.trim().length>160)
@@ -145,34 +162,44 @@ export function MeetingTemplateMarketplace({
              description:draft.description,definition:draft.definition}
           : {request_id:requestId,tenant_id:tenantId,template_key:draft.key,
              title:draft.title.trim(),description:draft.description,definition:draft.definition};
+      mutationLock.current=true;setBusy(true);setPendingSave(action);
       const after=await saveTemplateVersion(action,data);
       if(after.tenant_id!==tenantId)throw new Error("SQL template save scope mismatch");
       setSelected(after);setSourceId("");
       setDraft({key:after.template_key,title:after.title,description:after.description,
         definition:after.definition});
-      setRequestId(crypto.randomUUID());
-      await reload();
+      setPendingSave(null);setRequestId(crypto.randomUUID());
       toast.success(action==="copy"?"Starter copied into company SQL":"Meeting template draft verified in SQL");
-    }catch(reason){setError(reason instanceof Error?reason.message:"Unable to save meeting template");}
-    finally{setBusy(false);}
+      try{await reload();}catch{setError("Template saved and verified in SQL. Directory refresh failed; use Refresh SQL.");}
+    }catch(reason){
+      const message=reason instanceof Error?reason.message:"Unable to save meeting template";
+      if(mutationLock.current&&(pendingSave!==null||!(reason instanceof Error&&reason.name==="TemplateMutationRejected"))){
+        setError(message+" Retry the same template save before editing or switching owner.");
+      }else{setPendingSave(null);setError(message);}
+    }finally{mutationLock.current=false;setBusy(false);}
   };
   const publish=async()=>{
-    if(!confirmPublish||busy)return;
-    setBusy(true);setError("");
+    if(!confirmPublish||busy||!scopeReady||mutationLock.current)return;
+    mutationLock.current=true;setBusy(true);setError("");
     try{
       const candidate=confirmPublish.template;
-      if(candidate.tenant_id!==tenantId || candidate.state!=="draft")
+      if(candidate.tenant_id!==tenantId || candidate.state!=="draft" || candidate.revision!==candidate.current_revision)
         throw new Error("Only the latest company draft can be published");
+      setPendingPublish(true);
       const after=await saveTemplateVersion("publish",{
         request_id:confirmPublish.requestId,tenant_id:tenantId,
         template_id:candidate.id,expected_revision:candidate.current_revision,
       });
-      setSelected(after);
-      await reload();
-      setConfirmPublish(null);
+      setSelected(after);setConfirmPublish(null);setPendingPublish(false);setRequestId(crypto.randomUUID());
+      setDraft({key:after.template_key,title:after.title,description:after.description,definition:after.definition});
       toast.success("Published template revision verified in SQL");
-    }catch(reason){setError(reason instanceof Error?reason.message:"Template publishing failed");}
-    finally{setBusy(false);}
+      try{await reload();}catch{setError("Template published and verified in SQL. Directory refresh failed; use Refresh SQL.");}
+    }catch(reason){
+      const message=reason instanceof Error?reason.message:"Template publishing failed";
+      if(pendingPublish||!(reason instanceof Error&&reason.name==="TemplateMutationRejected")){
+        setError(message+" Retry this exact publication to recover its SQL receipt.");
+      }else{setPendingPublish(false);setError(message);}
+    }finally{mutationLock.current=false;setBusy(false);}
   };
 
   return <section aria-label="Dynamic meeting templates and marketplace">
@@ -182,31 +209,31 @@ export function MeetingTemplateMarketplace({
     {loading&&<p role="status" style={{...note,marginTop:12}}>Loading published and draft templates from Supabase SQL…</p>}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14,marginTop:16}}>
       <section style={panel}>
-        <AppSelectField id="saas-template-scope" label="Template owner" value={scope}
-          disabled={busy||loading} onChange={value=>{setScope(value);setRequestId(crypto.randomUUID());}}
+        <AppSelectField id="saas-template-scope" label="Template owner" value={tenantId??"global"}
+          disabled={companyOnly||busy||loading||pendingSave!==null||confirmPublish!==null} onChange={value=>{if(companyOnly||busy||pendingSave!==null||confirmPublish)return;setScope(value);setRequestId(crypto.randomUUID());}}
           options={[...(companyOnly?[]:[{value:"global",label:"Convay starter marketplace"}]),
-            ...(companies?.companies??[]).filter(c=>c.lifecycle_state!=="offboarded")
+            ...companies.filter(c=>c.lifecycle_state!=="offboarded"&&(!companyOnly||c.id===tenantId))
               .map(c=>({value:c.id,label:c.display_name+" · "+c.lifecycle_state}))]}/>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginTop:14}}>
-          <h3 style={{fontWeight:650}}>Stored templates ({templates.length})</h3>
-          <Button variant="secondary" size="sm" disabled={busy||loading}
+          <h3 style={{fontWeight:650}}>Stored templates ({loadedScope===scopeKey?templates.length:0})</h3>
+          <Button variant="secondary" size="sm" disabled={busy||loading||pendingSave!==null||confirmPublish!==null}
             onClick={()=>{setLoading(true);setError("");void reload().catch(e=>setError(e instanceof Error?e.message:"SQL refresh failed"))
               .finally(()=>setLoading(false));}}>Refresh SQL</Button>
         </div>
-        {!loading&&templates.length===0&&<p style={note}>No templates saved for this owner.</p>}
-        {templates.map(item=><div key={item.id} style={{borderTop:"1px solid var(--border-color,#dce1e8)",padding:"10px 0"}}>
+        {scopeReady&&templates.length===0&&<p style={note}>No templates saved for this owner.</p>}
+        {loadedScope===scopeKey&&templates.map(item=><div key={item.id} style={{borderTop:"1px solid var(--border-color,#dce1e8)",padding:"10px 0"}}>
           <Button variant={selected?.id===item.id?"primary":"secondary"} size="sm"
-            disabled={busy} onClick={()=>void edit(item)}>{item.title}</Button>
+            disabled={formLocked} onClick={()=>void edit(item)}>{item.title}</Button>
           <p style={note}>Revision {item.revision} · Published {item.published_revision??"none"}</p>
         </div>)}
-        <Button variant="secondary" size="sm" disabled={busy} onClick={()=>{
+        <Button variant="secondary" size="sm" disabled={formLocked} onClick={()=>{
           setSelected(null);setSourceId("");setDraft(freshDraft());setRequestId(crypto.randomUUID());setError("");
         }}>New draft</Button>
         {tenantId&&<div style={{marginTop:14,borderTop:"1px solid var(--border-color,#dce1e8)",paddingTop:14}}>
           <AppSelectField id="saas-marketplace-source" label="Copy published Convay starter"
-            value={sourceId} onChange={value=>{setSourceId(value);setRequestId(crypto.randomUUID());setError("");}} disabled={busy}
+            value={sourceId} onChange={value=>{if(formLocked)return;setSourceId(value);setRequestId(crypto.randomUUID());setError("");}} disabled={formLocked}
             options={[{value:"",label:"Select a published starter"},
-              ...starters.map(t=>({value:t.id,label:t.title+" · v"+t.published_revision}))]}/>
+              ...(loadedScope===scopeKey?starters:[]).map(t=>({value:t.id,label:t.title+" · v"+t.published_revision}))]}/>
           <p style={{...note,marginTop:6}}>Set the new title and unique key in the editor, then choose Copy starter.</p>
         </div>}
       </section>
@@ -214,17 +241,17 @@ export function MeetingTemplateMarketplace({
         <h3 style={{fontWeight:650,marginBottom:12}}>{selected?"Revise template":"New meeting template draft"}</h3>
         <div style={{display:"grid",gap:12}}>
           <AppTextField id="saas-template-title" label="Meeting type name" required
-            value={draft.title} onChange={title=>updateDraft(d=>({...d,title}))}/>
+            value={draft.title} disabled={formLocked} onChange={title=>updateDraft(d=>({...d,title}))}/>
           <AppTextField id="saas-template-key" label="Template key" required
             helper="Lowercase unique key, e.g. board_meeting"
-            value={draft.key} disabled={!!selected}
+            value={draft.key} disabled={!!selected||formLocked}
             onChange={key=>updateDraft(d=>({...d,key}))}/>
           <AppTextField id="saas-template-description" label="Description"
-            value={draft.description} onChange={description=>updateDraft(d=>({...d,description}))}/>
+            value={draft.description} disabled={formLocked} onChange={description=>updateDraft(d=>({...d,description}))}/>
         </div>
         <div style={{marginTop:18,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
           <h4 style={{fontWeight:650}}>Meeting creation steps ({draft.definition.steps.length})</h4>
-          <Button variant="secondary" size="sm" disabled={busy||draft.definition.steps.length>=20}
+          <Button variant="secondary" size="sm" disabled={formLocked||draft.definition.steps.length>=20}
             onClick={addStep}>Add step</Button>
         </div>
         {draft.definition.steps.map((step,i)=><section key={step.id}
@@ -232,48 +259,49 @@ export function MeetingTemplateMarketplace({
           <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
             <div style={{flex:1,minWidth:190}}>
               <AppTextField id={"saas-step-"+step.id} label={"Step "+(i+1)+" title"} required
-                value={step.title} onChange={title=>updateStep(i,{title})}/>
+                value={step.title} disabled={formLocked} onChange={title=>updateStep(i,{title})}/>
             </div>
             <Button size="sm" variant="tertiary" aria-label={"Move step "+(i+1)+" up"}
-              disabled={busy||i===0} onClick={()=>moveStep(i,-1)}>Move up</Button>
+              disabled={formLocked||i===0} onClick={()=>moveStep(i,-1)}>Move up</Button>
             <Button size="sm" variant="tertiary" aria-label={"Move step "+(i+1)+" down"}
-              disabled={busy||i===draft.definition.steps.length-1} onClick={()=>moveStep(i,1)}>Move down</Button>
-            <Button size="sm" variant="tertiary" disabled={busy||draft.definition.steps.length===1}
+              disabled={formLocked||i===draft.definition.steps.length-1} onClick={()=>moveStep(i,1)}>Move down</Button>
+            <Button size="sm" variant="tertiary" disabled={formLocked||draft.definition.steps.length===1}
               onClick={()=>updateSteps(draft.definition.steps.filter((_,j)=>j!==i))}>Remove</Button>
           </div>
           {step.fields.map((field,j)=><div key={field.id} style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:8,marginTop:10}}>
-            <AppTextField id={"saas-field-"+field.id} label="Field label" value={field.label}
+            <AppTextField id={"saas-field-"+field.id} label="Field label" value={field.label} disabled={formLocked}
               onChange={label=>updateField(i,j,{label})}/>
-            <AppSelectField id={"saas-type-"+field.id} label="Field type" value={field.type}
+            <AppSelectField id={"saas-type-"+field.id} label="Field type" value={field.type} disabled={formLocked}
               onChange={type=>updateField(i,j,{type:type as MeetingFieldType})}
               options={fieldTypes.map(type=>({value:type,label:type.replace(/_/g," ")}))}/>
-            <AppSelectField id={"saas-required-"+field.id} label="Required" value={field.required?"yes":"no"}
+            <AppSelectField id={"saas-required-"+field.id} label="Required" value={field.required?"yes":"no"} disabled={formLocked}
               onChange={v=>updateField(i,j,{required:v==="yes"})}
               options={[{value:"yes",label:"Required"},{value:"no",label:"Optional"}]}/>
             {["select","multiselect"].includes(field.type)&&<AppTextField
               id={"saas-options-"+field.id} label="Options (comma-separated)"
-              value={(field.options??[]).join(", ")}
+              value={(field.options??[]).join(", ")} disabled={formLocked}
               onChange={value=>updateField(i,j,{options:value.split(",").map(t=>t.trim()).filter(Boolean)})}/>}
             <Button size="sm" variant="tertiary" aria-label={"Move field "+(j+1)+" in step "+(i+1)+" up"}
-              disabled={busy||j===0} onClick={()=>moveField(i,j,-1)}>Move field up</Button>
+              disabled={formLocked||j===0} onClick={()=>moveField(i,j,-1)}>Move field up</Button>
             <Button size="sm" variant="tertiary" aria-label={"Move field "+(j+1)+" in step "+(i+1)+" down"}
-              disabled={busy||j===step.fields.length-1} onClick={()=>moveField(i,j,1)}>Move field down</Button>
-            <Button size="sm" variant="tertiary" disabled={busy}
+              disabled={formLocked||j===step.fields.length-1} onClick={()=>moveField(i,j,1)}>Move field down</Button>
+            <Button size="sm" variant="tertiary" disabled={formLocked}
               onClick={()=>updateStep(i,{fields:step.fields.filter((_,k)=>k!==j)})}>Remove field</Button>
           </div>)}
-          <Button size="sm" variant="secondary" disabled={busy||step.fields.length>=30}
+          <Button size="sm" variant="secondary" disabled={formLocked||step.fields.length>=30}
             onClick={()=>addField(i)}>Add field</Button>
         </section>)}
         <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:14}}>
-          <Button disabled={busy||loading} loading={busy} onClick={()=>void save(selected?"revise":"create")}>
-            {selected?"Save new revision":"Save draft"}
+          <Button disabled={busy||!scopeReady||confirmPublish!==null||(pendingSave!==null&&pendingSave!==(selected?"revise":"create"))} loading={busy} onClick={()=>void save(selected?"revise":"create")}>
+            {pendingSave==="create"||pendingSave==="revise"?"Retry template save":selected?"Save new revision":"Save draft"}
           </Button>
-          {selected?.state==="draft"&&<Button variant="secondary" disabled={busy}
+          {selected?.state==="draft"&&<Button variant="secondary" disabled={formLocked||hasUnsavedChanges||selected.revision!==selected.current_revision}
             onClick={()=>setConfirmPublish({template:selected,requestId:crypto.randomUUID()})}>
             Publish revision
           </Button>}
-          {tenantId&&sourceId&&<Button variant="secondary" disabled={busy}
-            onClick={()=>void save("copy")}>Copy starter to company</Button>}
+          {tenantId&&sourceId&&<Button variant="secondary" disabled={busy||!scopeReady||confirmPublish!==null||(pendingSave!==null&&pendingSave!=="copy")}
+            onClick={()=>void save("copy")}>{pendingSave==="copy"?"Retry starter copy":"Copy starter to company"}</Button>}
+          {selected?.state==="draft"&&hasUnsavedChanges&&<p role="status" style={note}>Save your changes as a new revision before publishing.</p>}
           <Button variant="secondary" disabled={busy} aria-expanded={previewOpen}
             onClick={()=>{setPreviewStep(0);setPreviewOpen(v=>!v);}}>
             {previewOpen?"Close wizard preview":"Preview wizard"}
@@ -316,9 +344,9 @@ export function MeetingTemplateMarketplace({
     </section>}
     {confirmPublish&&<SConfirmModal
       title="Publish this meeting template version?"
-      message={"Publish immutable revision "+confirmPublish.template.current_revision+" of "+confirmPublish.template.title+"? Existing meeting records will not be changed."}
+      message={"Publish immutable revision "+confirmPublish.template.current_revision+" of "+confirmPublish.template.title+"? Existing meeting records will not be changed."+(error?" "+error:"")}
       confirmLabel="Publish revision"
-      onClose={()=>{if(!busy)setConfirmPublish(null);}}
+      onClose={()=>{if(!busy&&!pendingPublish)setConfirmPublish(null);}}
       onConfirm={()=>void publish()}
     />}
   </section>;

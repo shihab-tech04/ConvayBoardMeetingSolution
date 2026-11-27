@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Building2, CreditCard, FileText, Settings2, ShieldCheck, Receipt, RefreshCw, Database } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../../components/buttons/Button";
@@ -59,14 +59,27 @@ export function SubscribersPage() {
   const [companyName,setCompanyName] = useState("");
   const [companyRequestId,setCompanyRequestId] = useState(() => crypto.randomUUID());
   const [companyError,setCompanyError] = useState("");
-  const [companyLoading,setCompanyLoading] = useState(false);
+  const [companyDirectoryLoading,setCompanyDirectoryLoading] = useState(false);
+  const [companyProfileLoading,setCompanyProfileLoading] = useState(false);
+  const [companyDirectoryError,setCompanyDirectoryError] = useState("");
+  const [companyDirectoryRevision,setCompanyDirectoryRevision] = useState(0);
+  const companyLoading=companyDirectoryLoading||companyProfileLoading;
+  const companyMutationInFlight=useRef(false);
+  const reloadCompanyDirectory=()=>{
+    setCompanyDirectoryLoading(true);
+    setCompanyDirectoryRevision(value=>value+1);
+  };
   const [companyWorking,setCompanyWorking] = useState(false);
-  const [confirmProvision,setConfirmProvision] = useState(false);
+  const [confirmProvision,setConfirmProvision] = useState<{name:string;requestId:string}|null>(null);
   const [memberEmail,setMemberEmail] = useState("");
   const [memberRole,setMemberRole] = useState<CompanyMembershipRole>("member");
   const [memberRequestId,setMemberRequestId] = useState(()=>crypto.randomUUID());
   const [pendingMembership,setPendingMembership] = useState<PendingCompanyMembership|null>(null);
-  const [companyInvites,setCompanyInvites]=useState<PendingCompanyInvitation[]|null>(null);
+  const [companyInviteReadback,setCompanyInviteReadback]=useState<{
+    tenantId:string;invites:PendingCompanyInvitation[];
+  }|null>(null);
+  const companyInvites=companyInviteReadback && companyInviteReadback.tenantId===selectedCompanyId
+    ? companyInviteReadback.invites : null;
   const [invitationEmail,setInvitationEmail]=useState("");
   const [invitationRole,setInvitationRole]=useState<CompanyMembershipRole>("member");
   const [invitationRequestId,setInvitationRequestId]=useState(()=>crypto.randomUUID());
@@ -76,6 +89,18 @@ export function SubscribersPage() {
   const [invitationConfirmation,setInvitationConfirmation]=useState<
     {action:"queue"|"cancel";tenantId:string;email:string;role:CompanyMembershipRole;requestId:string}|null>(null);
 
+  // Company-specific input and confirmations must never carry into another tenant.
+  const companyActionPending=companyWorking||invitationWorking||!!pendingMembership||!!invitationConfirmation||!!confirmProvision;
+  const resetCompanyOnboardingDrafts=()=>{
+    setCompanyInviteReadback(null);setInvitationError("");setCompanyError("");
+    setMemberEmail("");setMemberRole("member");setMemberRequestId(crypto.randomUUID());
+    setInvitationEmail("");setInvitationRole("member");setInvitationRequestId(crypto.randomUUID());
+    setPendingMembership(null);setInvitationConfirmation(null);
+  };
+  const selectCompany=(tenantId:string)=>{
+    if(companyActionPending||tenantId===selectedCompanyId)return;
+    resetCompanyOnboardingDrafts();setCompanyProfile(null);setSelectedCompanyId(tenantId);
+  };
   const refresh = async () => {
     const result = await subscriptionAction<SubscriptionDirectory>("list");
     if (!Array.isArray(result.quotes) || !Array.isArray(result.invoices)) {
@@ -101,33 +126,34 @@ export function SubscribersPage() {
   // Company lifecycle is a separate authenticated SQL contract from quote pricing.
   // A quote cannot implicitly provision or activate a tenant.
   useEffect(() => {
-    if (tab!=="companies") return;
+    if (tab!=="companies") {setCompanyDirectoryLoading(false);return;}
     let active=true;
-    setCompanyLoading(true);setCompanyError("");
+    setCompanyDirectoryLoading(true);setCompanyDirectoryError("");
     void listCompanies().then(value => { if (active) setCompanies(value); })
-      .catch(reason => { if (active) setCompanyError(reason instanceof Error ? reason.message : "Unable to load SQL companies"); })
-      .finally(() => { if (active) setCompanyLoading(false); });
+      .catch(reason => { if (active) setCompanyDirectoryError(reason instanceof Error ? reason.message : "Unable to load SQL companies"); })
+      .finally(() => { if (active) setCompanyDirectoryLoading(false); });
     return () => { active=false; };
-  },[tab]);
+  },[tab,companyDirectoryRevision]);
   useEffect(() => {
     if (tab!=="companies" || !selectedCompanyId) {
-      setCompanyProfile(null);
+      setCompanyProfile(null);setCompanyProfileLoading(false);
       return;
     }
     let active=true;
-    setCompanyLoading(true);setCompanyError("");
+    setCompanyProfileLoading(true);setCompanyError("");
     void readCompany(selectedCompanyId).then(value => { if (active) setCompanyProfile(value); })
       .catch(reason => { if (active) {setCompanyProfile(null);setCompanyError(reason instanceof Error ? reason.message : "Unable to verify company details");} })
-      .finally(() => { if (active) setCompanyLoading(false); });
+      .finally(() => { if (active) setCompanyProfileLoading(false); });
     return () => { active=false; };
   },[tab,selectedCompanyId]);
   useEffect(()=>{
     let active=true;
-    setCompanyInvites(null);setInvitationError("");
-    if(tab!=="companies"||!selectedCompanyId)return ()=>{active=false;};
+    setCompanyInviteReadback(null);setInvitationError("");
+    if(tab!=="companies"||!selectedCompanyId){setInvitationLoading(false);return ()=>{active=false;};}
+    const tenantId=selectedCompanyId;
     setInvitationLoading(true);
-    void listPendingCompanyInvitations(selectedCompanyId).then(records=>{
-      if(active)setCompanyInvites(records);
+    void listPendingCompanyInvitations(tenantId).then(records=>{
+      if(active)setCompanyInviteReadback({tenantId,invites:records});
     }).catch(reason=>{
       if(active)setInvitationError(reason instanceof Error?reason.message:"Unable to load company invitation SQL");
     }).finally(()=>{if(active)setInvitationLoading(false);});
@@ -135,13 +161,16 @@ export function SubscribersPage() {
   },[tab,selectedCompanyId]);
   const commitCompanyInvitation=async()=>{
     const action=invitationConfirmation;
-    if(!action||invitationWorking||invitationLoading)return;
-    setInvitationWorking(true);setInvitationError("");
+    if(!action||companyMutationInFlight.current||invitationWorking||invitationLoading||companyWorking||companyLoading)return;
+    if(tab!=="companies"||action.tenantId!==selectedCompanyId){
+      setInvitationConfirmation(null);setInvitationError("Company selection changed. Reopen the invitation action.");return;
+    }
+    companyMutationInFlight.current=true;setInvitationWorking(true);setInvitationError("");
     try{
       const result=action.action==="queue"
         ? await queuePendingCompanyInvitation(action.tenantId,action.email,action.role,action.requestId)
         : await cancelPendingCompanyInvitation(action.tenantId,action.email,action.requestId);
-      setCompanyInvites(result.invites);
+      setCompanyInviteReadback({tenantId:action.tenantId,invites:result.invites});
       if(action.action==="queue"){
         setInvitationEmail("");setInvitationRole("member");
         setInvitationRequestId(crypto.randomUUID());
@@ -152,18 +181,22 @@ export function SubscribersPage() {
         :"Pending company invitation cancelled in SQL");
     }catch(reason){
       setInvitationError(reason instanceof Error?reason.message:"Company invitation was not verified");
-    }finally{setInvitationWorking(false);}
+    }finally{companyMutationInFlight.current=false;setInvitationWorking(false);}
   };
   const saveCompanyMembership=async()=>{
     const pending=pendingMembership;
-    if(!pending||companyWorking||companyLoading)return;
-    setCompanyWorking(true);setCompanyError("");
+    if(!pending||companyMutationInFlight.current||companyWorking||companyLoading||invitationWorking)return;
+    if(tab!=="companies"||pending.tenantId!==selectedCompanyId){
+      setPendingMembership(null);setCompanyError("Company selection changed. Reopen the membership action.");return;
+    }
+    companyMutationInFlight.current=true;setCompanyWorking(true);setCompanyError("");
     try{
       const result=pending.action==="enroll"
         ? await enrollVerifiedCompanyMember(pending.tenantId,pending.email,pending.role,pending.requestId)
         : await revokeCompanyMember(pending.tenantId,pending.userId,pending.requestId);
+      // The service has already verified the exact membership and audit receipt.
+      // A separate directory refresh cannot turn that verified write into failure.
       setCompanyProfile(result.profile);
-      setCompanies(await listCompanies());
       if(pending.action==="enroll"){
         setMemberEmail("");
         setMemberRole("member");
@@ -173,28 +206,30 @@ export function SubscribersPage() {
         ?"Verified company membership saved in SQL"
         :"Membership revoked and verified in SQL");
       setPendingMembership(null);
+      reloadCompanyDirectory();
     }catch(reason){
       setCompanyError(reason instanceof Error?reason.message:"Unable to verify company membership");
-    }finally{setCompanyWorking(false);}
+    }finally{companyMutationInFlight.current=false;setCompanyWorking(false);}
   };
   const provisionCompany = async () => {
-    if (companyWorking || companyLoading) return;
-    setCompanyWorking(true);setCompanyError("");
+    const action=confirmProvision;
+    if (!action||tab!=="companies"||companyMutationInFlight.current||companyWorking||companyLoading||invitationWorking) return;
+    companyMutationInFlight.current=true;setCompanyWorking(true);setCompanyError("");
     try {
-      const verified=await createProvisioningCompany(companyName,companyRequestId);
-      const directory=await listCompanies();
-      if (!directory.companies.some(item => item.id===verified.company.id))
-        throw new Error("Company saved but directory readback is incomplete. Refresh before retrying.");
-      setCompanies(directory);
+      const verified=await createProvisioningCompany(action.name,action.requestId);
+      // Creation has independent exact profile/audit readback. Directory availability
+      // is a separate read concern; clear the confirmed intent before refreshing it.
+      resetCompanyOnboardingDrafts();
       setSelectedCompanyId(verified.company.id);
       setCompanyProfile(verified);
       setCompanyName("");
       setCompanyRequestId(crypto.randomUUID());
       toast.success("Company provisioning record verified in SQL");
+      reloadCompanyDirectory();
     } catch(reason) {
       setCompanyError(reason instanceof Error ? reason.message : "Unable to verify company provisioning");
     } finally {
-      setCompanyWorking(false);setConfirmProvision(false);
+      companyMutationInFlight.current=false;setCompanyWorking(false);setConfirmProvision(null);
     }
   };
 
@@ -296,7 +331,8 @@ export function SubscribersPage() {
       {error && <p role="alert" style={{color:"#b91c1c",margin:"14px 0"}}>{error}</p>}
       <nav aria-label="Subscription management sections" style={{display:"flex",flexWrap:"wrap",gap:8,margin:"24px 0"}}>
         {tabs.map(t=><Button key={t.id} size="sm" variant={tab===t.id?"primary":"secondary"}
-          aria-pressed={tab===t.id} onClick={()=>setTab(t.id)}>{t.label}</Button>)}
+          aria-pressed={tab===t.id} disabled={tab==="companies"&&t.id!==tab&&companyActionPending}
+          onClick={()=>{if(tab!=="companies"||!companyActionPending)setTab(t.id);}}>{t.label}</Button>)}
       </nav>
       {loading && <p role="status">Loading subscription records from SQL…</p>}
 
@@ -454,27 +490,26 @@ export function SubscribersPage() {
           <div style={{...panel,padding:14}}>
             <h3 style={{fontWeight:650,marginBottom:12}}>Create provisioning company</h3>
             <AppTextField id="company-provisioning-name" label="Company name" required
-              value={companyName} onChange={value=>{setCompanyName(value);setCompanyRequestId(crypto.randomUUID());setCompanyError("");}}
+              value={companyName} disabled={companyActionPending||companyLoading} onChange={value=>{setCompanyName(value);setCompanyRequestId(crypto.randomUUID());setCompanyError("");}}
               placeholder="Registered organization name"/>
             <p style={{...note,marginTop:8}}>A Platform Super Admin can register an organization for onboarding. No user invitation, payment or tenant meeting is activated by this step.</p>
-            <Button variant="primary" size="sm" disabled={companyWorking||companyLoading||companyName.trim().length<3||companyName.trim().length>160}
-              onClick={()=>setConfirmProvision(true)}>Create provisioning record</Button>
+            <Button variant="primary" size="sm" disabled={companyActionPending||companyLoading||companyName.trim().length<3||companyName.trim().length>160}
+              onClick={()=>setConfirmProvision({name:companyName.trim(),requestId:companyRequestId})}>Create provisioning record</Button>
           </div>
           <div style={{...panel,padding:14}}>
             <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
               <h3 style={{fontWeight:650}}>Company directory</h3>
-              <Button variant="secondary" size="sm" disabled={companyLoading||companyWorking}
-                onClick={()=>{setCompanyLoading(true);setCompanyError("");void listCompanies().then(setCompanies)
-                  .catch(e=>setCompanyError(e instanceof Error?e.message:"Unable to refresh companies"))
-                  .finally(()=>setCompanyLoading(false));}}>Refresh SQL</Button>
+              <Button variant="secondary" size="sm" disabled={companyLoading||companyActionPending}
+                onClick={reloadCompanyDirectory}>Refresh SQL</Button>
             </div>
             {companyLoading && <p role="status" style={note}>Checking company SQL records…</p>}
             {companyError && <p role="alert" style={{...note,color:"#b91c1c"}}>{companyError}</p>}
+            {companyDirectoryError && <p role="alert" style={{...note,color:"#b91c1c"}}>Company directory refresh failed: {companyDirectoryError}. Refresh SQL to retry.</p>}
             {companies && companies.companies.length===0 && <p style={note}>No registered companies yet.</p>}
             {companies?.companies.map(company=><div key={company.id}
               style={{borderTop:"1px solid var(--border-color,#dce1e8)",padding:"10px 0"}}>
               <Button variant={company.id===selectedCompanyId?"primary":"secondary"} size="sm"
-                onClick={()=>setSelectedCompanyId(company.id)}>{company.display_name}</Button>
+                disabled={companyActionPending} onClick={()=>selectCompany(company.id)}>{company.display_name}</Button>
               <p style={note}>{company.lifecycle_state} · {company.active_member_count} active members · {company.published_template_count} published templates</p>
             </div>)}
           </div>
@@ -489,16 +524,16 @@ export function SubscribersPage() {
                 <p style={{...note,marginTop:8}}>Assign an existing email-verified Convay account with an active application role. Invite and verify new users in User Management first.</p>
                 <div style={{display:"grid",gap:10,marginTop:12}}>
                   <AppTextField id="company-member-email" label="Verified user email" required
-                    value={memberEmail} disabled={companyWorking||companyLoading}
+                    value={memberEmail} disabled={companyActionPending||companyLoading}
                     onChange={value=>{setMemberEmail(value);setMemberRequestId(crypto.randomUUID());setCompanyError("");}}
                     placeholder="user@example.com"/>
                   <AppSelectField id="company-member-role" label="Company membership role" required
-                    value={memberRole} disabled={companyWorking||companyLoading}
+                    value={memberRole} disabled={companyActionPending||companyLoading}
                     onChange={value=>{setMemberRole(value as CompanyMembershipRole);setMemberRequestId(crypto.randomUUID());}}
                     options={[{value:"member",label:"Company member"},
                       {value:"tenant_admin",label:"Company Super Admin"}]}/>
                   <Button variant="secondary" size="sm"
-                    disabled={companyWorking||companyLoading||!/^\S+@\S+\.\S+$/.test(memberEmail.trim())}
+                    disabled={companyActionPending||companyLoading||!/^\S+@\S+\.\S+$/.test(memberEmail.trim())}
                     onClick={()=>setPendingMembership({action:"enroll",tenantId:companyProfile.company.id,
                       email:memberEmail.trim(),role:memberRole,requestId:memberRequestId})}>
                     Assign verified account
@@ -511,15 +546,15 @@ export function SubscribersPage() {
                   <p style={{...note,marginTop:8}}>First invite the person through User Management. Assign their unaccepted invitation here; after verified first login, SQL will automatically enroll the account in this company. Workspaces and billing stay disabled.</p>
                   <div style={{display:"grid",gap:10,marginTop:12}}>
                     <AppTextField id="company-pending-invite-email" label="Pending invitation email" required
-                      value={invitationEmail} disabled={invitationWorking||invitationLoading}
+                      value={invitationEmail} disabled={companyActionPending||companyLoading||invitationLoading}
                       onChange={v=>{setInvitationEmail(v);setInvitationRequestId(crypto.randomUUID());setInvitationError("");}}
                       placeholder="invited@example.com"/>
                     <AppSelectField id="company-pending-invite-role" label="Role after verification" required
-                      value={invitationRole} disabled={invitationWorking||invitationLoading}
+                      value={invitationRole} disabled={companyActionPending||companyLoading||invitationLoading}
                       onChange={v=>{setInvitationRole(v as CompanyMembershipRole);setInvitationRequestId(crypto.randomUUID());}}
                       options={[{value:"member",label:"Company member"},
                         {value:"tenant_admin",label:"Company Super Admin"}]}/>
-                    <Button variant="secondary" size="sm" disabled={invitationWorking||invitationLoading
+                    <Button variant="secondary" size="sm" disabled={companyActionPending||companyLoading||invitationLoading
                       ||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(invitationEmail.trim())}
                       onClick={()=>setInvitationConfirmation({
                         action:"queue",tenantId:companyProfile.company.id,
@@ -535,7 +570,7 @@ export function SubscribersPage() {
                     borderTop:"1px solid var(--border-color,#dce1e8)",marginTop:10,paddingTop:10}}>
                     <p style={note}><strong>{invite.email}</strong> · {invite.membership_role==="tenant_admin"?"Company Super Admin":"Company member"} · {invite.status}</p>
                     {invite.status==="pending"&&<Button variant="tertiary" size="sm"
-                      disabled={invitationWorking||invitationLoading}
+                      disabled={companyActionPending||companyLoading||invitationLoading}
                       onClick={()=>setInvitationConfirmation({
                         action:"cancel",tenantId:companyProfile.company.id,email:invite.email,
                         role:invite.membership_role,requestId:crypto.randomUUID()})}>
@@ -553,7 +588,7 @@ export function SubscribersPage() {
                   {member.membership_state==="active" &&
                    !(member.membership_role==="tenant_admin" &&
                      companyProfile.members.filter(m=>m.membership_role==="tenant_admin"&&m.membership_state==="active").length<=1)
-                   && <Button variant="tertiary" size="sm" disabled={companyWorking||companyLoading}
+                   && <Button variant="tertiary" size="sm" disabled={companyActionPending||companyLoading}
                     onClick={()=>setPendingMembership({action:"revoke",
                       tenantId:companyProfile.company.id,userId:member.user_id,
                       label:member.display_name,requestId:crypto.randomUUID()})}>
@@ -612,9 +647,9 @@ export function SubscribersPage() {
       />}
       {confirmProvision && <SConfirmModal
         title="Create a provisioning company?"
-        message={`Register "${companyName.trim()}" in the SQL company directory? This will not activate a subscription, meetings or workspace access.`}
+        message={`Register "${confirmProvision.name}" in the SQL company directory? This will not activate a subscription, meetings or workspace access.`}
         confirmLabel="Create provisioning record"
-        onClose={()=>{if(!companyWorking)setConfirmProvision(false);}}
+        onClose={()=>{if(!companyWorking)setConfirmProvision(null);}}
         onConfirm={()=>void provisionCompany()}
       />}
       {pending && <SConfirmModal

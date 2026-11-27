@@ -24,6 +24,31 @@ beforeEach(() => {
 });
 
 describe("access snapshot account/session isolation", () => {
+  it.each([
+    null,
+    { is_super_admin: "true", effective_permissions: [] },
+    { is_super_admin: false, effective_permissions: "not_mtg_view" },
+    { is_super_admin: true, effective_permissions: [null] },
+    { is_super_admin: false, effective_permissions: [" "] },
+    { is_super_admin: false },
+    { is_super_admin: false, effective_permissions: [], user_role_ids: "role" },
+    { is_super_admin: true, effective_permissions: [], roles: {} },
+  ])("fails closed on malformed authorization response %#", async (malformed) => {
+    vi.mocked(convayAuth.access)
+      .mockResolvedValueOnce({ is_super_admin: true, effective_permissions: ["mtg_view"] } as never)
+      .mockResolvedValueOnce(malformed as never)
+      .mockResolvedValueOnce({ is_super_admin: false, effective_permissions: ["home_dashboard"] } as never);
+    await reloadAccessSnapshot();
+    expect(hasAccess("admin_users")).toBe(true);
+    await expect(reloadAccessSnapshot()).rejects.toThrow("Invalid access verification response");
+    expect(readAccessSnapshot()).toMatchObject({ loaded: false, is_super_admin: false, effective_permissions: [] });
+    expect(hasAccess("mtg_view")).toBe(false);
+    expect(mayVisitPath("/administration/roles-permissions/roles")).toBe(false);
+    await reloadAccessSnapshot();
+    expect(hasAccess("home_dashboard")).toBe(true);
+    expect(hasAccess("admin_users")).toBe(false);
+  });
+
   it("does not restore old privileges when a request resolves after sign-out", async () => {
     const pending = deferred<SnapshotPayload>();
     vi.mocked(convayAuth.access).mockReturnValueOnce(pending.promise as never);

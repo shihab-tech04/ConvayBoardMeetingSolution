@@ -267,7 +267,7 @@ async function transitionCompanyInvitation(
     throw new Error("Valid company, invitation role and request ID are required");
   }
   const clean=requireInvitedEmail(email);
-  const receipt=await adminRpc<CompanyInvitationReceipt>("convay_company_invitation",{
+  const receipt=await adminRpc<Omit<CompanyInvitationReceipt,"audit_event_id"> & {audit_event_id?:number}>("convay_company_invitation",{
     p_action:action,p_tenant_id:tenantId,p_email:clean,
     p_member_role:role,p_request_id:requestId,
   });
@@ -275,7 +275,9 @@ async function transitionCompanyInvitation(
     || receipt.email!==clean || receipt.request_id!==requestId
     || receipt.status!==(action==="queue"?"pending":"cancelled")
     || receipt.tenant_active!==false || receipt.meeting_access_activated!==false
-    || !Number.isSafeInteger(receipt.audit_event_id) || receipt.audit_event_id<1
+    || !["member","tenant_admin"].includes(receipt.membership_role)
+    || (receipt.audit_event_id===undefined ? action!=="queue" :
+      (!Number.isSafeInteger(receipt.audit_event_id) || receipt.audit_event_id<1))
     || (role!==null && receipt.membership_role!==role)) {
     throw new Error("SQL did not confirm the company invitation transition; refresh before retrying");
   }
@@ -283,10 +285,27 @@ async function transitionCompanyInvitation(
   if (!invites.some(item=>item.user_id===receipt.user_id
      && item.email.toLowerCase()===clean
      && item.status===receipt.status
-     && item.membership_role===receipt.membership_role)) {
+     && item.membership_role===receipt.membership_role
+     // Cancellation preserves the original queue request on the SQL row.
+     && (action!=="queue" || item.request_id===requestId))) {
     throw new Error("Company invitation was acknowledged but SQL readback is stale; refresh before retrying");
   }
-  return {receipt,invites};
+  // Existing SQL replays a successful queue request without its audit ID.
+  // Recover that ID only from a matching, authorized Company 360 audit event;
+  // do not turn a timeout or an unverifiable replay into a success.
+  let auditEventId=receipt.audit_event_id;
+  if (auditEventId===undefined) {
+    const profile=await readCompany(tenantId);
+    const events=profile.events.filter(event=>event &&
+      event.action==="company_invite_queued" && event.request_id===requestId &&
+      event.target_user_id===receipt.user_id &&
+      Number.isSafeInteger(event.id) && event.id>0);
+    if (events.length!==1) {
+      throw new Error("Company invitation replay audit could not be verified; refresh before retrying");
+    }
+    auditEventId=events[0].id;
+  }
+  return {receipt:{...receipt,audit_event_id:auditEventId},invites};
 }
 export const queuePendingCompanyInvitation=(tenantId:string,email:string,
   role:CompanyMembershipRole,requestId:string)=>
