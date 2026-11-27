@@ -52,26 +52,36 @@ function canon(value:unknown):string {
   if (object(value)) return "{"+Object.keys(value).sort().map(k=>JSON.stringify(k)+":"+canon(value[k])).join(",")+"}";
   return JSON.stringify(value)??"null";
 }
-async function draftRpc(action:"list"|"read"|"create"|"update"|"discard",tenantId:string,payload:Record<string,unknown>) {
+type DraftAction = "list"|"read"|"create"|"update"|"discard";
+function classifyDraftRpcError(action:DraftAction, cause:unknown, status:unknown, code:unknown):unknown {
+  // Only classify the direct create or update call. A later readback or template failure
+  // may follow a committed write, and must retain the original request identity.
+  if((action==="create"||action==="update") && cause instanceof Error && typeof status==="number"
+    && status>=400 && status<500 && typeof code==="string"
+    && ["22023","22P02","23514","42501","P0002","40001","23505"].includes(code)) {
+    cause.name=action==="create"?"StagedDraftCreateRejected":"StagedDraftUpdateRejected";
+  }
+  return cause;
+}
+async function draftRpc(action:DraftAction,tenantId:string,payload:Record<string,unknown>) {
   if (!UUID.test(tenantId)) throw new Error("A valid company is required");
   const rpc=action==="create"?"convay_company_meeting_drafts":"convay_company_draft_lifecycle";
-  const response=await convayAuth.authenticatedRequest("/rest/v1/rpc/"+rpc,{
-    method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({p_action:action,p_tenant_id:tenantId,p_payload:payload}),
-  });
+  let response:Response;
+  try {
+    response=await convayAuth.authenticatedRequest("/rest/v1/rpc/"+rpc,{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({p_action:action,p_tenant_id:tenantId,p_payload:payload}),
+    });
+  } catch(cause) {
+    const failure=cause as {httpStatus?:unknown;sqlState?:unknown}|null;
+    throw classifyDraftRpcError(action,cause,failure?.httpStatus,failure?.sqlState);
+  }
   const data:unknown=await response.json().catch(()=>null);
   if (!response.ok) {
     const message=object(data)&&typeof data.message==="string"
       ? data.message : "Unable to verify company meeting draft in SQL";
     const error=new Error(message);
-    // A structured SQL validation/authorization rejection of the CREATE itself
-    // is definitive. A lost ACK or any later readback failure is not.
-    if((action==="create"||action==="update") && response.status>=400 && response.status<500
-      && object(data) && typeof data.code==="string"
-      && ["22023","22P02","23514","42501","P0002","40001","23505"].includes(data.code)) {
-      error.name=action==="create"?"StagedDraftCreateRejected":"StagedDraftUpdateRejected";
-    }
-    throw error;
+    throw classifyDraftRpcError(action,error,response.status,object(data)?data.code:undefined);
   }
   if (!object(data)||data.tenant_id!==tenantId||data.meeting_activation_enabled!==false) {
     throw new Error("Company draft SQL scope/activation did not match");
