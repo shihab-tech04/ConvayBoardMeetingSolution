@@ -231,8 +231,13 @@ for ext in extensions:
     sql("CREATE SCHEMA IF NOT EXISTS " + ident(ext["schema"]) + "; CREATE EXTENSION IF NOT EXISTS "
         + ident(ext["name"]) + " WITH SCHEMA " + ident(ext["schema"]) + " VERSION " + lit(ext["version"]) + ";",
         dbname=restore_db)
+# The target was created from template0, not restored over an existing app.
+# pg_restore --clean still tries DROP POLICY on nonexistent tables; remove
+# only the template's default public schema if the archive creates it.
+if re.search(rb"(?m)^\d+;.* SCHEMA - public ",toc):
+    sql("DROP SCHEMA public;",dbname=restore_db)
 restore = subprocess.run(["docker","exec","-i",db,"pg_restore","-U","postgres","-d",restore_db,
-                          "--exit-on-error","--clean","--if-exists"],
+                          "--exit-on-error"],
                          input=dump,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
 if restore.returncode:
     raise RuntimeError("Local native restore failed: " + restore.stderr.decode(errors="replace")[-2200:])
