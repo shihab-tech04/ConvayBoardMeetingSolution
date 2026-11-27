@@ -120,7 +120,13 @@ export async function templateAction<T>(action: string, payload: Record<string, 
     const error = body && typeof body === "object" && !Array.isArray(body)
       && "message" in body && typeof body.message === "string"
       ? body.message : "Meeting template SQL request failed. Refresh and retry.";
-    throw new Error(error);
+    const failure=new Error(error);
+    if(["create","revise","publish","copy"].includes(action) && result.status>=400 && result.status<500
+      && body && typeof body==="object" && !Array.isArray(body) && "code" in body
+      && typeof body.code==="string" && ["22023","22P02","23514","42501","P0002","40001","23505"].includes(body.code)){
+      failure.name="TemplateMutationRejected";
+    }
+    throw failure;
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Meeting template SQL response is invalid");
@@ -145,7 +151,9 @@ export async function readManagedTemplate(templateId: string, revision?: number)
   const result = await templateAction<{ template: MeetingTemplateVersion }>("read", {
     template_id: templateId, ...(revision === undefined ? {} : { revision }),
   });
-  if (result.template?.id !== templateId || !Number.isSafeInteger(result.template.revision)) {
+  if (result.template?.id !== templateId
+    || !Number.isSafeInteger(result.template.revision) || result.template.revision < 1
+    || (revision !== undefined && result.template.revision !== revision)) {
     throw new Error("Template SQL readback identity was not confirmed");
   }
   return result.template;

@@ -154,13 +154,24 @@ async function selfProfile(session: StoredSession): Promise<ConvayProfile> {
   if (!Array.isArray(rows) || rows.length !== 1 || rows[0].account_status !== "active") {
     throw new Error("Your account is not active. Contact the administrator.");
   }
+  if (rows[0].user_id !== session.userId ||
+      !["super_admin", "user"].includes(rows[0].account_role)) {
+    throw new Error("Account profile did not match the authenticated identity.");
+  }
   return rows[0];
+}
+
+function assertSignInCurrent(epoch: number): void {
+  if (sessionEpoch !== epoch) throw new Error("Sign-in superseded by a session change. Please retry.");
 }
 
 export const convayAuth = {
   async signIn(identifier: string, password: string, remember: boolean): Promise<ConvayProfile> {
     const entry = identifier.trim();
     if (!entry || !password) throw new Error("Enter your username or email and password");
+    // A new password sign-in supersedes older sign-ins and refreshes, even
+    // before the network returns. Logout also invalidates this attempt.
+    const epoch = ++sessionEpoch;
     // The sole Super Admin may use their short username; other users use email.
     const email = entry.toLowerCase() === "shihab" ? "shihabshajib01@gmail.com" : entry;
     const res = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=password", {
@@ -169,11 +180,17 @@ export const convayAuth = {
       body: JSON.stringify({ email, password }),
     });
     const body = await responseBody(res);
+    assertSignInCurrent(epoch);
     if (!res.ok || !body.access_token) throw new Error(errorMessage(body, "Invalid username or password"));
     const session = toSession(body as unknown as Tokens);
     let profile: ConvayProfile;
     try { profile = await selfProfile(session); }
-    catch (error) { eraseSession(); throw error; }
+    catch (error) {
+      assertSignInCurrent(epoch);
+      eraseSession();
+      throw error;
+    }
+    assertSignInCurrent(epoch);
     saveSession(session, remember);
     return profile;
   },
@@ -181,8 +198,20 @@ export const convayAuth = {
   async restore(): Promise<ConvayProfile | null> {
     const session = await validSession();
     if (!session) return null;
-    try { return await selfProfile(session); }
-    catch { eraseSession(); return null; }
+    const epoch = sessionEpoch;
+    const stillCurrent = () => {
+      const stored = readSession();
+      return sessionEpoch === epoch && stored?.userId === session.userId &&
+        stored.accessToken === session.accessToken && stored.refreshToken === session.refreshToken;
+    };
+    try {
+      const profile = await selfProfile(session);
+      return stillCurrent() ? profile : null;
+    } catch {
+      // A failed old profile read must not erase a replacement account.
+      if (stillCurrent()) eraseSession();
+      return null;
+    }
   },
 
   async signOut(): Promise<void> {

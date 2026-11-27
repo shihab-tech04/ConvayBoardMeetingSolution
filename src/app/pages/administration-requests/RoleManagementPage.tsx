@@ -1,4 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { userDirectoryCsvCell } from "./userDirectoryExport";
+import { clampRegisterPage, requireRoleSaveMode, requirePermissionEditKind } from "./accessRegisterRecovery";
 import { toast } from "sonner";
 import { ExpandableText } from "../../components/shared/SafeText";
 import { Plus, Copy, Pencil, Trash2, Lock, ChevronUp, ChevronDown } from "lucide-react";
@@ -104,6 +106,10 @@ export function RoleManagementPage() {
     return matchSearch && matchLevel && matchStatus && matchPerms && matchUsers;
   }), [roles, q, applied]);
 
+  useEffect(() => {
+    if (!loading && !error) setPage(old => clampRegisterPage(old, filteredRoles.length, PER_PAGE));
+  }, [loading, error, filteredRoles.length]);
+
   const pageRoles = useMemo(
     () => filteredRoles.slice((page - 1) * PER_PAGE, page * PER_PAGE),
     [filteredRoles, page]
@@ -138,7 +144,8 @@ export function RoleManagementPage() {
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleSaveRole = async (saved: SystemRole) => {
-    const exists = roles.some(r => r.id === saved.id);
+    if (loading || error) throw new Error("Refresh Role Management before saving.");
+    const exists = requireRoleSaveMode(editRoleId, saved.id, roles, isProtectedRole) === "update";
     const result = exists ? await updateRole(saved) : await addRole(saved);
     setSelectedRoleId(result.id);
     toast.success(exists ? "Role updated" : "Role created");
@@ -146,6 +153,7 @@ export function RoleManagementPage() {
 
   const handleDuplicate = async (role: SystemRole) => {
     try {
+      if (loading || error || !roles.some(item => item.id === role.id) || isProtectedRole(role.id)) throw new Error("Role is no longer available for duplication. Refresh Role Management.");
       const cloned = await duplicateRole(role);
       setSelectedRoleId(cloned.id);
       toast.success("Role duplicated");
@@ -240,7 +248,7 @@ export function RoleManagementPage() {
         onFilterChange={(k, v) => setFVals((p) => ({ ...p, [k]: v }))}
         onApplyFilters={applyFilters}
         onResetFilters={clearFilters}
-        onExport={() => { const csv = [["Role","Status","Users","Permissions"],...roles.map(r=>[r.name,r.status,String(r.usersCount),String(r.permissions.length)])].map(row=>row.map(x=>`"${x.replace(/"/g,'""')}"`).join(",")).join("\r\n"); const a=document.createElement("a"); const url=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.href=url; a.download="convay-roles.csv"; a.click(); URL.revokeObjectURL(url); }}
+        onExport={() => { if (loading || error) return; const csv = [["Role","Status","Users","Permissions"],...roles.map(r=>[r.name,r.status,String(r.usersCount),String(r.permissions.length)])].map(row=>row.map(userDirectoryCsvCell).join(",")).join("\r\n"); const a=document.createElement("a"); const url=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.href=url; a.download="convay-roles.csv"; a.click(); URL.revokeObjectURL(url); }}
         page={page}
         perPage={PER_PAGE}
         onPageChange={setPage}

@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "../../hooks/useAuth";
+import { userDirectoryCsvCell } from "./userDirectoryExport";
 import { useNavigate } from "react-router";
 import { Eye, Shield, UserCheck, UserPlus, UserX, Users } from "lucide-react";
 import { toast } from "sonner";
@@ -48,13 +50,20 @@ function displayAccountStatus(user: ConvayProfile) {
   if (user.invitation_status === "verified") return "Finish account setup";
   return displayStatus(user.account_status);
 }
-function csv(value: unknown) {
-  return '"' + String(value ?? "").replace(/"/g, '""') + '"';
+export function SupabaseUserManagementPage() {
+  const { isAuthenticated, userId } = useAuth();
+  const access = useAccessSnapshot();
+  const canUse = Boolean(isAuthenticated && userId && access.loaded && access.is_super_admin);
+  return <ScopedUserManagementPage key={JSON.stringify([userId, canUse])} access={access} canUse={canUse}/>;
 }
 
-export function SupabaseUserManagementPage() {
+function ScopedUserManagementPage({ access, canUse }: {
+  access: ReturnType<typeof useAccessSnapshot>; canUse: boolean;
+}) {
   const navigate = useNavigate();
-  const access = useAccessSnapshot();
+  const alive = useRef(false);
+  useLayoutEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const isCurrent = () => alive.current && canUse && readAccessSnapshot().loaded && readAccessSnapshot().is_super_admin;
   const [users, setUsers] = useState<ConvayProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -78,8 +87,8 @@ export function SupabaseUserManagementPage() {
   // account's late response after logout, permissions refresh or retry.
   const directoryRead = useRef(createLatestUserDirectoryRead<ConvayProfile>());
   const loadUsers = async (): Promise<boolean> => {
-    const currentAccess = readAccessSnapshot();
-    if (!currentAccess.loaded || !currentAccess.is_super_admin) {
+    if (!alive.current) return false;
+    if (!isCurrent()) {
       directoryRead.current.invalidate();
       setUsers([]);
       setLoading(false);
@@ -89,6 +98,7 @@ export function SupabaseUserManagementPage() {
     return directoryRead.current.load(
       () => convayAuth.users("list"),
       update => {
+        if (!isCurrent()) return;
         setUsers(update.users);
         setLoading(update.phase === "loading");
         setLoadError(update.error);
@@ -96,7 +106,7 @@ export function SupabaseUserManagementPage() {
     );
   };
   useEffect(() => {
-    if (access.loaded && access.is_super_admin) {
+    if (canUse) {
       void loadUsers();
     } else {
       directoryRead.current.invalidate();
@@ -107,7 +117,7 @@ export function SupabaseUserManagementPage() {
     return () => { directoryRead.current.invalidate(); };
     // Reload only when effective Super Admin access changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [access.loaded, access.is_super_admin]);
+  }, [canUse]);
 
   const selected = users.find(u => u.user_id === selectedId) ?? null;
   const editing = users.find(u => u.user_id === editId) ?? null;
@@ -123,6 +133,13 @@ export function SupabaseUserManagementPage() {
       && (u.account_role === "super_admin" ? "Super Admin" : "User") !== applied.role) return false;
     return true;
   }), [users, search, applied, access.user_assignments]);
+  useEffect(() => {
+    // A pending directory refresh has no authoritative row count. Keep the
+    // current page until the new successful response actually shrinks it.
+    if (canUse && !loading && !loadError) {
+      setPage(old => Math.min(old, Math.max(1, Math.ceil(filtered.length / 10))));
+    }
+  }, [filtered.length, loading, loadError, canUse]);
   const pendingRoleCount = users.filter(u => needsRoleAssignment(u, access.user_assignments)).length;
   const activeInviteRoles = access.roles.filter(role => role.status === "Active" && !role.is_system_role);
 
@@ -147,12 +164,13 @@ export function SupabaseUserManagementPage() {
   ];
   const statsUnavailable = isUserDirectoryStatsUnavailable({
     accessLoaded: access.loaded,
-    isSuperAdmin: access.is_super_admin,
+    isSuperAdmin: canUse,
     loading,
     error: loadError,
   });
 
   const openRoleAssignment = (user: ConvayProfile) => {
+    if (!isCurrent() || working || user.account_role === "super_admin") return;
     setSelectedId(null);
     setRoleAssignFromInvite(false);
     setRoleAssignId(user.user_id);
@@ -160,7 +178,11 @@ export function SupabaseUserManagementPage() {
     setAssignError("");
   };
   const saveRoleAssignments = async () => {
-    if (!roleAssignId || working) return;
+    if (!isCurrent() || !roleAssignId || working) return;
+    if (!users.some(u => u.user_id === roleAssignId && u.account_role !== "super_admin")) {
+      setAssignError("User is no longer available. Refresh User Management and try again.");
+      return;
+    }
     if (!canCompleteInvitationRoleStep(roleAssignFromInvite, selectedRoles)) {
       setAssignError("Select at least one active role to finish invitation access setup.");
       return;
@@ -171,15 +193,17 @@ export function SupabaseUserManagementPage() {
       const confirmation = await convayAuth.access<{ ok?: boolean }>("assign_roles", {
         user_id: roleAssignId, role_ids: selectedRoles,
       });
+      if (!isCurrent()) return;
       const confirmedSnapshot = await reloadAccessSnapshot();
+      if (!isCurrent()) return;
       requireRoleAssignmentReadback(confirmation, confirmedSnapshot, roleAssignId, selectedRoles);
       setRoleAssignId(null);
       setRoleAssignFromInvite(false);
       toast.success("User roles updated and verified");
     } catch (error) {
-      setAssignError(error instanceof Error ? error.message : "Unable to assign roles");
+      if (isCurrent()) setAssignError(error instanceof Error ? error.message : "Unable to assign roles");
     } finally {
-      setWorking(false);
+      if (isCurrent()) setWorking(false);
     }
   };
   const closeForm = () => {
@@ -190,15 +214,17 @@ export function SupabaseUserManagementPage() {
     setFormError("");
   };
   const openInvite = () => {
+    if (!isCurrent() || working) return;
     setForm(blank);
     setFormError("");
     setEditId(null);
     setMode("invite");
     void reloadAccessSnapshot().catch(() => {
-      setFormError("Unable to refresh roles. Reload User Management and try again.");
+      if (isCurrent()) setFormError("Unable to refresh roles. Reload User Management and try again.");
     });
   };
   const openEdit = (user: ConvayProfile) => {
+    if (!isCurrent() || working || user.account_role === "super_admin") return;
     setSelectedId(null);
     setEditId(user.user_id);
     setForm({ name: user.display_name, username: user.username, email: user.email,
@@ -208,6 +234,7 @@ export function SupabaseUserManagementPage() {
     setMode("edit");
   };
   const openPassword = (user: ConvayProfile) => {
+    if (!isCurrent() || working || user.account_role === "super_admin") return;
     setSelectedId(null);
     setEditId(user.user_id);
     setForm({ name: user.display_name, username: user.username, email: user.email,
@@ -220,7 +247,7 @@ export function SupabaseUserManagementPage() {
     setForm(prev => ({ ...prev, [field]: value }));
 
   const save = async () => {
-    if (!mode || working) return;
+    if (!isCurrent() || !mode || working) return;
     if (mode !== "password" && (!form.name.trim() || !form.email.trim())) {
       setFormError("User name and email are required");
       return;
@@ -247,6 +274,7 @@ export function SupabaseUserManagementPage() {
           phone: form.phone.trim() || undefined,
           ...userBusinessFields(form),
         });
+        if (!isCurrent()) return;
         requireUserMutationAck("invite", confirmed, { email: form.email.trim(), roleId: form.roleId });
         toast.success("Invitation sent and selected role assigned.");
       } else if (mode === "edit" && editing) {
@@ -254,6 +282,7 @@ export function SupabaseUserManagementPage() {
           user_id: editing.user_id, name: form.name.trim(), username: form.username.trim(),
           phone: form.phone.trim(), ...userBusinessFields(form),
         });
+        if (!isCurrent()) return;
         requireUserMutationAck("update", confirmed, {
           userId: editing.user_id, displayName: form.name.trim(),
         });
@@ -262,6 +291,7 @@ export function SupabaseUserManagementPage() {
         const confirmed = await convayAuth.users("set_password", {
           user_id: editing.user_id, password: form.password,
         });
+        if (!isCurrent()) return;
         requireUserMutationAck("set_password", confirmed, { userId: editing.user_id });
         toast.success("Password updated");
       } else {
@@ -272,23 +302,30 @@ export function SupabaseUserManagementPage() {
       setForm(blank);
       await loadUsers();
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "Unable to save user");
+      if (isCurrent()) setFormError(error instanceof Error ? error.message : "Unable to save user");
     } finally {
-      setWorking(false);
+      if (isCurrent()) setWorking(false);
     }
   };
 
   const runConfirmedAction = async () => {
-    if (!confirm || working) return;
+    if (!isCurrent() || !confirm || working) return;
+    if (!users.some(u => u.user_id === confirm.id && u.account_role !== "super_admin")) {
+      setConfirm(null);
+      setLoadError("User is no longer available. Refresh User Management and try again.");
+      return;
+    }
     setWorking(true);
     setLoadError("");
     try {
       if (confirm.action === "delete") {
         const confirmed = await convayAuth.users("delete", { user_id: confirm.id });
+        if (!isCurrent()) return;
         requireUserMutationAck("delete", confirmed, { userId: confirm.id });
         toast.success("User removed");
       } else {
         const confirmed = await convayAuth.users("set_status", { user_id: confirm.id, status: confirm.action });
+        if (!isCurrent()) return;
         requireUserMutationAck("set_status", confirmed, { userId: confirm.id, status: confirm.action });
         toast.success("Account status updated");
       }
@@ -296,18 +333,21 @@ export function SupabaseUserManagementPage() {
       setSelectedId(null);
       await loadUsers();
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Unable to update account");
-      setConfirm(null);
+      if (isCurrent()) {
+        setLoadError(error instanceof Error ? error.message : "Unable to update account");
+        setConfirm(null);
+      }
     } finally {
-      setWorking(false);
+      if (isCurrent()) setWorking(false);
     }
   };
   const exportUsers = () => {
+    if (!isCurrent() || statsUnavailable) return;
     const csvText = [
-      ["User name", "Email", "Role", "Status"].map(csv).join(","),
+      ["User name", "Email", "Role", "Status"].map(userDirectoryCsvCell).join(","),
       ...filtered.map(u => [u.display_name, u.email,
         u.account_role === "super_admin" ? "Super Admin" : "User",
-        displayStatus(u.account_status)].map(csv).join(",")),
+        displayStatus(u.account_status)].map(userDirectoryCsvCell).join(",")),
     ].join("\r\n");
     const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -330,7 +370,7 @@ export function SupabaseUserManagementPage() {
           </div>
           <div className="user-management__actions">
             <Button variant="secondary" size="sm" leadingIcon={Shield} onClick={() => navigate("/administration/roles-permissions/roles")}>Manage Roles</Button>
-            <Button variant="primary" size="lg" leadingIcon={UserPlus} onClick={openInvite}>Invite User</Button>
+            <Button variant="primary" size="lg" leadingIcon={UserPlus} disabled={!canUse || working} onClick={openInvite}>Invite User</Button>
           </div>
         </div>
       </div>
@@ -350,7 +390,7 @@ export function SupabaseUserManagementPage() {
         title="Users" countLabel="users" singularLabel="user" totalCount={filtered.length}
         cols={columns} rows={pageRows}
         actions={[{ id: "view", label: "View Details", icon: Eye }]}
-        onViewRow={row => setSelectedId(String(row.id))}
+        onViewRow={row => { if (isCurrent() && !statsUnavailable) setSelectedId(String(row.id)); }}
         search={search} searchPlaceholder="Search by name, email or username…"
         onSearchChange={v => { setSearch(v); setPage(1); }}
         filterDefs={filters} filterValues={filtersSelected} appliedFilters={applied}

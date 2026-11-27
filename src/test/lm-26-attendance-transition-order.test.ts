@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { RegularAttendanceTransitionQueue, acceptsVerifiedAttendanceRevision } from "../app/pages/meetings/regularMeetingAttendanceQueue";
+import { RegularAttendanceTransitionQueue, acceptsVerifiedAttendanceRevision, ScopedAttendanceReadbackGate } from "../app/pages/meetings/regularMeetingAttendanceQueue";
 import { OnlinePresenceTransition } from "../app/pages/meetings/onlinePresenceTransition";
 
 describe("WS2 LM-26 real-media attendance transition ordering", () => {
@@ -73,5 +73,46 @@ describe("WS2 LM-26 real-media attendance transition ordering", () => {
     const source = readFileSync("src/app/pages/meetings/LiveMeetingWorkspace.tsx", "utf8");
     expect(source).toContain("attendanceQueue.enqueue(id, async () =>");
     expect(source).not.toContain("pendingAttendance.current.has(id)");
+  });
+});
+
+
+describe("LM-07/09/26 scoped attendance view freshness", () => {
+  it("rejects old account and reopened-session tickets even when the meeting ID matches", () => {
+    const first = new ScopedAttendanceReadbackGate("meeting-A", "session-A", "user-A");
+    const stale = first.begin();
+    const otherUser = new ScopedAttendanceReadbackGate("meeting-A", "session-A", "user-B");
+    const reopened = new ScopedAttendanceReadbackGate("meeting-A", "session-B", "user-A");
+    const returned = new ScopedAttendanceReadbackGate("meeting-A", "session-A", "user-A");
+    for (const gate of [otherUser, reopened, returned]) {
+      gate.begin();
+      expect(gate.accept(stale, "meeting-A", 99)).toBe(false);
+      expect(gate.reject(stale)).toBe(false);
+    }
+  });
+  it("rejects stale errors and successes after a newer valid readback", () => {
+    const gate = new ScopedAttendanceReadbackGate("meeting-A", "session-A", "user-A");
+    const older = gate.begin();
+    const newer = gate.begin();
+    expect(gate.accept(newer, "meeting-A", 10)).toBe(true);
+    expect(gate.reject(older)).toBe(false);
+    expect(gate.accept(older, "meeting-A", 11)).toBe(false);
+  });
+  it("invalidates on current failure and permits only a fresh non-regressing recovery", () => {
+    const gate = new ScopedAttendanceReadbackGate("meeting-A", "session-A", "user-A");
+    expect(gate.accept(gate.begin(), "meeting-A", 10)).toBe(true);
+    const delayed = gate.begin();
+    expect(gate.reject(gate.begin())).toBe(true);
+    expect(gate.accept(delayed, "meeting-A", 10)).toBe(false);
+    expect(gate.accept(gate.begin(), "meeting-A", 9)).toBe(false);
+    expect(gate.accept(gate.begin(), "meeting-A", 10)).toBe(true);
+  });
+  it("never exposes retired tagged state or starts a queued transition after a scope change", () => {
+    const source = readFileSync("src/app/pages/meetings/LiveMeetingWorkspace.tsx", "utf8");
+    expect(source).toContain("onlineAttendance?.gate === attendanceGate");
+    expect(source).toContain("if (activeAttendanceGate.current !== gate) return;");
+    expect(source).toContain("if (activeAttendanceGate.current === attendanceGate) activeAttendanceGate.current = null;");
+    expect(source).toContain("isOnlineMeeting ? EMPTY_ATTENDANCE : attendanceMap");
+    expect(source).toContain("invalidateVerifiedAttendance(recovery)");
   });
 });
