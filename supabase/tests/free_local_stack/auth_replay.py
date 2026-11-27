@@ -129,6 +129,7 @@ for rel in [
     "supabase/tests/phase1_directory_scope/migration_candidate.sql",
     "supabase/tests/phase2_draft_resume/candidate.sql",
     "supabase/release-candidates/ni01_notification_draft_lifecycle.sql",
+    "supabase/tests/phase1_directory_scope/document_create_candidate.sql",
 ]:
     print("Applying local staged candidate", rel, flush=True)
     sql((ROOT / rel).read_text())
@@ -149,6 +150,8 @@ rt, at, bt, lt = (login(u) for u in (root,a,b,legacy))
 for attempt in range(30):
     try:
         rpc("convay_company_directory",rt,{"p_action":"list"})
+        # Inspect OpenAPI, never retry a document mutation to wait for cache.
+        assert "/rpc/convay_create_document_record" in call("/rest/v1/",rt).get("paths",{}), "Document RPC schema cache not ready"
         break
     except AssertionError:
         if attempt == 29: raise
@@ -197,8 +200,6 @@ read_draft(at,ta,expected=(403,))
 assert len(call(path,at))==1, "Existing fallback was not reproduced"
 sql((ROOT/"supabase/tests/phase1_directory_scope/legacy_scope_candidate.sql").read_text())
 sql((ROOT/"supabase/tests/phase1_directory_scope/document_scope_candidate.sql").read_text())
-sql((ROOT/"supabase/tests/phase1_directory_scope/document_create_candidate.sql").read_text())
-sql("NOTIFY pgrst,\'reload schema\';")
 assert call(path,at)==[] and call(path,bt)==[] and len(call(path,lt))==1 and len(call(path,rt))==1
 # Same genuine access token after revocation; do not mint a test claim.
 rpc("convay_member_directory",at,{},expected=(403,))
