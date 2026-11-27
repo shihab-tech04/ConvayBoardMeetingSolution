@@ -50,15 +50,23 @@ function loadAssetFilenameAliases(): Record<string, string> {
 export default defineConfig(async (env) =>
   mergeConfig(await resolveUserConfig(env), {
     resolve: {
-      alias: Object.entries<string>(packageAliases).map(([find, replacement]) => ({
-        find,
-        replacement,
-      })),
+      alias: [
+        // Preserve the static Figma Make/proxy route. The controlled Pages
+        // build alone uses a deferred editor behind the existing access gate.
+        ...(env.command === 'build' && process.env.CONVAY_PAGES_BUILD === 'true'
+          ? [{
+              find: './pages/agenda-documents/DocumentEditorRoute',
+              replacement: path.resolve(__dirname, 'src/app/pages/agenda-documents/DocumentEditorRoute.pages.tsx'),
+            }]
+          : []),
+        ...Object.entries<string>(packageAliases).map(([find, replacement]) => ({ find, replacement })),
+      ],
     },
     base: process.env.FIGMA_PUBLIC_URL ? `${process.env.FIGMA_PUBLIC_URL}/` : '/',
     build: {
       sourcemap: env.mode === 'development' ? 'inline' : false,
       minify: env.mode !== 'development',
+      manifest: env.command === 'build' && process.env.CONVAY_PAGES_BUILD === 'true',
     },
     plugins: [
       figmaSourcePathResolver(),
