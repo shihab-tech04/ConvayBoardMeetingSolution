@@ -45,7 +45,10 @@ jobs:
           # Quick Meeting guest/backend journeys via this release.
           VITE_CONVAY_REGULAR_LIVE_ENABLED: "true"
           VITE_CONVAY_QUICK_MEETING_ENABLED: "false"
+          CONVAY_PAGES_BUILD: "true"
         run: pnpm exec vite build --config vite.figma.config.ts --base /ConvayBoardMeetingSolution/
+      - name: Verify the document editor is deferred from startup
+        run: node scripts/verify-pages-editor-chunk.mjs
       - name: Verify production entry
         run: |
           test -s dist/index.html
