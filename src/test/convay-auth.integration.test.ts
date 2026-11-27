@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import authReducer from "../app/store/authSlice";
 import { convayAuth, profileToCurrentUser } from "../app/services/supabase/convayAuth";
+import { saveStagedCompanyDraft } from "../app/services/saas/companyMeetingDrafts";
+import type { MeetingTemplateVersion } from "../app/services/saas/meetingTemplateControl";
 
 const profile = {
   user_id: "4d0b19af-c0db-40df-8445-67cd363e9621",
@@ -91,5 +93,44 @@ describe("Supabase Auth migration", () => {
         Authorization: "Bearer validated-access-token",
       }) }),
     );
+  });
+});
+describe("company draft rejection through the real authenticated transport",()=>{
+  const tenant="11111111-1111-4111-8111-111111111111";
+  const templateId="22222222-2222-4222-8222-222222222222";
+  const requestId="33333333-3333-4333-8333-333333333333";
+  const template:MeetingTemplateVersion={id:templateId,tenant_id:tenant,template_key:"board",
+    title:"Board review",description:"",source_template_id:null,revision:2,current_revision:2,
+    published_revision:2,state:"published",published_at:"2026-11-25T00:00:00Z",
+    definition:{steps:[{id:"details",title:"Meeting details",fields:[
+      {id:"title",label:"Meeting title",type:"text",required:true}]}]}};
+  const create=()=>saveStagedCompanyDraft(tenant,template,"Board review",{title:"Budget"},requestId);
+  const seed=()=>sessionStorage.setItem("convay.supabase.session.v1",JSON.stringify({
+    accessToken:"test-access",refreshToken:"test-refresh",userId:"test-user",expiresAt:Date.now()+3600000,
+  }));
+  it("allows correction after a definitive SQL validation rejection",async()=>{
+    seed();
+    const fetchMock=vi.fn(async()=>json({message:"Invalid field",code:"23514"},400));
+    vi.stubGlobal("fetch",fetchMock);
+    await expect(create()).rejects.toMatchObject({name:"StagedDraftCreateRejected",message:"Invalid field"});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("retains the original intent after a transport failure or ambiguous server error",async()=>{
+    seed();
+    const fetchMock=vi.fn().mockRejectedValueOnce(new Error("Network interrupted"))
+      .mockResolvedValueOnce(json({message:"Server error",code:"23514"},503));
+    vi.stubGlobal("fetch",fetchMock);
+    await expect(create()).rejects.toMatchObject({name:"Error",message:"Network interrupted"});
+    await expect(create()).rejects.toMatchObject({name:"Error",message:"Server error"});
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it("does not classify a denied post-create readback as a rejected create",async()=>{
+    seed();
+    const fetchMock=vi.fn().mockResolvedValueOnce(json({tenant_id:tenant,draft_id:"DRAFT-1234567890ABCDEF1234",
+      template_id:templateId,template_revision:2,request_id:requestId,status:"Staged Draft",meeting_activation_enabled:false}))
+      .mockResolvedValueOnce(json({message:"Denied",code:"42501"},403));
+    vi.stubGlobal("fetch",fetchMock);
+    await expect(create()).rejects.toMatchObject({name:"Error",message:"Denied"});
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
