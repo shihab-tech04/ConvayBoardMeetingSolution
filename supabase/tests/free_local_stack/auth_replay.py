@@ -32,9 +32,12 @@ service = env.get("SERVICE_ROLE_KEY") or env.get("SECRET_KEY")
 assert anon and service, "Missing disposable local credentials"
 db = "supabase_db_convay-free-rehearsal"
 subprocess.run(["docker", "inspect", db], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-def sql(source, dbname="postgres", tuples=False):
+def sql(source, dbname="postgres", tuples=False, local_restore_admin=False):
     assert dbname in ("postgres", "convay_native_fixture")
-    args = ["docker", "exec", "-i", db, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", dbname]
+    # Use the existing administrator only in the disposable local container.
+    # Do not grant memberships, alter roles or use this for hosted databases.
+    role = "supabase_admin" if local_restore_admin else "postgres"
+    args = ["docker", "exec", "-i", db, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", role, "-d", dbname]
     if tuples:
         args += ["-A", "-t"]
     p = subprocess.run(args, input=source, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -214,7 +217,8 @@ print("LOCAL_SYNTHETIC_NATIVE_ARCHIVE_PASS",len(dump),hashlib.sha256(dump).hexdi
 # disposable PostgreSQL cluster. No production DSN, managed project, external
 # Storage objects, or public artifact is involved. Keep ownership and ACLs.
 restore_db = "convay_native_fixture"
-subprocess.run(["docker","exec",db,"createdb","-U","postgres","-T","template0",restore_db],check=True)
+assert sql("SELECT current_user='supabase_admin' AND rolsuper FROM pg_roles WHERE rolname=current_user;",tuples=True,local_restore_admin=True)=="t", "Disposable native restore administrator unavailable"
+subprocess.run(["docker","exec",db,"createdb","-U","supabase_admin","-T","template0",restore_db],check=True)
 # pg_dump -n does not include external extension dependencies. Recreate the
 # compatible local extension baseline explicitly before restoring the archive.
 extensions = json.loads(sql("""
@@ -230,13 +234,13 @@ def lit(s):
 for ext in extensions:
     sql("CREATE SCHEMA IF NOT EXISTS " + ident(ext["schema"]) + "; CREATE EXTENSION IF NOT EXISTS "
         + ident(ext["name"]) + " WITH SCHEMA " + ident(ext["schema"]) + " VERSION " + lit(ext["version"]) + ";",
-        dbname=restore_db)
+        dbname=restore_db,local_restore_admin=True)
 # The target was created from template0, not restored over an existing app.
 # pg_restore --clean still tries DROP POLICY on nonexistent tables; remove
 # only the template's default public schema if the archive creates it.
 if re.search(rb"(?m)^\d+;.* SCHEMA - public ",toc):
-    sql("DROP SCHEMA public;",dbname=restore_db)
-restore = subprocess.run(["docker","exec","-i",db,"pg_restore","-U","postgres","-d",restore_db,
+    sql("DROP SCHEMA public;",dbname=restore_db,local_restore_admin=True)
+restore = subprocess.run(["docker","exec","-i",db,"pg_restore","-U","supabase_admin","-d",restore_db,
                           "--exit-on-error"],
                          input=dump,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
 if restore.returncode:
@@ -250,7 +254,7 @@ table_names=json.loads(sql("SELECT COALESCE(json_agg(json_build_array(n.nspname,
 assert table_names
 digest_query=" UNION ALL ".join("SELECT "+lit(schema+"."+table)+" AS relation, count(*)::bigint AS rows, md5(COALESCE(string_agg(md5(to_jsonb(t)::text),',' ORDER BY md5(to_jsonb(t)::text)),'')) AS digest FROM "+ident(schema)+"."+ident(table)+" t" for schema,table in table_names)
 digest_query="SELECT COALESCE(json_agg(x ORDER BY relation),'[]') FROM ("+digest_query+") x;"
-assert json.loads(sql(digest_query,tuples=True))==json.loads(sql(digest_query,dbname=restore_db,tuples=True)), "Restored row counts/content differ"
+assert json.loads(sql(digest_query,tuples=True,local_restore_admin=True))==json.loads(sql(digest_query,dbname=restore_db,tuples=True,local_restore_admin=True)), "Restored row counts/content differ"
 # Roles are cluster-level and are already present in the same disposable
 # cluster. Compare granted privileges including default ACL semantics.
 catalog_queries=[
@@ -261,5 +265,5 @@ catalog_queries=[
 "SELECT COALESCE(json_agg(x ORDER BY nspname,proname,args,grantor,grantee,privilege_type,is_grantable),'[]') FROM (SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid) args,pg_get_userbyid(a.grantor) AS grantor,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,a.privilege_type,a.is_grantable FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a WHERE n.nspname IN ("+scope+") AND p.prokind IN ('f','p')) x",
 ]
 for index,q in enumerate(catalog_queries,1):
-    assert json.loads(sql(q,tuples=True))==json.loads(sql(q,dbname=restore_db,tuples=True)), "Restored security catalog mismatch "+str(index)
+    assert json.loads(sql(q,tuples=True,local_restore_admin=True))==json.loads(sql(q,dbname=restore_db,tuples=True,local_restore_admin=True)), "Restored security catalog mismatch "+str(index)
 print("LOCAL_SYNTHETIC_NATIVE_RESTORE_PASS",len(table_names),"tables and five security catalogs",flush=True)
