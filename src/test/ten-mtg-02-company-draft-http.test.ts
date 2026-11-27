@@ -63,3 +63,36 @@ describe("MT-03/11/14/27 staged draft HTTP contract and recovery",()=>{
   await expect(discardStagedCompanyDraft(tenant,revised,rid)).rejects.toThrow("still appears");
  });
 });
+
+describe("MT-11/12 SQL-advertised partial progress",()=>{
+ const progress={stepId:"details",partial:true};
+ const capability={tenant_id:tenant,meeting_activation_enabled:false,draft_progress_supported:true,drafts:[]};
+ const savePartial=()=>saveStagedCompanyDraft(tenant,template,draft.title,{},rid,progress);
+ it("does not write to an old SQL contract without explicit progress capability",async()=>{
+   req.mockResolvedValueOnce(reply({...capability,draft_progress_supported:false}));
+   await expect(savePartial()).rejects.toMatchObject({name:"StagedDraftCreateRejected"});
+   expect(req).toHaveBeenCalledTimes(1);
+   expect(JSON.parse(req.mock.calls[0][1]!.body as string).p_action).toBe("list");
+ });
+ it("sends exact step and mode with the stable create intent and validates readback",async()=>{
+   const partial={...draft,values:{},wizard_step_id:"details"};
+   req.mockResolvedValueOnce(reply(capability)).mockResolvedValueOnce(reply({...receipt,wizard_step_id:"details"}))
+      .mockResolvedValueOnce(read(partial)).mockResolvedValueOnce(reply({template}));
+   await expect(savePartial()).resolves.toMatchObject({draft:partial});
+   expect(JSON.parse(req.mock.calls[1][1]!.body as string).p_payload).toMatchObject({wizard_step_id:"details",partial_save:true,request_id:rid,values:{}});
+ });
+ it("rejects a missing or wrong saved step rather than announcing success",async()=>{
+   req.mockResolvedValueOnce(reply(capability)).mockResolvedValueOnce(reply({...receipt,wizard_step_id:"details"}))
+      .mockResolvedValueOnce(read({...draft,values:{}}));
+   await expect(savePartial()).rejects.toThrow("content did not match");
+   req.mockResolvedValueOnce(read({...draft,wizard_step_id:"foreign_step"}));
+   await expect(readStagedCompanyDraft(tenant,draftId)).rejects.toThrow("Saved wizard step");
+ });
+ it("checks the progress receipt and optimistic revision for update",async()=>{
+   const revised={...draft,edit_revision:2,wizard_step_id:"details",values:{}};
+   const transition={...receipt,action:"update",edit_revision:2,audit_event_id:1,wizard_step_id:"details"};
+   req.mockResolvedValueOnce(reply(capability)).mockResolvedValueOnce(reply(transition)).mockResolvedValueOnce(read(revised));
+   await expect(updateStagedCompanyDraft(tenant,draft,draft.title,{},rid,progress)).resolves.toMatchObject({draft:revised});
+   expect(JSON.parse(req.mock.calls[1][1]!.body as string).p_payload).toMatchObject({expected_revision:1,wizard_step_id:"details",partial_save:true});
+ });
+});
