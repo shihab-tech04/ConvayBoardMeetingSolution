@@ -3,8 +3,12 @@
 -- security condition; they are not production grants.
 \set ON_ERROR_STOP on
 BEGIN;
-CREATE ROLE anon NOLOGIN;
-CREATE ROLE authenticated NOLOGIN;
+-- The earlier fixture creates cluster-wide roles; the second database must
+-- reuse those roles without changing their attributes.
+DO $ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon NOLOGIN; END IF;
+ IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF;
+END $;
 CREATE SCHEMA auth;
 CREATE SCHEMA storage;
 CREATE SCHEMA convay_private;
