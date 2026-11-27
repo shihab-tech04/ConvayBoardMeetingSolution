@@ -209,3 +209,52 @@ toc = subprocess.run(["docker","exec","-i",db,"pg_restore","-l"],input=dump,stdo
 assert b"TABLE DATA auth users" in toc and b"TABLE DATA convay_private company_meeting_draft_staging" in toc and b"TABLE DATA storage objects" in toc
 import hashlib
 print("LOCAL_SYNTHETIC_NATIVE_ARCHIVE_PASS",len(dump),hashlib.sha256(dump).hexdigest(),flush=True)
+
+# Restore the actual archive into a newly created database in the same
+# disposable PostgreSQL cluster. No production DSN, managed project, external
+# Storage objects, or public artifact is involved. Keep ownership and ACLs.
+restore_db = "convay_native_fixture"
+subprocess.run(["docker","exec",db,"createdb","-U","postgres","-T","template0",restore_db],check=True)
+# pg_dump -n does not include external extension dependencies. Recreate the
+# compatible local extension baseline explicitly before restoring the archive.
+extensions = json.loads(sql("""
+SELECT COALESCE(json_agg(json_build_object('name',e.extname,'version',e.extversion,'schema',n.nspname)),'[]')
+FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace
+WHERE e.extname IN ('pgcrypto','uuid-ossp','pg_trgm','citext','pgjwt')
+ AND n.nspname NOT IN ('public','convay_private','auth','storage')
+""",tuples=True))
+def ident(s):
+    return '"' + s.replace('"','""') + '"'
+def lit(s):
+    return "'" + s.replace("'","''") + "'"
+for ext in extensions:
+    sql("CREATE SCHEMA IF NOT EXISTS " + ident(ext["schema"]) + "; CREATE EXTENSION IF NOT EXISTS "
+        + ident(ext["name"]) + " WITH SCHEMA " + ident(ext["schema"]) + " VERSION " + lit(ext["version"]) + ";",
+        dbname=restore_db)
+restore = subprocess.run(["docker","exec","-i",db,"pg_restore","-U","postgres","-d",restore_db,
+                          "--exit-on-error","--clean","--if-exists"],
+                         input=dump,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+if restore.returncode:
+    raise RuntimeError("Local native restore failed: " + restore.stderr.decode(errors="replace")[-2200:])
+# Compare every table's row count and deterministic row-content digest, plus
+# RLS flags, table owners, normalized table grants, function owners/grants
+# and the actual RLS policy definitions. Only counts and the final PASS are
+# logged; never emit Auth rows, password hashes, or tokens.
+scope="'public','convay_private','auth','storage'"
+table_names=json.loads(sql("SELECT COALESCE(json_agg(json_build_array(n.nspname,c.relname) ORDER BY n.nspname,c.relname),'[]') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p')",tuples=True))
+assert table_names
+digest_query=" UNION ALL ".join("SELECT "+lit(schema+"."+table)+" AS relation, count(*)::bigint AS rows, md5(COALESCE(string_agg(md5(to_jsonb(t)::text),',' ORDER BY md5(to_jsonb(t)::text)),'')) AS digest FROM "+ident(schema)+"."+ident(table)+" t" for schema,table in table_names)
+digest_query="SELECT COALESCE(json_agg(x ORDER BY relation),'[]') FROM ("+digest_query+") x;"
+assert json.loads(sql(digest_query,tuples=True))==json.loads(sql(digest_query,dbname=restore_db,tuples=True)), "Restored row counts/content differ"
+# Roles are cluster-level and are already present in the same disposable
+# cluster. Compare granted privileges including default ACL semantics.
+catalog_queries=[
+"SELECT COALESCE(json_agg(x ORDER BY nspname,relname),'[]') FROM (SELECT n.nspname,c.relname,c.relkind,c.relrowsecurity,c.relforcerowsecurity,pg_get_userbyid(c.relowner) AS owner FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p','v','m','S')) x",
+"SELECT COALESCE(json_agg(x ORDER BY nspname,relname,grantor,grantee,privilege_type,is_grantable),'[]') FROM (SELECT n.nspname,c.relname,pg_get_userbyid(a.grantor) AS grantor,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,a.privilege_type,a.is_grantable FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault(CASE WHEN c.relkind='S' THEN 's'::char ELSE 'r'::char END,c.relowner))) a WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p','v','m','S')) x",
+"SELECT COALESCE(json_agg(x ORDER BY schemaname,tablename,policyname),'[]') FROM (SELECT schemaname,tablename,policyname,permissive,roles,cmd,qual,with_check FROM pg_policies WHERE schemaname IN ("+scope+")) x",
+"SELECT COALESCE(json_agg(x ORDER BY nspname,proname,args),'[]') FROM (SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid) args,pg_get_userbyid(p.proowner) AS owner,p.prosecdef,p.proconfig,pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname IN ("+scope+") AND p.prokind IN ('f','p')) x",
+"SELECT COALESCE(json_agg(x ORDER BY nspname,proname,args,grantor,grantee,privilege_type,is_grantable),'[]') FROM (SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid) args,pg_get_userbyid(a.grantor) AS grantor,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,a.privilege_type,a.is_grantable FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a WHERE n.nspname IN ("+scope+") AND p.prokind IN ('f','p')) x",
+]
+for index,q in enumerate(catalog_queries,1):
+    assert json.loads(sql(q,tuples=True))==json.loads(sql(q,dbname=restore_db,tuples=True)), "Restored security catalog mismatch "+str(index)
+print("LOCAL_SYNTHETIC_NATIVE_RESTORE_PASS",len(table_names),"tables and five security catalogs",flush=True)
