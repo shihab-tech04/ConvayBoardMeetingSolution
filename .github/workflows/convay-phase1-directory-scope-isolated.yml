@@ -24,6 +24,10 @@ jobs:
         run: docker exec convay-phase1-scope psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -v keep_concurrency_fixture=1 -f /workspace/supabase/tests/phase1_directory_scope/rehearsal.psql
       - name: Exercise actual concurrent sessions (synthetic only)
         run: bash supabase/tests/phase1_directory_scope/concurrency.sh
+      - name: Reproduce revoked legacy access and verify registry and Storage RLS correction
+        run: |
+          docker exec convay-phase1-scope createdb -U postgres fixture_legacy_scope
+          docker exec convay-phase1-scope psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture_legacy_scope -f /workspace/supabase/tests/phase1_directory_scope/legacy_scope_revocation.psql
       - name: Destroy disposable PostgreSQL
         if: always()
         run: docker rm -f convay-phase1-scope || true
