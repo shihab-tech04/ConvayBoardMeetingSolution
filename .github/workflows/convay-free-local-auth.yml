@@ -1,0 +1,55 @@
+name: Convay free-tier local Auth and full-schema replay
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/release-candidates/**'
+      - 'supabase/tests/**'
+      - '.github/workflows/convay-free-local-auth.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  local-auth:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: supabase/setup-cli@v2
+        with:
+          version: 2.122.1
+      - name: Start unlinked disposable Supabase PostgreSQL 17 and Auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_REF DATABASE_URL
+          mkdir -p "$RUNNER_TEMP/convay-free-rehearsal"
+          cd "$RUNNER_TEMP/convay-free-rehearsal"
+          supabase init
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path("supabase/config.toml")
+          s=p.read_text()
+          s,n=re.subn(r'(?m)^project_id\s*=.*$', 'project_id = "convay-free-rehearsal"',s)
+          assert n==1
+          s,n=re.subn(r'(?m)^major_version\s*=\s*\d+\s*$', 'major_version = 17',s)
+          assert n==1
+          p.write_text(s)
+          PY
+          supabase start > "$RUNNER_TEMP/convay-local-start.log" 2>&1
+          supabase status -o env > "$RUNNER_TEMP/convay-local.env"
+          chmod 600 "$RUNNER_TEMP/convay-local.env"
+      - name: Replay checked-in migrations and exercise real Auth REST authorization
+        run: python3 supabase/tests/free_local_stack/auth_replay.py "$RUNNER_TEMP/convay-local.env"
+      - name: Stop isolated services and remove ephemeral credentials
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/convay-free-rehearsal/supabase/config.toml" ]; then
+            cd "$RUNNER_TEMP/convay-free-rehearsal"
+            supabase stop --no-backup >/dev/null 2>&1 || true
+          fi
+          rm -f "$RUNNER_TEMP/convay-local.env" "$RUNNER_TEMP/convay-local-start.log"
