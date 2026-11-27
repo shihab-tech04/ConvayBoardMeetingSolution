@@ -258,7 +258,14 @@ export const convayAuth = {
     });
     if (!res.ok) {
       const body = await responseBody(res);
-      throw new Error(errorMessage(body, "Request failed (" + res.status + ")"));
+      // Preserve structured failure metadata for callers that distinguish a
+      // rejected SQL mutation from an ambiguous transport failure. No response
+      // body, credentials, or request headers are retained.
+      const sqlState = typeof body?.code === "string" && /^[A-Z0-9]{5}$/.test(body.code)
+        ? body.code : undefined;
+      throw Object.assign(new Error(errorMessage(body, "Request failed (" + res.status + ")")), {
+        httpStatus: res.status, sqlState,
+      });
     }
     return res;
   },
