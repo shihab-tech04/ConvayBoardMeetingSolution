@@ -29,6 +29,8 @@ jobs:
           for f in supabase/tests/live_attendance_scoped/bootstrap.sql supabase/migrations/20261122173000_convay_authoritative_live_attendance.sql supabase/migrations/20261123101000_convay_quorum_snapshot_safeupdate.sql supabase/tests/live_attendance_scoped/activation_candidate.sql supabase/tests/live_attendance_scoped/matrix.sql; do
             docker exec convay-scoped-attendance psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f "/workspace/$f"
           done
+      - name: Rehearse non-destructive suspension script
+        run: docker exec convay-scoped-attendance psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_attendance_scoped/rollback_isolated.sql
       - name: Destroy disposable PostgreSQL
         if: always()
         run: docker rm -f convay-scoped-attendance || true

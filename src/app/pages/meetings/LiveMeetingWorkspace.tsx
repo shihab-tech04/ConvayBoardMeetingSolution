@@ -428,7 +428,6 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
 
   // Deduplicate provider callbacks per authenticated meeting workspace.
   // Server-backed attendance/quorum authority remains a separate integration gate.
-  const onlinePresence = useMemo(() => new OnlinePresenceTransition(), [meetingId, currentUser.id]);
   const meeting = meetings.find(m => m.meeting_id === meetingId);
   const isOnlineMeeting = LIVE_MEETINGS_RELEASED && (meeting?.mode === "Virtual" || meeting?.mode === "Hybrid");
   // Never request a live-attendance readback until SQL confirms an active room.
@@ -610,6 +609,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
     ? liveSessions.find(session => session.meeting_id === meetingId
       && ["active", "paused"].includes(session.session_status))?.id ?? ""
     : "";
+  const onlinePresence = useMemo(() => new OnlinePresenceTransition(), [meetingId, onlineSessionId, currentUser.id]);
   // Reuse an epoch only while the same authenticated actor, room, roster and
   // effective access remain current. Returning to a previous room creates a
   // NEW epoch; an old async result cannot become current again.
@@ -678,7 +678,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
       if (document.visibilityState === "hidden" || activeAttendanceGate.current !== gate) return;
       const ticket = gate.begin();
       try {
-        const saved = await readLiveAttendance(meetingId, target);
+        const saved = await readLiveAttendance(meetingId, target, gate.sessionId);
         if (!cancelled) applyVerifiedAttendance(saved, ticket);
       } catch (error) {
         if (!cancelled && invalidateVerifiedAttendance(ticket)) {
@@ -1202,7 +1202,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           const mode = id === currentUser.id ? "Online"
             : meeting?.mode === "Hybrid" ? "In-Person" : "Online";
           if (status === "Not Joined") {
-            const saved = await readLiveAttendance(meetingId, id);
+            const saved = await readLiveAttendance(meetingId, id, gate.sessionId);
             if (activeAttendanceGate.current !== gate) return;
             if (saved.attendanceRevision === 0) {
               applyVerifiedAttendance(saved, ticket);
@@ -1210,7 +1210,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
             }
           }
           const saved = await commitLiveAttendance(meetingId, id, status, mode,
-            () => activeAttendanceGate.current === gate);
+            () => activeAttendanceGate.current === gate, gate.sessionId);
           if (activeAttendanceGate.current !== gate) return;
           applyVerifiedAttendance(saved, ticket);
           void refreshAttendanceRec?.().catch(() => undefined);
@@ -1222,7 +1222,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           // On failure reconcile from SQL using a NEW request ticket.
           const recovery = gate.begin();
           try {
-            const saved = await readLiveAttendance(meetingId, id);
+            const saved = await readLiveAttendance(meetingId, id, gate.sessionId);
             applyVerifiedAttendance(saved, recovery);
           } catch {
             invalidateVerifiedAttendance(recovery);
@@ -2056,7 +2056,7 @@ export function LiveMeetingWorkspace({ meetingId, entryAction, onClose, openedFr
           <div className="convay-live-stage" style={{ flex: 1, overflow: "hidden", padding: "0.75rem", display: "flex", flexDirection: "column", gap: "0.5rem", minHeight: 0 }}>
             {isOnlineMeeting && canonicalRoomEntry.canJoin && (
               <div style={{ display: viewMode === "document" ? "none" : "flex", flex: 1, minHeight: 0 }}>
-                <LiveMeetingMedia meetingId={meetingId} layout={viewMode === "grid" ? "gallery" : "speaker"}
+                <LiveMeetingMedia key={JSON.stringify([meetingId, onlineSessionId, currentUser.id])} meetingId={meetingId} expectedSessionId={onlineSessionId} layout={viewMode === "grid" ? "gallery" : "speaker"}
                   micOn={canPublishMedia && myMicOn} camOn={canPublishMedia && myCamOn}
                   sharing={canPublishMedia && shareRequested}
                   onMicChange={setMyMicOn} onCamChange={setMyCamOn} onSharingChange={confirmed => {
