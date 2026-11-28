@@ -5,9 +5,9 @@
  * No new third-party dependency or browser/network API required.
  */
 export interface BoardPackZipEntry { name: string; bytes: Uint8Array }
-const MAX_FILES = 400;
-const MAX_FILE_BYTES = 100 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+export const BOARD_PACK_MAX_FILES = 400;
+export const BOARD_PACK_MAX_FILE_BYTES = 100 * 1024 * 1024;
+export const BOARD_PACK_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 const UTF8_FLAG = 0x0800;
 const CRC_POLY = 0xedb88320;
 const textEncoder = new TextEncoder();
@@ -62,8 +62,8 @@ function u32(buf: Uint8Array, offset: number, value: number) {
 
 /** Creates a standards-compliant ZIP without third-party code or data descriptors. */
 export function createBoardPackZip(entries: readonly BoardPackZipEntry[]): Uint8Array {
-  if (!Array.isArray(entries) || entries.length < 1 || entries.length > MAX_FILES) {
-    throw new Error(`Board pack must contain 1–${MAX_FILES} authorized documents.`);
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > BOARD_PACK_MAX_FILES) {
+    throw new Error(`Board pack must contain 1–${BOARD_PACK_MAX_FILES} authorized documents.`);
   }
   const used = new Set<string>();
   const items = entries.map(item => {
@@ -71,7 +71,7 @@ export function createBoardPackZip(entries: readonly BoardPackZipEntry[]): Uint8
         Object.prototype.toString.call(item.bytes) !== "[object Uint8Array]") {
       throw new Error("Invalid document content.");
     }
-    if (item.bytes.byteLength > MAX_FILE_BYTES) throw new Error("Document exceeds ZIP size limit.");
+    if (item.bytes.byteLength > BOARD_PACK_MAX_FILE_BYTES) throw new Error("Document exceeds ZIP size limit.");
     const name = textEncoder.encode(uniqueName(item.name, used));
     if (name.length > 65535) throw new Error("Document name is too long.");
     return { name, bytes: item.bytes, crc: crc32(item.bytes) };
@@ -82,7 +82,7 @@ export function createBoardPackZip(entries: readonly BoardPackZipEntry[]): Uint8
     centralSize += 46 + item.name.length;
     sumPayload += item.bytes.length;
   }
-  if (sumPayload > MAX_TOTAL_BYTES || localSize + centralSize + 22 > 0xffffffff) {
+  if (sumPayload > BOARD_PACK_MAX_TOTAL_BYTES || localSize + centralSize + 22 > 0xffffffff) {
     throw new Error("Board pack exceeds ZIP size limit.");
   }
   const out = new Uint8Array(localSize + centralSize + 22);
@@ -157,11 +157,12 @@ export async function composeAuthorizedBoardPack(
   loadOriginal: (documentId: string, versionId: string) => Promise<Blob | null>,
   recordAudit: (documents: readonly AuthorizedBoardPackFile[]) => Promise<string>,
 ): Promise<Blob> {
-  if (!Array.isArray(files) || files.length < 1 || files.length > MAX_FILES) {
+  if (!Array.isArray(files) || files.length < 1 || files.length > BOARD_PACK_MAX_FILES) {
     throw new Error("No authorized board pack documents were returned.");
   }
   const seen = new Set<string>();
   const entries: BoardPackZipEntry[] = [];
+  let totalBytes = 0;
   for (const entry of files) {
     if (!entry || !entry.documentId?.trim() || !entry.versionId?.trim()) {
       throw new Error("Invalid authorized board pack manifest.");
@@ -171,8 +172,13 @@ export async function composeAuthorizedBoardPack(
     seen.add(key);
     const blob = await loadOriginal(entry.documentId, entry.versionId);
     if (!blob) throw new Error("A board pack document is missing or you do not have access.");
-    if (blob.size > MAX_FILE_BYTES) throw new Error("Document exceeds ZIP size limit.");
+    if (blob.size > BOARD_PACK_MAX_FILE_BYTES) throw new Error("Document exceeds ZIP size limit.");
+    if (totalBytes + blob.size > BOARD_PACK_MAX_TOTAL_BYTES) {
+      throw new Error("Board pack exceeds ZIP size limit.");
+    }
     const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (bytes.byteLength !== blob.size) throw new Error("Board pack original-file size changed.");
+    totalBytes += bytes.byteLength;
     entries.push({name: entry.fileName, bytes});
   }
   const archive = createBoardPackZip(entries);

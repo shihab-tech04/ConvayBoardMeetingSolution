@@ -137,3 +137,31 @@ describe("DC-25: server-authorized board-pack download gateway", () => {
   });
 
 });
+
+describe("DC-25 aggregate download limits and receipt lifetime", () => {
+  const mb = 1024 * 1024;
+  const files = (sizes: number[]) => sizes.map((size, index) => ({
+    documentId: "doc-" + index, versionId: "v2", fileName: "doc-" + index + ".pdf", sizeBytes: size * mb,
+  }));
+  it("rejects an oversized manifest before any original or receipt request", async () => {
+    const g = gateway();
+    g.requestManifest = vi.fn(async () => ({...manifest(), files: files([100, 100, 57])}));
+    await expect(prepareAuthorizedBoardPackDownload("pack-1", g)).rejects.toThrow(/ZIP size limit/);
+    expect(g.loadOriginal).not.toHaveBeenCalled();
+    expect(g.confirmReceipt).not.toHaveBeenCalled();
+  });
+  it("accepts the existing exact aggregate size boundary without allocating originals", () => {
+    expect(parseAuthorizedBoardPackManifest({...manifest(), files: files([100, 100, 56])}, "pack-1", NOW).files).toHaveLength(3);
+  });
+  it("withholds the archive if authorization expires during the server receipt request", async () => {
+    const g = gateway();
+    let t = NOW;
+    g.now = () => t;
+    g.confirmReceipt = vi.fn(async () => {
+      t = NOW + 60_000;
+      return {receiptId:"receipt",packId:"pack-1",manifestId:"manifest-revision-7"};
+    });
+    await expect(prepareAuthorizedBoardPackDownload("pack-1", g)).rejects.toThrow(/expired/);
+    expect(g.confirmReceipt).toHaveBeenCalledTimes(1);
+  });
+});
