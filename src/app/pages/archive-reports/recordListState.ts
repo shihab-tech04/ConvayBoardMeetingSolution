@@ -7,3 +7,9 @@ export function recordListState(loading: boolean, error: unknown, count: number)
   if (!Number.isSafeInteger(count) || count < 0) return "error";
   return count === 0 ? "empty" : "ready";
 }
+
+/** AR-03: Never present an unresolved or failed source count as a verified zero. */
+export function recordListCountLabel(loading: boolean, error: unknown, count: number): string {
+  const state = recordListState(loading, error, count);
+  return state === "error" ? "Unavailable" : state === "loading" ? "Loading…" : String(count);
+}

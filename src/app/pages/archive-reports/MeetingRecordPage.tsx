@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { recordListState } from "./recordListState";
+import { recordListCountLabel, recordListState } from "./recordListState";
 import { normalizeRecordedQuorum } from "./recordedQuorumStatus";
 import {
   buildMinutesRevisionRequest, canArchiveMinutes, canEditMinutesContent,
@@ -284,10 +284,10 @@ export function MeetingRecordPage() {
         <KV label="Governance Body"   value={meeting.governance_body} />
         <KV label="Participants"      value={meeting.participant_count} />
         <KV label="Quorum Required"   value={meeting.quorum_required} />
-        <KV label="Agenda Items"      value={String(meetingAgendas.length)} />
-        <KV label="Minutes Records"   value={String(meetingMinutes.length)} />
-        <KV label="Decisions"         value={String(meetingDecisions.length)} />
-        <KV label="Actions"           value={String(meetingActions.length)} />
+        <KV label="Agenda Items"      value={recordListCountLabel(Boolean(agendaReg.loading || agendaLinks.loading), agendaReg.error || agendaLinks.error, meetingAgendas.length)} />
+        <KV label="Minutes Records"   value={recordListCountLabel(Boolean(minutesReg.loading), minutesReg.error, meetingMinutes.length)} />
+        <KV label="Decisions"         value={recordListCountLabel(Boolean(decisionReg.loading), decisionReg.error, meetingDecisions.length)} />
+        <KV label="Actions"           value={recordListCountLabel(Boolean(actionReg.loading), actionReg.error, meetingActions.length)} />
       </SectionCard>
       {meetingSessions.length > 0 && (
         <SectionCard title="Live Session">
