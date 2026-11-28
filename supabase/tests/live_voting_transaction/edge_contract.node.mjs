@@ -41,3 +41,10 @@ for(const [key,value] of [['tenantId','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],['
  test('archive rejects nested contradictory '+key,()=>assert.equal(projectReceipt({...scope,rounds:[{...archiveRow,[key]:value}]},scope,{action:'archive'}),null));
 }
 test('nested rows may omit redundant scope',()=>{const omit=({tenantId,meetingId,sessionId,...row})=>row;assert(projectReceipt(workspaceOf(omit(workspaceRow)),scope,{action:'workspace'}));assert(projectReceipt({...scope,rounds:[omit(archiveRow)]},scope,{action:'archive'}));});
+
+// Do not coerce malformed JSON arrays into valid enum labels.
+for(const [field,value] of [['state',['Open']],['method',['Secret Ballot']]])test('round rejects non-string '+field,()=>assert.equal(projectReceipt({...base,[field]:value},scope,read),null));
+const strictPolicy={policyId:'policy',version:1,method:'Secret Ballot',numerator:1,denominator:2,basis:'cast',comparison:'gte',seconderRequired:false,reopenAllowed:false};
+for(const [field,value] of [['method',['Secret Ballot']],['basis',['cast']],['comparison',['gte']]])test('workspace rejects non-string policy '+field,()=>assert.equal(projectReceipt({...workspaceOf(workspaceRow),policies:[{...strictPolicy,[field]:value}]},scope,{action:'workspace'}),null));
+for(const [field,value] of [['basis',['cast']],['comparison',['gte']]])test('archive rejects non-string policy '+field,()=>assert.equal(projectReceipt({...scope,rounds:[{...archiveRow,[field]:value}]},scope,{action:'archive'}),null));
+test('valid policy enums retain exact original values',()=>{const v=projectReceipt({...workspaceOf(workspaceRow),policies:[strictPolicy]},scope,{action:'workspace'});assert.deepEqual(v.policies,[strictPolicy]);});

@@ -59,7 +59,7 @@ export function projectReceipt(raw: unknown, scope: Scope, c: Command): Record<s
   if(raw.roundId!==c.roundId) return null;
   if(c.action==='cast') return raw.recorded===true && typeof raw.replayed==='boolean'?{...base,roundId:c.roundId,recorded:true,replayed:raw.replayed}:null;
   if(c.action==='close') return raw.outcome==='Passed'||raw.outcome==='Rejected'?{...base,roundId:c.roundId,outcome:raw.outcome}:null;
-  if(!uuid(raw.motionId) || !integer(raw.round) || raw.round<1 || !identity(raw.policyId) || !integer(raw.policyVersion) || raw.policyVersion<1 || !['Open','Closed'].includes(String(raw.state)) || !['Open','Secret Ballot'].includes(String(raw.method)) || typeof raw.myRecorded!=='boolean' || !(raw.priorRound===null || uuid(raw.priorRound)) || !(raw.reopenReason===null || typeof raw.reopenReason==='string')) return null;
+  if(!uuid(raw.motionId) || !integer(raw.round) || raw.round<1 || !identity(raw.policyId) || !integer(raw.policyVersion) || raw.policyVersion<1 || (typeof raw.state!=='string'||!['Open','Closed'].includes(raw.state)) || (typeof raw.method!=='string'||!['Open','Secret Ballot'].includes(raw.method)) || typeof raw.myRecorded!=='boolean' || !(raw.priorRound===null || uuid(raw.priorRound)) || !(raw.reopenReason===null || typeof raw.reopenReason==='string')) return null;
   const out:Record<string,unknown>={...base,roundId:c.roundId,motionId:raw.motionId,round:raw.round,state:raw.state,method:raw.method,policyId:raw.policyId,policyVersion:raw.policyVersion,priorRound:raw.priorRound,reopenReason:raw.reopenReason,myRecorded:raw.myRecorded};
   if(typeof raw.voteTitle==='string'&&typeof raw.voteNotes==='string')Object.assign(out,{voteTitle:raw.voteTitle,voteNotes:raw.voteNotes});
   ;
@@ -83,7 +83,7 @@ export type WorkspaceView=Scope&{motions:MotionView[];rounds:RoundView[];policie
 const string=(x:unknown):x is string=>typeof x==='string';
 const date=(x:unknown):x is string=>string(x)&&Number.isFinite(Date.parse(x));
 function policy(x:unknown):PolicyView|null {
- if(!record(x)||!identity(x.policyId)||!integer(x.version)||x.version<1||!['Open','Secret Ballot'].includes(String(x.method))||!integer(x.numerator)||!integer(x.denominator)||x.numerator<1||x.numerator>x.denominator||!['decisive','cast','electorate'].includes(String(x.basis))||!['gt','gte'].includes(String(x.comparison))||typeof x.seconderRequired!=='boolean'||typeof x.reopenAllowed!=='boolean')return null;
+ if(!record(x)||!identity(x.policyId)||!integer(x.version)||x.version<1||(typeof x.method!=='string'||!['Open','Secret Ballot'].includes(x.method))||!integer(x.numerator)||!integer(x.denominator)||x.numerator<1||x.numerator>x.denominator||(typeof x.basis!=='string'||!['decisive','cast','electorate'].includes(x.basis))||(typeof x.comparison!=='string'||!['gt','gte'].includes(x.comparison))||typeof x.seconderRequired!=='boolean'||typeof x.reopenAllowed!=='boolean')return null;
  return {policyId:x.policyId,version:x.version,method:x.method,numerator:x.numerator,denominator:x.denominator,basis:x.basis,comparison:x.comparison,seconderRequired:x.seconderRequired,reopenAllowed:x.reopenAllowed} as PolicyView;
 }
 function motion(x:unknown):MotionView|null {
@@ -111,7 +111,7 @@ function projectArchive(raw:Record<string,unknown>,scope:Scope):Record<string,un
  const rounds=raw.rounds.map(r=>{
   if(!record(r)||!nestedScopeMatches(r,scope)||!uuid(r.roundId)||r.state!=='Closed'||!identity(r.agendaId)||!string(r.title)||!string(r.wording)||!date(r.closedAt))return null;
   const projected=projectReceipt({...r,...scope,myRecorded:false},scope,{action:'read',roundId:r.roundId});
-  if(!projected||!integer(r.numerator)||!integer(r.denominator)||r.numerator<1||r.numerator>r.denominator||!['decisive','cast','electorate'].includes(String(r.basis))||!['gt','gte'].includes(String(r.comparison)))return null;
+  if(!projected||!integer(r.numerator)||!integer(r.denominator)||r.numerator<1||r.numerator>r.denominator||(typeof r.basis!=='string'||!['decisive','cast','electorate'].includes(r.basis))||(typeof r.comparison!=='string'||!['gt','gte'].includes(r.comparison)))return null;
   const {tenantId:_,meetingId:__,sessionId:___,myRecorded:____,...round}=projected;
   return {...round,agendaId:r.agendaId,title:r.title,wording:r.wording,closedAt:r.closedAt,numerator:r.numerator,denominator:r.denominator,basis:r.basis,comparison:r.comparison};
  });
