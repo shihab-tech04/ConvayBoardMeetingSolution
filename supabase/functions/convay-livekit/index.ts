@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { AccessToken, RoomServiceClient } from "npm:livekit-server-sdk@2.19.2";
 import { checkOnlineAdmission, checkOnlineRoomCapacity, type OnlineMeeting, type OnlineLink, type OnlineSession } from "./admission.ts";
 import { canPublishOnlineMeeting } from "./publisherGrant.ts";
+import { scopeFromPersistedSession, scopedRpcArgs, verifyScopedReceipt, type AttendanceScope } from "../convay-attendance/scopedReceipt.ts";
 import { checkLiveKitTenantScope, resolveLiveKitRoomIdentity, opaqueId, meetingLookupParams, uniqueSavedMeeting, checkAttendancePersistenceScope, type SavedMeetingRow, type SqlEntity } from "./tenantScope.ts";
 
 /**
@@ -61,6 +62,21 @@ async function savedMeeting(meetingId: string, jwt: string): Promise<SavedMeetin
   }
   return row;
 }
+/** Company admission remains closed until the coordinated scoped SQL, attendance
+ * Edge and regular client release is verified. A flag alone cannot authorize a room. */
+async function scopedAttendanceReady(scope: AttendanceScope, meetingId: string, actorId: string): Promise<boolean> {
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  if (Deno.env.get("CONVAY_SCOPED_ATTENDANCE_ENABLED") !== "true" || !serviceKey) return false;
+  try {
+    const proof = await fetch(SUPABASE_URL + "/rest/v1/rpc/convay_read_live_attendance_scoped", {
+      method: "POST", cache: "no-store",
+      headers: { apikey: serviceKey, Authorization: "Bearer " + serviceKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ p_actor_id: actorId, p_meeting_id: meetingId, p_participant_id: actorId, ...scopedRpcArgs(scope) }),
+    });
+    if (!proof.ok) return false;
+    return verifyScopedReceipt(await proof.json(), scope, meetingId, actorId).releaseEnabled === true;
+  } catch { return false; }
+}
 Deno.serve(async req => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: headers(req) });
   if (req.method !== "POST") return response(req, 405, { error: "Method not allowed." });
@@ -69,11 +85,13 @@ Deno.serve(async req => {
     return response(req, 401, { error: "A valid Convay sign-in is required." });
   }
   const jwt = bearer.slice("Bearer ".length).trim();
-  let body: { meetingId?: unknown };
+  let body: { meetingId?: unknown; expectedSessionId?: unknown };
   try { body = await req.json(); }
   catch { return response(req, 400, { error: "Invalid request." }); }
   const meetingId = body?.meetingId;
-  if (typeof meetingId !== "string" || !/^[A-Za-z0-9_-]{1,180}$/.test(meetingId)) {
+  const expectedSessionId = body?.expectedSessionId;
+  if (typeof meetingId !== "string" || !/^[A-Za-z0-9_-]{1,180}$/.test(meetingId)
+    || typeof expectedSessionId !== "string" || !/^[A-Za-z0-9_-]{1,180}$/.test(expectedSessionId)) {
     return response(req, 400, { error: "A valid saved meeting identity is required." });
   }
   try {
@@ -104,12 +122,16 @@ Deno.serve(async req => {
     const scope = checkLiveKitTenantScope(meeting, [...links, ...sessions]);
     if (!scope.allowed) return response(req, scope.status, { error: scope.error });
     const persistence = checkAttendancePersistenceScope(meeting);
-    if (!persistence.allowed) return response(req, persistence.status, { error: persistence.error });
+    // Retain the tenant gate unless the explicitly activated scoped contract also proves the current participant.
+    if (!persistence.allowed && Deno.env.get("CONVAY_SCOPED_ATTENDANCE_ENABLED") !== "true") return response(req, persistence.status, { error: persistence.error });
     // SQL attendance requires exactly one active or paused session.
     // Do not issue provider credentials for contradictory live-session records.
     const activeSessions = sessions.filter(item => item.payload?.session_status === "active" || item.payload?.session_status === "paused");
     if (activeSessions.length !== 1) return response(req, 409, { error: "Meeting session state is inconsistent." });
     const session = activeSessions[0].payload;
+    let attendanceScope: AttendanceScope;
+    try { attendanceScope = scopeFromPersistedSession(meeting.tenant_id, session.id, expectedSessionId); }
+    catch { return response(req, 409, { error: "The live session changed. Reopen the meeting." }); }
     const admission = {
       meeting: meeting.payload, session, links: links.map(row => row.payload), userId: user.id,
       isSuperAdmin: snapshot.is_super_admin === true,
@@ -117,6 +139,9 @@ Deno.serve(async req => {
     };
     const decision = checkOnlineAdmission(admission);
     if (!decision.allowed) return response(req, decision.status, { error: decision.error });
+    if (!persistence.allowed && !await scopedAttendanceReady(attendanceScope, canonicalMeetingId, user.id)) {
+      return response(req, 409, { error: "Company live attendance is not yet available." });
+    }
     const canPublishMedia = canPublishOnlineMeeting(admission);
 
     const url = Deno.env.get("LIVEKIT_URL");
@@ -157,7 +182,7 @@ Deno.serve(async req => {
       canPublishData: false, roomAdmin: false, roomCreate: false, roomList: false,
     });
     const participantToken = await token.toJwt();
-    return response(req, 200, { serverUrl: url, participantToken, room, expiresIn: 300 });
+    return response(req, 200, { serverUrl: url, participantToken, room, sessionId: attendanceScope.sessionId, expiresIn: 300 });
   } catch (error) {
     // Never expose SQL details, JWTs or LiveKit configuration in responses.
     console.error("convay-livekit admission rejected", error instanceof Error ? error.message : "unknown");

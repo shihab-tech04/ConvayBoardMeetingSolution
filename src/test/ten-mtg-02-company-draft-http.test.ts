@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../app/services/supabase/convayAuth",()=>({convayAuth:{authenticatedRequest:vi.fn()}}));
 import { convayAuth } from "../app/services/supabase/convayAuth";
-import { readStagedCompanyDraft, saveStagedCompanyDraft, updateStagedCompanyDraft, discardStagedCompanyDraft } from "../app/services/saas/companyMeetingDrafts";
+import { listStagedCompanyDrafts, readStagedCompanyDraft, saveStagedCompanyDraft, updateStagedCompanyDraft, discardStagedCompanyDraft } from "../app/services/saas/companyMeetingDrafts";
 import type { MeetingTemplateVersion } from "../app/services/saas/meetingTemplateControl";
 import type { StagedCompanyDraft } from "../app/services/saas/companyMeetingDrafts";
 const tenant="11111111-1111-4111-8111-111111111111", other="99999999-9999-4999-8999-999999999999";
@@ -61,5 +61,73 @@ describe("MT-03/11/14/27 staged draft HTTP contract and recovery",()=>{
   await expect(discardStagedCompanyDraft(tenant,revised,rid)).resolves.toMatchObject({draft_id:draftId,edit_revision:2});
   req.mockResolvedValueOnce(reply({...transition,action:"discard",status:"Discarded"})).mockResolvedValueOnce(reply({tenant_id:tenant,meeting_activation_enabled:false,drafts:[revised]}));
   await expect(discardStagedCompanyDraft(tenant,revised,rid)).rejects.toThrow("still appears");
+ });
+});
+
+describe("MT-11/12 SQL-advertised partial progress",()=>{
+ const progress={stepId:"details",partial:true};
+ const capability={tenant_id:tenant,meeting_activation_enabled:false,draft_progress_supported:true,drafts:[]};
+ const savePartial=()=>saveStagedCompanyDraft(tenant,template,draft.title,{},rid,progress);
+ it("does not write to an old SQL contract without explicit progress capability",async()=>{
+   req.mockResolvedValueOnce(reply({...capability,draft_progress_supported:false}));
+   await expect(savePartial()).rejects.toMatchObject({name:"StagedDraftCreateRejected"});
+   expect(req).toHaveBeenCalledTimes(1);
+   expect(JSON.parse(req.mock.calls[0][1]!.body as string).p_action).toBe("list");
+ });
+ it("sends exact step and mode with the stable create intent and validates readback",async()=>{
+   const partial={...draft,values:{},wizard_step_id:"details"};
+   req.mockResolvedValueOnce(reply(capability)).mockResolvedValueOnce(reply({...receipt,wizard_step_id:"details"}))
+      .mockResolvedValueOnce(read(partial)).mockResolvedValueOnce(reply({template}));
+   await expect(savePartial()).resolves.toMatchObject({draft:partial});
+   expect(JSON.parse(req.mock.calls[1][1]!.body as string).p_payload).toMatchObject({wizard_step_id:"details",partial_save:true,request_id:rid,values:{}});
+ });
+ it("rejects a missing or wrong saved step rather than announcing success",async()=>{
+   req.mockResolvedValueOnce(reply(capability)).mockResolvedValueOnce(reply({...receipt,wizard_step_id:"details"}))
+      .mockResolvedValueOnce(read({...draft,values:{}}));
+   await expect(savePartial()).rejects.toThrow("content did not match");
+   req.mockResolvedValueOnce(read({...draft,wizard_step_id:"foreign_step"}));
+   await expect(readStagedCompanyDraft(tenant,draftId)).rejects.toThrow("Saved wizard step");
+ });
+ it("checks the progress receipt and optimistic revision for update",async()=>{
+   const revised={...draft,edit_revision:2,wizard_step_id:"details",values:{}};
+   const transition={...receipt,action:"update",edit_revision:2,audit_event_id:1,wizard_step_id:"details"};
+   req.mockResolvedValueOnce(reply(capability)).mockResolvedValueOnce(reply(transition)).mockResolvedValueOnce(read(revised));
+   await expect(updateStagedCompanyDraft(tenant,draft,draft.title,{},rid,progress)).resolves.toMatchObject({draft:revised});
+   expect(JSON.parse(req.mock.calls[1][1]!.body as string).p_payload).toMatchObject({expected_revision:1,wizard_step_id:"details",partial_save:true});
+ });
+});
+
+describe("MT-11/12 staged draft directory integrity",()=>{
+ const directory=(drafts:unknown[])=>reply({tenant_id:tenant,meeting_activation_enabled:false,draft_progress_supported:true,drafts});
+ it.each([
+   ["duplicate draft identity",[draft,{...draft,title:"Conflicting title"}]],
+   ["non-string template identity",[{...draft,template_id:[id]}]],
+   ["missing creation timestamp",[{...draft,created_at:undefined}]],
+   ["non-string wizard step",[{...draft,wizard_step_id:["details"]}]],
+   ["invalid wizard step syntax",[{...draft,wizard_step_id:"invalid step"}]],
+ ])("rejects %s before publishing directory or capability",async(_label,rows)=>{
+   req.mockResolvedValueOnce(directory(rows as unknown[]));
+   const onSupport=vi.fn();
+   await expect(listStagedCompanyDrafts(tenant,onSupport)).rejects.toThrow("directory SQL readback invalid");
+   expect(onSupport).not.toHaveBeenCalled();
+ });
+ it("preserves legacy null steps and valid saved step identities",async()=>{
+   const rows=[{...draft,wizard_step_id:null},{...draft,draft_id:"DRAFT-ABCDEF1234567890ABCD",wizard_step_id:"details"}];
+   req.mockResolvedValueOnce(directory(rows));
+   const onSupport=vi.fn();
+   await expect(listStagedCompanyDrafts(tenant,onSupport)).resolves.toEqual(rows);
+   expect(onSupport).toHaveBeenCalledWith(true);
+ });
+});
+
+describe("MT-12/14 immutable draft identity receipt types",()=>{
+ it("rejects a non-string template identity even when array coercion matches the UUID",async()=>{
+   req.mockResolvedValueOnce(read({...draft,template_id:[id]}));
+   await expect(readStagedCompanyDraft(tenant,draftId)).rejects.toThrow("readback invalid");
+ });
+ it("rejects a non-string creation receipt identity before attempting readback",async()=>{
+   req.mockResolvedValueOnce(reply({...receipt,draft_id:[draftId]}));
+   await expect(create()).rejects.toThrow("creation SQL receipt invalid");
+   expect(req).toHaveBeenCalledTimes(1);
  });
 });

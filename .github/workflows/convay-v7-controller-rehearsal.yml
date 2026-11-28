@@ -1,0 +1,153 @@
+name: Convay v7 coordinated rehearsal (NO DEPLOY)
+on:
+  push:
+    branches: ['controller/v7-2e0972c2-coordinated-rehearsal']
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install dependencies from committed lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Require error-free TypeScript verification
+        run: pnpm exec tsc --noEmit --project tsconfig.release.json
+      - name: Run application tests
+        run: pnpm test
+      - name: Verify router under GitHub Pages base path
+        run: pnpm exec vitest run src/test/pages-router-basename.test.ts --config vite.pages.test.config.ts
+      - name: Build for repository-subpath deployment
+        env:
+          # Regular meeting has its own SQL/Edge path. Never enable missing
+          # Quick Meeting guest/backend journeys via this release.
+          VITE_CONVAY_REGULAR_LIVE_ENABLED: "true"
+          VITE_CONVAY_QUICK_MEETING_ENABLED: "false"
+        run: pnpm exec vite build --config vite.figma.config.ts --base /ConvayBoardMeetingSolution/
+      - name: Verify production entry
+        run: |
+          test -s dist/index.html
+          grep -q '/ConvayBoardMeetingSolution/assets/' dist/index.html
+          ! grep -q 'src/main.tsx' dist/index.html
+      - name: Provide deep-link recovery document for GitHub Pages
+        run: |
+          cp dist/index.html dist/404.html
+          cmp dist/index.html dist/404.html
+      - name: Embed exact release commit
+        run: |
+          printf '{"commit":"%s","regular_live":true,"quick_meeting":false}\n' "$GITHUB_SHA" > dist/release.json
+  scope-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start isolated PostgreSQL 17
+        run: |
+          docker run -d --name convay-phase1-scope -e POSTGRES_PASSWORD=isolated-fixture-only -e POSTGRES_DB=fixture -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for n in $(seq 1 45); do docker exec convay-phase1-scope pg_isready -U postgres -d fixture && exit 0; sleep 2; done
+          exit 1
+      - name: Reproduce and verify scoped candidate (synthetic only)
+        run: docker exec convay-phase1-scope psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -v keep_concurrency_fixture=1 -f /workspace/supabase/tests/phase1_directory_scope/rehearsal.psql
+      - name: Exercise actual concurrent sessions (synthetic only)
+        run: bash supabase/tests/phase1_directory_scope/concurrency.sh
+      - name: Destroy disposable PostgreSQL
+        if: always()
+        run: docker rm -f convay-phase1-scope || true
+  staged-draft-journey:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start disposable PostgreSQL 17
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-phase2-resume -e POSTGRES_PASSWORD=synthetic-test-only -e POSTGRES_DB=convay_phase2 -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for i in $(seq 1 45); do
+            if docker exec convay-phase2-resume pg_isready -U postgres -d convay_phase2 >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Verify tenant-scoped template and draft journey without cloud credentials
+        run: docker exec convay-phase2-resume psql -X -v ON_ERROR_STOP=1 -U postgres -d convay_phase2 -v keep_concurrency_fixture=1 -f /workspace/supabase/tests/phase2_draft_resume/journey.psql
+      - name: Exercise two-session draft authority races (synthetic only)
+        run: bash supabase/tests/phase2_draft_resume/concurrency.sh
+      - name: Destroy disposable database
+        if: always()
+        run: docker rm -f convay-phase2-resume || true
+  scoped-attendance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start isolated PostgreSQL 17
+        run: |
+          docker run -d --name convay-scoped-attendance -e POSTGRES_PASSWORD=isolated-fixture-only -e POSTGRES_DB=fixture -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for n in $(seq 1 45); do docker exec convay-scoped-attendance pg_isready -U postgres -d fixture && exit 0; sleep 2; done
+          exit 1
+      - name: Apply synthetic baseline, original SQL and scoped candidate
+        run: |
+          set -euo pipefail
+          for f in supabase/tests/live_attendance_scoped/bootstrap.sql supabase/migrations/20261122173000_convay_authoritative_live_attendance.sql supabase/migrations/20261123101000_convay_quorum_snapshot_safeupdate.sql supabase/tests/live_attendance_scoped/activation_candidate.sql supabase/tests/live_attendance_scoped/matrix.sql; do
+            docker exec convay-scoped-attendance psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f "/workspace/$f"
+          done
+      - name: Rehearse non-destructive suspension script
+        run: docker exec convay-scoped-attendance psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_attendance_scoped/rollback_isolated.sql
+      - name: Destroy disposable PostgreSQL
+        if: always()
+        run: docker rm -f convay-scoped-attendance || true
+  isolated-voting:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run voting Edge contract tests
+        run: node --experimental-strip-types --test supabase/tests/live_voting_transaction/edge_contract.node.mjs
+      - name: Start disposable PostgreSQL 17
+        run: |
+          docker run -d --name convay-voting -e POSTGRES_PASSWORD=isolated-fixture-only -e POSTGRES_DB=fixture -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for n in $(seq 1 45); do docker exec convay-voting pg_isready -U postgres -d fixture && exit 0; sleep 2; done
+          exit 1
+      - name: Execute scoped attendance baseline and voting rehearsal
+        run: |
+          set -euo pipefail
+          for f in supabase/tests/live_attendance_scoped/bootstrap.sql supabase/migrations/20261122173000_convay_authoritative_live_attendance.sql supabase/migrations/20261123101000_convay_quorum_snapshot_safeupdate.sql supabase/tests/live_attendance_scoped/activation_candidate.sql supabase/tests/live_voting_transaction/candidate.sql supabase/tests/live_voting_transaction/matrix.sql; do
+            docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f "/workspace/$f"
+          done
+      - name: Execute independent concurrent PostgreSQL sessions
+        run: |
+          docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/race_setup.sql
+          bash supabase/tests/live_voting_transaction/races.sh
+      - name: Execute service-only scoped voting RPC with synthetic Auth sessions
+        run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/gateway_matrix.sql
+      - name: Verify session workspace and archive confidentiality
+        run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/projection_matrix.sql
+      - name: Exercise actual attendance RPC to voting and archive integration
+        run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/integrated_vertical.sql
+      - name: Verify real voting Edge handler to PostgreSQL and client decoder
+        run: node --experimental-strip-types --test supabase/tests/live_voting_transaction/edge_pg_bridge.node.mjs
+      - name: Destroy disposable PostgreSQL
+        if: always()
+        run: docker rm -f convay-voting || true

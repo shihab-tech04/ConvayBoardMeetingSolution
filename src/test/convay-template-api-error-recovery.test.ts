@@ -75,3 +75,27 @@ it("distinguishes a structured mutation rejection from a lost or failed readback
  request.mockResolvedValueOnce(response({code:"42501",message:"Gateway failure"},502));
  await expect(templateAction("create",{})).rejects.not.toMatchObject({name:"TemplateMutationRejected"});
 });
+
+describe("AD-10 authenticated transport mutation rejection recovery", () => {
+  it.each(["create", "revise", "publish", "copy"])("classifies direct %s SQL rejection", async (action) => {
+    const failure = Object.assign(new Error("SQL rejected"), { httpStatus: 409, sqlState: "40001" });
+    request.mockRejectedValueOnce(failure);
+    await expect(templateAction(action, {})).rejects.toMatchObject({ name: "TemplateMutationRejected", message: "SQL rejected" });
+  });
+  it.each([
+    ["read", 403, "42501"], ["list", 403, "42501"],
+    ["create", 502, "42501"], ["publish", 403, undefined],
+    ["revise", 409, "XXXXX"],
+  ] as const)("retains uncertain or read-only failure (%s, %s, %s)", async (action, httpStatus, sqlState) => {
+    const failure = Object.assign(new Error("Unconfirmed"), { httpStatus, sqlState });
+    request.mockRejectedValueOnce(failure);
+    await expect(templateAction(action, {})).rejects.toBe(failure);
+    expect(failure.name).toBe("Error");
+  });
+  it("does not classify a lost acknowledgement as rejected", async () => {
+    const failure = new TypeError("Network failure");
+    request.mockRejectedValueOnce(failure);
+    await expect(templateAction("create", {})).rejects.toBe(failure);
+    expect(failure.name).toBe("TypeError");
+  });
+});

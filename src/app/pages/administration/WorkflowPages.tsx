@@ -6,15 +6,13 @@
  *  - WorkflowHistoryPage
  */
 import {
-  GitBranch, Shield, RefreshCw, History,
-  CheckCircle, XCircle, Pencil, Play, Pause, Eye,
-  Download, Copy, Archive,
+  History, CheckCircle, Pencil, Play, Pause, Copy, Archive,
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
-import { unverifiedWorkflowHistoryView } from "./workflowHistoryEvidence";
+import { AuditProjectionPage } from "./AuditProjectionPage";
 import { unverifiedWorkflowDefinitionsView } from "./workflowDefinitionsEvidence";
 import { unverifiedApprovalRulesView } from "./workflowApprovalRulesEvidence";
 import { unverifiedRevisionRulesView } from "./workflowRevisionRulesEvidence";
@@ -22,7 +20,6 @@ import {
   WORKFLOW_DRAWER_COLS,
   APPROVAL_RULE_DRAWER_COLS,
   REVISION_RULE_DRAWER_COLS,
-  WORKFLOW_HISTORY_DRAWER_COLS,
 } from "../boardMeetingDrawerSchemas";
 
 // AD-01/02/03: authoritative tenant-scoped configuration services are not connected.
@@ -162,41 +159,5 @@ export function ReviewRevisionRulesPage() {
 }
 
 export function WorkflowHistoryPage() {
-  const evidence = unverifiedWorkflowHistoryView();
-  const kpis: KpiDef[] = evidence.kpis;
-
-  const cfg: PageCfg = {
-    title: "Workflow History",
-    desc:  evidence.description,
-    cols: [
-      fc("history_id",    "Event ID"),
-      fc("workflow_name", "Workflow"),
-      fc("entity_type",   "Entity"),
-      fc("entity_title",  "Subject"),
-      fc("actor",         "Performed By"),
-      fc("action_date",   "Date & Time"),
-      fc("action",        "Action"),
-      BADGE("status",     "Status"),
-    ],
-    mobileCardMapping: {
-      primary:    "workflow_name",
-      identifier: "history_id",
-      meta:       ["entity_type", "actor", "action_date"],
-      status:     "status",
-      date:       "action_date",
-    },
-    filters:      BASE_FILTERS,
-    actions:      ROW_VIEW,
-    drawerTitle:  "Workflow Event Details",
-    drawerCols:   WORKFLOW_HISTORY_DRAWER_COLS,
-    drawerActions: [
-      { id: "view_workflow", label: "View Workflow",  icon: GitBranch,  color: "#3b82f6", enabled: false, disabledReason: evidence.disabledReason },
-      { id: "download",      label: "Export Event",   icon: Download,   color: "#6b7280", enabled: false, disabledReason: evidence.disabledReason },
-    ],
-    rows:      evidence.rows,
-    kpis,
-    searchPlaceholder: "Search workflow history",
-  };
-
-  return <GenPage cfg={cfg} />;
+  return <AuditProjectionPage workflowOnly />;
 }

@@ -165,3 +165,50 @@ export async function persistBoardPackDraft(
     ? "Board-pack SQL readback was not confirmed. Retry the original draft."
     : "Board-pack draft was not confirmed by SQL. Retry the original draft.");
 }
+
+export interface BoardPackUpdateGateway {
+  list(): Promise<readonly {payload: BoardPack; revision: number}[]>;
+  update(record: BoardPack, expectedRevision: number): Promise<boolean>;
+  assertCurrent(): void;
+}
+
+/** Use the exact authoritative row revision for the existing REST conditional update.
+ * Preserve untouched server fields and reject stale or ambiguous readback. */
+export async function persistBoardPackDraftUpdate(
+  previous: BoardPack, patch: Partial<BoardPack>, gateway: BoardPackUpdateGateway,
+): Promise<BoardPack> {
+  if (previous.approval_status !== "Draft") throw new Error("Only draft board packs can be edited.");
+  const read = async () => {
+    gateway.assertCurrent();
+    const rows = await gateway.list();
+    gateway.assertCurrent();
+    const matches = rows.filter(row => row.payload.id === previous.id);
+    if (matches.length !== 1 || matches[0].payload.pack_id !== previous.pack_id ||
+        rows.some(row => row.payload.id !== previous.id && row.payload.pack_id === previous.pack_id)) {
+      throw new Error("Board-pack identity is missing or ambiguous. Refresh and retry.");
+    }
+    const row = matches[0];
+    if (!Number.isSafeInteger(row.revision) || row.revision < 1 || row.revision >= Number.MAX_SAFE_INTEGER) {
+      throw new Error("Board-pack SQL revision is invalid. Refresh and retry.");
+    }
+    if (row.payload.approval_status !== "Draft" || row.payload.version !== previous.version) {
+      throw new Error("Board-pack state or version changed. Reopen before editing.");
+    }
+    return row;
+  };
+  const keys = Object.keys(patch) as (keyof BoardPack)[];
+  const matchesPatch = (row: BoardPack) => keys.every(key => Object.is(row[key], patch[key]));
+  const before = await read();
+  if (matchesPatch(before.payload)) return before.payload;
+  if (!keys.every(key => Object.is(before.payload[key], previous[key]))) {
+    throw new Error("Board-pack fields changed. Refresh and reopen before editing.");
+  }
+  const intended = {...before.payload, ...patch};
+  gateway.assertCurrent();
+  let failure: unknown;
+  try { await gateway.update(intended, before.revision); } catch (error) { failure = error; }
+  const after = await read();
+  if (after.revision === before.revision + 1 && matchesPatch(after.payload)) return after.payload;
+  if (failure) throw failure;
+  throw new Error("Board-pack edit was not confirmed by SQL readback. Refresh before retrying.");
+}

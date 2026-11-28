@@ -1,0 +1,45 @@
+-- Integrated disposable fixture, never a migration. Reuse authenticated gateway fixtures and real attendance RPC; never forge quorum snapshots.
+begin;
+do $vertical$
+declare a uuid:='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'; b uuid:='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+ h uuid:='11111111-1111-4111-8111-111111111111'; v uuid:='22222222-2222-4222-8222-222222222222';
+ hs uuid:='51111111-1111-4111-8111-111111111111'; vs uuid:='52222222-2222-4222-8222-222222222222';
+ m uuid; r uuid; x jsonb; y jsonb; hr bigint; vr bigint; n integer:=0;
+begin
+ update convay_private.transactional_voting_gate set enabled=true where singleton=true;
+ x:=public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A','{"action":"motion","agendaId":"AG-1","title":"Integrated fixture","wording":"Synthetic integration","requestId":"integrated_motion_001"}');
+ m:=(x->>'motionId')::uuid;
+ x:=public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','open','motionId',m,'policyId','fixture-race','policyVersion',1,'requestId','integrated_open_0001'));r:=(x->>'roundId')::uuid;
+ perform public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','cast','roundId',r,'choice','For','requestId','integrated_cast_0001'));n:=n+1;
+ begin update public.convay_entity_records set payload=payload||'{"approval_status":"Awaiting Minutes"}'::jsonb where tenant_id=a and entity_key='bms.meetings' and record_id='record-A';raise exception 'Open ballot bypassed by terminal meeting write';exception when check_violation then n:=n+1;end;
+ if (select payload->>'approval_status' from public.convay_entity_records where tenant_id=a and entity_key='bms.meetings' and record_id='record-A') is distinct from 'In Progress' then raise exception 'Rejected closure changed meeting';end if;n:=n+1;
+ begin delete from public.convay_entity_records where tenant_id=a and entity_key='bms.meetings' and record_id='record-A';raise exception 'Open ballot bypassed by deleting meeting';exception when check_violation then n:=n+1;end;
+ x:=public.convay_read_live_attendance_scoped(v,'MTG-SHARED',v::text,a,'SES-A');vr:=(x->>'attendanceRevision')::bigint;
+ x:=public.convay_commit_live_attendance_scoped(v,'MTG-SHARED',v::text,'Left',vr,'integrated_leave_v_01',false,'Online',a,'SES-A');vr:=(x->>'attendanceRevision')::bigint;
+ x:=public.convay_read_live_attendance_scoped(h,'MTG-SHARED',h::text,a,'SES-A');hr:=(x->>'attendanceRevision')::bigint;
+ x:=public.convay_commit_live_attendance_scoped(h,'MTG-SHARED',h::text,'Left',hr,'integrated_leave_h_01',false,'Online',a,'SES-A');hr:=(x->>'attendanceRevision')::bigint;
+ if x#>>'{quorum,met}'<>'false' then raise exception 'Actual absence did not remove quorum';end if;n:=n+1;
+ begin perform public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','close','roundId',r,'requestId','integrated_close_001'));raise exception 'Close during quorum loss accepted';exception when insufficient_privilege then n:=n+1;end;
+ begin perform public.convay_vote_command_scoped(v,vs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','cast','roundId',r,'choice','For','requestId','integrated_cast_0002'));raise exception 'Absent voter accepted';exception when insufficient_privilege then n:=n+1;end;
+ x:=public.convay_commit_live_attendance_scoped(h,'MTG-SHARED',h::text,'Present',hr,'integrated_rejoin_h_01',true,'Online',a,'SES-A');hr:=(x->>'attendanceRevision')::bigint;
+ x:=public.convay_commit_live_attendance_scoped(v,'MTG-SHARED',v::text,'Present',vr,'integrated_rejoin_v_01',true,'Online',a,'SES-A');vr:=(x->>'attendanceRevision')::bigint;
+ if x#>>'{quorum,met}'<>'true' then raise exception 'Real attendance did not restore quorum';end if;n:=n+1;
+ update convay_private.live_attendance_company_gate set enabled=false where singleton=true;
+ x:=public.convay_vote_command_scoped(v,vs,a,'MTG-SHARED','SES-A','{"action":"workspace"}');
+ if x->>'quorumMet'<>'false' or exists(select 1 from jsonb_array_elements(x->'rounds') q where q->>'canCast'='true') then raise exception 'Suspended workspace incorrectly permits voting';end if;n:=n+1;
+ begin perform public.convay_vote_command_scoped(v,vs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','cast','roundId',r,'choice','For','requestId','integrated_cast_0002'));raise exception 'Suspended cast accepted';exception when insufficient_privilege then n:=n+1;end;
+ update convay_private.live_attendance_company_gate set enabled=true where singleton=true;
+ begin perform public.convay_vote_command_scoped(v,vs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','cast','roundId',r,'choice','For','requestId','integrated_cast_0002'));raise exception 'Stale quorum accepted after reactivation';exception when insufficient_privilege then n:=n+1;end;
+ x:=public.convay_commit_live_attendance_scoped(h,'MTG-SHARED',h::text,'Present',hr,'integrated_fresh_h_01',true,'Online',a,'SES-A');
+ if x#>>'{quorum,met}'<>'true' then raise exception 'Fresh quorum recovery failed';end if;n:=n+1;
+ x:=public.convay_vote_command_scoped(v,vs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','cast','roundId',r,'choice','For','requestId','integrated_cast_0002'));if x->>'recorded'<>'true' or x?'choice' then raise exception 'Recovered ballot invalid';end if;n:=n+1;
+ x:=public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A',jsonb_build_object('action','close','roundId',r,'requestId','integrated_close_001'));if x->>'outcome'<>'Passed' then raise exception 'Incorrect recovered result';end if;n:=n+1;
+ update public.convay_entity_records set payload=payload||'{"approval_status":"Awaiting Minutes"}'::jsonb where tenant_id=a and entity_key='bms.meetings' and record_id='record-A';
+ begin perform public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A','{"action":"motion","agendaId":"AG-1","title":"Late fixture","wording":"Closed meeting","requestId":"late_motion_00000001"}');raise exception 'New motion accepted after terminal meeting state';exception when check_violation then n:=n+1;end;
+ update public.convay_entity_records set payload=payload||'{"session_status":"ended"}'::jsonb where tenant_id=a and entity_key='bms.liveSessions' and record_id='SES-A';
+ x:=public.convay_vote_command_scoped(h,hs,a,'MTG-SHARED','SES-A','{"action":"archive"}');y:=public.convay_vote_command_scoped(v,vs,a,'MTG-SHARED','SES-A','{"action":"archive"}');
+ if x is distinct from y or not exists(select 1 from jsonb_array_elements(x->'rounds') q where q->>'roundId'=r::text and q->>'for'='2' and q->>'outcome'='Passed' and not(q?'ballots')) then raise exception 'Archive result mismatch or privacy leak';end if;n:=n+1;
+ begin perform public.convay_vote_command_scoped(h,hs,b,'MTG-SHARED','SES-B','{"action":"archive"}');raise exception 'Foreign archive accepted';exception when insufficient_privilege then n:=n+1;end;
+ raise notice '% integrated attendance/quorum/vote/suspension/archive checks PASS',n;
+end $vertical$;
+rollback;

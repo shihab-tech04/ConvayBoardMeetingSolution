@@ -1,0 +1,242 @@
+-- Disposable synthetic SQL test. Uses the exact existing registry and Storage
+-- boundary migrations. Permissive fixture grants isolate the restrictive
+-- security condition; they are not production grants.
+\set ON_ERROR_STOP on
+BEGIN;
+-- The earlier fixture creates cluster-wide roles; the second database must
+-- reuse those roles without changing their attributes.
+DO $fixture$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon NOLOGIN; END IF;
+ IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF;
+END $fixture$;
+CREATE SCHEMA auth;
+CREATE SCHEMA storage;
+CREATE SCHEMA convay_private;
+CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
+ SELECT NULLIF(current_setting('request.jwt.claim.sub',true),'')::uuid
+$$;
+GRANT USAGE ON SCHEMA auth,storage,convay_private TO authenticated,anon;
+CREATE TABLE public.user_profiles(user_id uuid PRIMARY KEY,account_role text NOT NULL,account_status text NOT NULL);
+CREATE TABLE convay_private.tenants(id uuid PRIMARY KEY,lifecycle_state text NOT NULL);
+CREATE TABLE convay_private.tenant_memberships(tenant_id uuid,user_id uuid,membership_state text,revoked_at timestamptz,revision bigint NOT NULL DEFAULT 1,PRIMARY KEY(tenant_id,user_id));
+CREATE TABLE public.convay_entity_records(entity_key text,record_id text,tenant_id uuid,payload jsonb NOT NULL,PRIMARY KEY(entity_key,record_id));
+CREATE TABLE storage.objects(bucket_id text,name text,PRIMARY KEY(bucket_id,name));
+ALTER TABLE public.convay_entity_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+GRANT SELECT,UPDATE,INSERT ON public.convay_entity_records TO authenticated;
+GRANT SELECT,INSERT,UPDATE ON storage.objects TO authenticated;
+CREATE POLICY fixture_registry_grant ON public.convay_entity_records FOR ALL TO authenticated USING(true) WITH CHECK(true);
+CREATE POLICY fixture_storage_grant ON storage.objects FOR ALL TO authenticated USING(true) WITH CHECK(true);
+INSERT INTO public.user_profiles VALUES
+ ('10000000-0000-4000-8000-000000000001','super_admin','active'),
+ ('10000000-0000-4000-8000-000000000002','user','active'),
+ ('10000000-0000-4000-8000-000000000003','user','active'),
+ ('10000000-0000-4000-8000-000000000004','user','active'),
+ ('10000000-0000-4000-8000-000000000005','user','active'),
+ ('10000000-0000-4000-8000-000000000006','user','active'),
+ ('10000000-0000-4000-8000-000000000007','user','suspended');
+INSERT INTO convay_private.tenants VALUES
+ ('20000000-0000-4000-8000-000000000001','active'),
+ ('20000000-0000-4000-8000-000000000002','active'),
+ ('20000000-0000-4000-8000-000000000003','offboarded');
+INSERT INTO convay_private.tenant_memberships(tenant_id,user_id,membership_state,revoked_at) VALUES
+ ('20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000003','active',NULL),
+ ('20000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000004','revoked',now()),
+ ('20000000-0000-4000-8000-000000000003','10000000-0000-4000-8000-000000000005','revoked',now()),
+ ('20000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000006','suspended',NULL);
+INSERT INTO public.convay_entity_records VALUES
+ ('bms.meetings','legacy-meeting',NULL,'{"id":"legacy-meeting"}'),
+ ('bms.documents','legacy-doc',NULL,'{"id":"legacy-doc","doc_id":"legacy-doc"}'),
+ ('bms.documents','company-a-doc','20000000-0000-4000-8000-000000000001','{"id":"company-a-doc","doc_id":"company-a-doc"}'),
+ ('bms.documents','company-b-doc','20000000-0000-4000-8000-000000000002','{"id":"company-b-doc","doc_id":"company-b-doc"}');
+INSERT INTO storage.objects VALUES
+ ('convay-documents','legacy-doc/fixture.pdf'),('convay-documents','company-a-doc/fixture.pdf'),('convay-documents','company-b-doc/fixture.pdf');
+\ir ../../migrations/20261124041000_convay_tenant_registry_storage_boundary.sql
+\ir ../../migrations/20261124111000_convay_tenant_legacy_visibility_boundary.sql
+CREATE TEMP TABLE legacy_scope_acl AS
+ SELECT p.oid,p.proacl,p.proowner FROM pg_proc p
+ WHERE p.oid='convay_private.legacy_unscoped_authorized()'::regprocedure;
+-- Reproduce the old predicate on the actual restrictive policies.
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000004',true);
+DO $$ BEGIN
+ IF NOT convay_private.legacy_unscoped_authorized()
+ OR NOT EXISTS(SELECT 1 FROM public.convay_entity_records WHERE record_id='legacy-meeting')
+ OR NOT EXISTS(SELECT 1 FROM storage.objects WHERE name='legacy-doc/fixture.pdf')
+ THEN RAISE EXCEPTION 'Baseline revoked membership fallback not reproduced'; END IF;
+END $$;
+RESET ROLE;
+\ir legacy_scope_candidate.sql
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM legacy_scope_acl a JOIN pg_proc p ON p.oid=a.oid
+ WHERE p.proacl IS DISTINCT FROM a.proacl OR p.proowner<>a.proowner)
+ OR has_function_privilege('anon','convay_private.legacy_unscoped_authorized()','EXECUTE')
+ THEN RAISE EXCEPTION 'Owner or ACL changed'; END IF;
+END $$;
+SET LOCAL ROLE authenticated;
+DO $$ DECLARE actor text; BEGIN
+ -- Revoked, offboarded, suspended membership and suspended account.
+ FOREACH actor IN ARRAY ARRAY['10000000-0000-4000-8000-000000000004','10000000-0000-4000-8000-000000000005','10000000-0000-4000-8000-000000000006','10000000-0000-4000-8000-000000000007'] LOOP
+  PERFORM set_config('request.jwt.claim.sub',actor,true);
+  IF convay_private.legacy_unscoped_authorized()
+   OR EXISTS(SELECT 1 FROM public.convay_entity_records)
+   OR EXISTS(SELECT 1 FROM storage.objects) THEN RAISE EXCEPTION 'Unauthorized registry or Storage read'; END IF;
+  BEGIN
+   INSERT INTO public.convay_entity_records VALUES ('bms.meetings','denied',NULL,'{"id":"denied"}');
+   RAISE EXCEPTION 'Unauthorized legacy registry write';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN
+   INSERT INTO storage.objects VALUES ('convay-documents','legacy-doc/denied.pdf');
+   RAISE EXCEPTION 'Unauthorized legacy Storage write';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ END LOOP;
+ -- Root and never-enrolled actor retain only their existing legacy access.
+ FOREACH actor IN ARRAY ARRAY['10000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000002'] LOOP
+  PERFORM set_config('request.jwt.claim.sub',actor,true);
+  IF NOT convay_private.legacy_unscoped_authorized()
+   OR (SELECT count(*) FROM public.convay_entity_records)<>2
+   OR (SELECT count(*) FROM storage.objects)<>1 THEN RAISE EXCEPTION 'Authorized legacy access regressed'; END IF;
+ END LOOP;
+ -- Active tenant A cannot read legacy or tenant B; only its own records.
+ PERFORM set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000003',true);
+ IF convay_private.legacy_unscoped_authorized()
+  OR (SELECT count(*) FROM public.convay_entity_records)<>1
+  OR NOT EXISTS(SELECT 1 FROM public.convay_entity_records WHERE record_id='company-a-doc')
+  OR (SELECT count(*) FROM storage.objects)<>1
+  OR NOT EXISTS(SELECT 1 FROM storage.objects WHERE name='company-a-doc/fixture.pdf')
+ THEN RAISE EXCEPTION 'Active company scope regressed'; END IF;
+END $$;
+RESET ROLE;
+-- Revoke the same actor, preserve its identity/claim, and test again.
+UPDATE convay_private.tenant_memberships SET membership_state='revoked',revoked_at=now(),revision=revision+1
+ WHERE user_id='10000000-0000-4000-8000-000000000003';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000003',true);
+DO $$ BEGIN
+ IF convay_private.legacy_unscoped_authorized()
+  OR EXISTS(SELECT 1 FROM public.convay_entity_records)
+  OR EXISTS(SELECT 1 FROM storage.objects)
+ THEN RAISE EXCEPTION 'Revocation restored legacy fallback'; END IF;
+END $$;
+RESET ROLE;
+-- Actual document authorization helper from the current migration, including
+-- its privileged lookup; direct content RLS calls this helper independently
+-- of the metadata table's restrictive tenant boundary.
+ALTER TABLE public.convay_entity_records ADD COLUMN created_by uuid;
+CREATE TABLE public.convay_roles(id uuid PRIMARY KEY,status text);
+CREATE TABLE public.convay_user_roles(user_id uuid,role_id uuid);
+CREATE FUNCTION convay_private.has_permission(permission_code text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path='' AS $$
+ SELECT EXISTS(SELECT 1 FROM public.user_profiles p
+  WHERE p.user_id=(SELECT auth.uid()) AND p.account_status='active')
+$$;
+UPDATE public.convay_entity_records SET created_by='10000000-0000-4000-8000-000000000001';
+UPDATE convay_private.tenant_memberships SET membership_state='active',revoked_at=NULL,revision=revision+1
+ WHERE user_id='10000000-0000-4000-8000-000000000003';
+CREATE TABLE public.convay_document_content(id text PRIMARY KEY,document_id text,content text);
+ALTER TABLE public.convay_document_content ENABLE ROW LEVEL SECURITY;
+GRANT SELECT,INSERT,UPDATE,DELETE ON public.convay_document_content TO authenticated;
+\ir document_scope_baseline.sql
+REVOKE ALL ON FUNCTION convay_private.document_scope_authorized(text,text) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION convay_private.document_scope_authorized(text,text) TO authenticated;
+CREATE POLICY fixture_content_select ON public.convay_document_content
+ FOR SELECT TO authenticated USING(convay_private.document_scope_authorized(document_id,'view'));
+CREATE POLICY fixture_content_create ON public.convay_document_content
+ FOR INSERT TO authenticated WITH CHECK(convay_private.document_scope_authorized(document_id,'upload') OR convay_private.document_scope_authorized(document_id,'edit'));
+CREATE POLICY fixture_content_update ON public.convay_document_content
+ FOR UPDATE TO authenticated USING(convay_private.document_scope_authorized(document_id,'edit'))
+ WITH CHECK(convay_private.document_scope_authorized(document_id,'edit'));
+CREATE POLICY fixture_content_delete ON public.convay_document_content
+ FOR DELETE TO authenticated USING(convay_private.document_scope_authorized(document_id,'delete'));
+INSERT INTO public.convay_document_content VALUES
+ ('legacy-content','legacy-doc','synthetic legacy content'),
+ ('company-a-content','company-a-doc','synthetic A content'),
+ ('company-b-content','company-b-doc','synthetic B content');
+CREATE TEMP TABLE document_scope_acl AS
+ SELECT p.oid,p.proacl,p.proowner FROM pg_proc p
+ WHERE p.oid='convay_private.document_scope_authorized(text,text)'::regprocedure;
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000004',true);
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM public.convay_entity_records WHERE record_id='legacy-doc')
+ OR NOT EXISTS(SELECT 1 FROM public.convay_document_content WHERE id='legacy-content')
+ OR NOT convay_private.document_scope_authorized('legacy-doc','delete')
+ THEN RAISE EXCEPTION 'Privileged document helper bypass not reproduced'; END IF;
+END $$;
+RESET ROLE;
+\ir document_scope_candidate.sql
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM document_scope_acl a JOIN pg_proc p ON p.oid=a.oid
+ WHERE p.proacl IS DISTINCT FROM a.proacl OR p.proowner<>a.proowner)
+ OR has_function_privilege('anon','convay_private.document_scope_authorized(text,text)','EXECUTE')
+ THEN RAISE EXCEPTION 'Document authorization owner or ACL changed'; END IF;
+END $$;
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000004',true);
+DO $$ DECLARE n integer; BEGIN
+ IF EXISTS(SELECT 1 FROM public.convay_document_content)
+ OR convay_private.document_scope_authorized('legacy-doc','delete')
+ OR convay_private.document_scope_authorized('company-b-doc','delete')
+ THEN RAISE EXCEPTION 'Revoked user accessed document content or deletion authority'; END IF;
+ UPDATE public.convay_document_content SET content='denied' WHERE id='legacy-content';
+ GET DIAGNOSTICS n=ROW_COUNT; IF n<>0 THEN RAISE EXCEPTION 'Revoked user updated content'; END IF;
+ DELETE FROM public.convay_document_content WHERE id='legacy-content';
+ GET DIAGNOSTICS n=ROW_COUNT; IF n<>0 THEN RAISE EXCEPTION 'Revoked user deleted content'; END IF;
+ BEGIN INSERT INTO public.convay_document_content VALUES ('denied','legacy-doc','denied'); RAISE EXCEPTION 'Unauthorized content insert';
+ EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000003',true);
+DO $$ BEGIN
+ IF (SELECT count(*) FROM public.convay_document_content)<>1
+ OR NOT EXISTS(SELECT 1 FROM public.convay_document_content WHERE id='company-a-content')
+ OR convay_private.document_scope_authorized('legacy-doc','view')
+ OR convay_private.document_scope_authorized('company-b-doc','delete')
+ THEN RAISE EXCEPTION 'Company A content scope regressed'; END IF;
+END $$;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000002',true);
+DO $$ BEGIN
+ IF (SELECT count(*) FROM public.convay_document_content)<>1
+ OR NOT EXISTS(SELECT 1 FROM public.convay_document_content WHERE id='legacy-content')
+ THEN RAISE EXCEPTION 'Never-enrolled legacy document access regressed'; END IF;
+END $$;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000001',true);
+DO $$ BEGIN
+ IF (SELECT count(*) FROM public.convay_document_content)<>1
+ OR NOT convay_private.document_scope_authorized('legacy-doc','delete')
+ THEN RAISE EXCEPTION 'Existing legacy root document access regressed'; END IF;
+END $$;
+RESET ROLE;
+-- Cross-tenant share records cannot supply authority for a different parent.
+UPDATE public.convay_entity_records SET payload=payload||'{"confidentiality":"Private"}'::jsonb
+ WHERE record_id='company-a-doc';
+INSERT INTO public.convay_entity_records(entity_key,record_id,tenant_id,payload,created_by)
+ VALUES ('bms.doc.access_grants','wrong-tenant-grant','20000000-0000-4000-8000-000000000002',
+ '{"id":"wrong-tenant-grant","document_id":"company-a-doc","subject_type":"user","subject_id":"10000000-0000-4000-8000-000000000003","permission":"admin"}',
+ '10000000-0000-4000-8000-000000000001');
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000003',true);
+DO $$ BEGIN
+ IF convay_private.document_scope_authorized('company-a-doc','view') THEN RAISE EXCEPTION 'Foreign share supplied document access'; END IF;
+END $$;
+RESET ROLE;
+INSERT INTO public.convay_entity_records(entity_key,record_id,tenant_id,payload,created_by)
+ VALUES ('bms.doc.access_grants','same-tenant-grant','20000000-0000-4000-8000-000000000001',
+ '{"id":"same-tenant-grant","document_id":"company-a-doc","subject_type":"user","subject_id":"10000000-0000-4000-8000-000000000003","permission":"view"}',
+ '10000000-0000-4000-8000-000000000001');
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000003',true);
+DO $$ BEGIN
+ IF NOT convay_private.document_scope_authorized('company-a-doc','view')
+ OR convay_private.document_scope_authorized('company-a-doc','delete') THEN RAISE EXCEPTION 'Same-tenant share semantics regressed'; END IF;
+END $$;
+RESET ROLE;
+UPDATE public.convay_entity_records SET payload=jsonb_set(payload,'{doc_id}','"legacy-doc"') WHERE record_id='company-b-doc';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub','10000000-0000-4000-8000-000000000001',true);
+DO $$ BEGIN
+ IF convay_private.document_scope_authorized('legacy-doc','view') THEN RAISE EXCEPTION 'Ambiguous document alias accepted'; END IF;
+END $$;
+RESET ROLE;
+SELECT 'DOCUMENT_SCOPE_PASS: exact helper baseline, direct content and deletion authorization, tenant shares, alias ambiguity and unchanged ACL' AS result;
+ROLLBACK;
+SELECT 'LEGACY_SCOPE_PASS: actual existing restrictive registry and Storage policies; revoked/offboarded/suspended denied, root/legacy/tenant positives preserved, owner/ACL unchanged' AS result;

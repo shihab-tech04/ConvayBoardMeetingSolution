@@ -1,0 +1,33 @@
+name: Convay NI — disposable notification and provider SQL matrix
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/tests/notification_provider_isolated/**'
+      - 'supabase/tests/ni01_notification_draft_lifecycle_rollback.psql'
+      - 'supabase/tests/ni15_provider_connection_registry.sql'
+      - 'supabase/release-candidates/ni01_notification_draft_lifecycle.sql'
+      - 'supabase/migrations/20261121110000_convay_provider_connection_registry.sql'
+      - '.github/workflows/convay-notification-provider-isolated.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-notification-provider:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start disposable PostgreSQL 17
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-ni-isolated -e POSTGRES_PASSWORD=synthetic-test-only -e POSTGRES_DB=fixture -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for n in $(seq 1 45); do docker exec convay-ni-isolated pg_isready -U postgres -d fixture && exit 0; sleep 2; done
+          exit 1
+      - name: Execute exact NI-01 and NI-15 candidates against synthetic roles
+        run: docker exec convay-ni-isolated psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/notification_provider_isolated/fixture.psql
+      - name: Destroy disposable database
+        if: always()
+        run: docker rm -f convay-ni-isolated || true

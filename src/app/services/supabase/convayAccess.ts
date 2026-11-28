@@ -91,6 +91,61 @@ export async function reloadAccessSnapshot(): Promise<AccessSnapshot> {
             value => value !== undefined && !Array.isArray(value))) {
         throw new Error("Invalid access verification response");
       }
+      // A root snapshot is the authoritative register, including empty arrays.
+      // Omitted arrays must never be interpreted as proof of deletion/revocation.
+      if (payload.is_super_admin && (
+          !Array.isArray(payload.roles) ||
+          !Array.isArray(payload.permissions) ||
+          !Array.isArray(payload.user_assignments) ||
+          !Array.isArray(payload.user_role_ids))) {
+        throw new Error("Incomplete administrator access verification response");
+      }
+      if (payload.is_super_admin) {
+        const roles = payload.roles!;
+        const permissions = payload.permissions!;
+        const assignments = payload.user_assignments!;
+        const validId = (value: unknown): value is string =>
+          typeof value === "string" && value.trim().length > 0 && value === value.trim();
+        const validIds = (values: unknown): values is string[] =>
+          Array.isArray(values) && values.every(validId) &&
+          new Set(values).size === values.length;
+        if (roles.some(role => !role || typeof role !== "object" ||
+            !validId(role.id) || typeof role.name !== "string" ||
+            typeof role.description !== "string" || typeof role.level !== "string" ||
+            !["Active", "Inactive"].includes(role.status) ||
+            typeof role.is_system_role !== "boolean" ||
+            !validIds(role.permission_ids) || !Number.isSafeInteger(role.users_count) ||
+            role.users_count < 0) ||
+            permissions.some(perm => !perm || typeof perm !== "object" ||
+              !validId(perm.id) || typeof perm.label !== "string" ||
+              typeof perm.group_id !== "string" || typeof perm.endpoint !== "string" ||
+              typeof perm.service_name !== "string" ||
+              !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(perm.method) ||
+              !["PUBLIC", "AUTH", "AUTHORIZE"].includes(perm.access_label) ||
+              !["Active", "Inactive"].includes(perm.status) ||
+              typeof perm.is_custom !== "boolean") ||
+            assignments.some(item => !item || typeof item !== "object" ||
+              !validId(item.user_id) || !validId(item.role_id))) {
+          throw new Error("Invalid administrator access register");
+        }
+        const roleIds = new Set(roles.map(role => role.id));
+        const permissionIds = new Set(permissions.map(perm => perm.id));
+        const pairs = new Set(assignments.map(item => JSON.stringify([item.user_id, item.role_id])));
+        const assignmentCounts = new Map<string, number>();
+        for (const item of assignments) {
+          assignmentCounts.set(item.role_id, (assignmentCounts.get(item.role_id) ?? 0) + 1);
+        }
+        if (roleIds.size !== roles.length || permissionIds.size !== permissions.length ||
+            pairs.size !== assignments.length ||
+            !validIds(payload.effective_permissions) || !validIds(payload.user_role_ids) ||
+            payload.effective_permissions.some(id => !permissionIds.has(id)) ||
+            payload.user_role_ids!.some(id => !roleIds.has(id)) ||
+            assignments.some(item => !roleIds.has(item.role_id)) ||
+            roles.some(role => role.permission_ids.some(id => !permissionIds.has(id)) ||
+              role.users_count !== (assignmentCounts.get(role.id) ?? 0))) {
+          throw new Error("Ambiguous or inconsistent administrator access register");
+        }
+      }
       // Company administration is an independent SQL entitlement.
       // A failure to read it must never grant tenant scope or break existing
       // non-company roles; only an exact server-scoped directory can add ids.

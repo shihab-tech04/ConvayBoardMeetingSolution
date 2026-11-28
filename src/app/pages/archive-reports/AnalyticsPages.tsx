@@ -1,6 +1,11 @@
+import { useScopedParticipationReport } from "../../hooks/useScopedParticipationReport";
+import { recordedSessionCheckIns } from "../../services/reports/participationEvidence";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
+import { fc, BADGE } from "../modulePageUtils";
+import { indexReportLinks, selectedReportLinks } from "./linkedReportSummary";
+import { summarizeParticipantCounts } from "./participantCountSummary";
+import { buildMeetingRegisterFilters } from "../return-register/meetingRegisterReadiness";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
 import { buildGovernanceReportFilters } from "./governanceReportView";
@@ -14,6 +19,7 @@ import {
   DECISION_DRAWER_COLS,
 } from "../boardMeetingDrawerSchemas";
 import {
+  type Meeting,
   useMeetingRegistry,
   useQuorumEventRegistry,
   useDecisionRegistry,
@@ -35,6 +41,7 @@ export function MeetingPerformanceAnalyticsPage() {
     committee:        m.committee,
     meeting_type:     m.meeting_type,
     meeting_date:     m.meeting_date,
+    meeting_year:     /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(m.meeting_date) ? m.meeting_date.slice(0, 4) : "",
     chairperson:      m.chairperson,
     agenda_count:     m.agenda_count,
     participant_count: m.participant_count,
@@ -44,18 +51,21 @@ export function MeetingPerformanceAnalyticsPage() {
     approval_status:  m.approval_status,
   }));
 
-  const completed  = rows.filter(r => r.approval_status === "Completed" || r.approval_status === "Minutes Approved").length;
-  const cancelled  = rows.filter(r => r.approval_status === "Cancelled").length;
-  const scheduled  = rows.filter(r => r.approval_status === "Scheduled").length;
-  const quorumMet  = rows.filter(r => r.quorum_observed === "Met").length;
+  const summarize = (rows: TableRow[]): KpiDef[] => {
+    const completed  = rows.filter(r => r.approval_status === "Completed" || r.approval_status === "Minutes Approved").length;
+    const cancelled  = rows.filter(r => r.approval_status === "Cancelled").length;
+    const scheduled  = rows.filter(r => r.approval_status === "Scheduled").length;
+    const quorumMet  = rows.filter(r => r.quorum_observed === "Met").length;
 
-  const kpis: KpiDef[] = [
-    { label: "Total Meetings", value: String(rows.length),  tone: "primary" },
-    { label: "Completed",      value: String(completed),    tone: "success" },
-    { label: "Scheduled",      value: String(scheduled),    tone: "warning" },
-    { label: "Cancelled",      value: String(cancelled),    tone: "error"   },
-    { label: "Quorum Met",     value: String(quorumMet),    tone: "neutral" },
-  ];
+    return [
+      { label: "Total Meetings", value: String(rows.length),  tone: "primary" },
+      { label: "Completed",      value: String(completed),    tone: "success" },
+      { label: "Scheduled",      value: String(scheduled),    tone: "warning" },
+      { label: "Cancelled",      value: String(cancelled),    tone: "error"   },
+      { label: "Quorum Met",     value: String(quorumMet),    tone: "neutral" },
+    ];
+  };
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Meeting Performance",
@@ -76,7 +86,8 @@ export function MeetingPerformanceAnalyticsPage() {
       status:     "approval_status",
       date:       "meeting_date",
     },
-    filters:    BASE_FILTERS,
+    reportDateField: "meeting_date",
+    filters:    buildMeetingRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Meeting Details",
     drawerCols:  MEETING_DRAWER_COLS,
@@ -87,6 +98,7 @@ export function MeetingPerformanceAnalyticsPage() {
       await Promise.all([registry.refresh?.(), quorumReg.refresh?.()]);
     },
     // Never present zero meeting/quorum metrics before both authorized reads succeed.
+    filteredKpis: summarize,
     kpis: registry.loading || quorumReg.loading || registry.error || quorumReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
@@ -95,63 +107,75 @@ export function MeetingPerformanceAnalyticsPage() {
 // ─── Participation Analytics ────────────────────────────────────────────────
 
 export function ParticipationAnalyticsPage() {
-  const registry = useMeetingRegistry();
+  const registry = useScopedParticipationReport();
+  const checkIns = recordedSessionCheckIns(registry.items);
+  const meetings = registry.items.filter(row => row.entity_key === "bms.meetings").map(row => row.payload as unknown as Meeting);
 
-  const rows: TableRow[] = registry.items.map(m => ({
+  const rows: TableRow[] = meetings.map(m => ({
     id:               m.id,
     meeting_id:       m.meeting_id,
     meeting_title:    m.meeting_title,
     committee:        m.committee,
     meeting_type:     m.meeting_type,
     meeting_date:     m.meeting_date,
+    meeting_year:     typeof m.meeting_date === "string" && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(m.meeting_date) ? m.meeting_date.slice(0, 4) : "",
     chairperson:      m.chairperson,
     secretary:        m.secretary,
     participant_count: m.participant_count,
+    recorded_check_ins: checkIns.get(m.id) ?? "Not recorded",
+    participation_summary: `${summarizeParticipantCounts([m.participant_count]).totalParticipants ?? "Unknown"} planned · ${checkIns.has(m.id) ? `${checkIns.get(m.id)} recorded` : "Not recorded"}`,
     quorum_forecast:  m.quorum_forecast,
     mode:             m.mode,
     approval_status:  m.approval_status,
   }));
 
-  const totalParticipants = rows.reduce((sum, r) => sum + (parseInt(String(r.participant_count)) || 0), 0);
-  const avgParticipants   = rows.length ? Math.round(totalParticipants / rows.length) : 0;
-  const inPerson          = rows.filter(r => r.mode === "In-Person" || r.mode === "Physical").length;
-  const virtual           = rows.filter(r => r.mode === "Virtual" || r.mode === "Online").length;
+  const summarize = (rows: TableRow[]): KpiDef[] => {
+    const { totalParticipants, avgParticipants } = summarizeParticipantCounts(rows.map(r => r.participant_count));
+    const inPerson          = rows.filter(r => r.mode === "In-Person" || r.mode === "Physical").length;
+    const virtual           = rows.filter(r => r.mode === "Virtual" || r.mode === "Online").length;
 
-  const kpis: KpiDef[] = [
-    { label: "Total Meetings",     value: String(rows.length),         tone: "primary" },
-    { label: "Total Participants", value: String(totalParticipants),   tone: "neutral" },
-    { label: "Avg Per Meeting",    value: String(avgParticipants),     tone: "success" },
-    { label: "In-Person",          value: String(inPerson),            tone: "warning" },
-    { label: "Virtual",            value: String(virtual),             tone: "neutral" },
-  ];
+    const recorded = rows.filter(r => typeof r.recorded_check_ins === "number");
+    const recordedCount = recorded.reduce((sum, r) => sum + r.recorded_check_ins, 0);
+    return [
+      { label: "Total Meetings",     value: String(rows.length),         tone: "primary" },
+      { label: "Total Participants (Planned)", value: totalParticipants === null ? "Unavailable" : String(totalParticipants),   tone: "neutral" },
+      { label: "Avg Per Meeting (Planned)",    value: avgParticipants === null ? "Unavailable" : String(avgParticipants),     tone: "success" },
+      { label: "In-Person",          value: String(inPerson),            tone: "warning" },
+      { label: "Virtual",            value: String(virtual),             tone: "neutral" },
+      { label: "Recorded Check-ins", value: recorded.length ? String(recordedCount) : "Not recorded", tone: "neutral" },
+    ];
+  };
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Participation Analytics",
-    desc:  "Track member attendance, quorum compliance, and participation patterns across meetings.",
+    desc:  "Track member attendance, quorum compliance, and participation patterns across meetings. Participant totals are planned; recorded check-ins count distinct people per meeting with session-linked evidence, not complete attendance history.",
     cols: [
       fc("meeting_title",    "Meeting",      { headerKey: "headers.meetingTitle" }),
       fc("committee",        "Committee",    { headerKey: "headers.committee" }),
       fc("meeting_date",     "Date",         { headerKey: "headers.date" }),
       fc("mode",             "Mode",         { headerKey: "headers.type" }),
-      fc("participant_count","Participants", { headerKey: "headers.totalEntry" }),
+      fc("participation_summary","Participants", { headerKey: "headers.totalEntry" }),
       fc("quorum_forecast",  "Quorum",       { headerKey: "headers.reason" }),
       BADGE("approval_status", "Status"),
     ],
     mobileCardMapping: {
       primary:    "meeting_title",
       identifier: "meeting_id",
-      meta:       ["committee", "mode", "participant_count"],
+      meta:       ["committee", "mode", "participation_summary"],
       status:     "approval_status",
       date:       "meeting_date",
     },
-    filters:    BASE_FILTERS,
+    reportDateField: "meeting_date",
+    filters:    buildMeetingRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Meeting Details",
-    drawerCols:  MEETING_DRAWER_COLS,
+    drawerCols:  [...MEETING_DRAWER_COLS, fc("participant_count", "Planned Participants"), fc("recorded_check_ins", "Recorded Check-ins")],
     rows,
     dataLoading: Boolean(registry.loading),
     dataError: registry.error ?? null,
     onDataRetry: registry.refresh,
+    filteredKpis: summarize,
     kpis: registry.loading || registry.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
@@ -164,9 +188,14 @@ export function GovernanceReportPage() {
   const governanceReg = useGovernanceRegistry();
   const resolutionReg = useResolutionRegistry();
 
+  const meetingsByBody = indexReportLinks(governanceReg.items, meetingReg.items,
+    body => [body.id, body.body_id, body.body_name], meeting => meeting.committee);
+  const resolutionsByBody = new Map<string, typeof resolutionReg.items>();
   const rows: TableRow[] = governanceReg.items.map(g => {
-    const bodyMeetings    = meetingReg.items.filter(m => m.committee === g.body_name);
+    const bodyMeetings    = meetingsByBody.get(g.id) ?? [];
     const bodyResolutions = resolutionReg.items.filter(r => bodyMeetings.some(m => resolutionBelongsToMeeting(r, m.meeting_id)));
+    const adopted = [...new Map(bodyResolutions.filter(r => r.approval_status === "Adopted").map(r => [r.id, r])).values()];
+    resolutionsByBody.set(g.id, adopted);
     return {
       id:                 g.id,
       body_id:            g.body_id,
@@ -178,19 +207,20 @@ export function GovernanceReportPage() {
       quorum_requirement: g.quorum_requirement,
       voting_method:      g.voting_method,
       meetings_held:      String(bodyMeetings.length),
-      resolutions_passed: String(bodyResolutions.filter(r => r.approval_status === "Adopted").length),
+      resolutions_passed: String(adopted.length),
       establishment_date: g.establishment_date,
       mandate:            g.mandate,
       status:             g.status,
     };
   });
 
-  const kpis: KpiDef[] = [
-    { label: "Governance Bodies",   value: String(rows.length),                                             tone: "primary" },
-    { label: "Active",              value: String(rows.filter(r => r.status === "Active").length),          tone: "success" },
-    { label: "Total Meetings",      value: String(meetingReg.items.length),                                 tone: "neutral" },
-    { label: "Resolutions Adopted", value: String(resolutionReg.items.filter(r => r.approval_status === "Adopted").length), tone: "warning" },
+  const summarize = (rows: TableRow[]): KpiDef[] => [
+    { label: "Governance Bodies",   value: String(rows.length), tone: "primary" },
+    { label: "Active",              value: String(rows.filter(r => r.status === "Active").length), tone: "success" },
+    { label: "Total Meetings",      value: String(selectedReportLinks(rows, meetingsByBody).length), tone: "neutral" },
+    { label: "Resolutions Adopted", value: String(selectedReportLinks(rows, resolutionsByBody).length), tone: "warning" },
   ];
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Governance Report",
@@ -221,6 +251,7 @@ export function GovernanceReportPage() {
     onDataRetry: async () => {
       await Promise.all([meetingReg.refresh?.(), governanceReg.refresh?.(), resolutionReg.refresh?.()]);
     },
+    filteredKpis: summarize,
     kpis: meetingReg.loading || governanceReg.loading || resolutionReg.loading || meetingReg.error || governanceReg.error || resolutionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
@@ -232,8 +263,10 @@ export function DecisionsActionsAnalyticsPage() {
   const decisionReg = useDecisionRegistry();
   const actionReg   = useActionItemRegistry();
 
+  const actionsByDecision = indexReportLinks(decisionReg.items, actionReg.items,
+    decision => [decision.id, decision.decision_id], action => action.source_decision);
   const rows: TableRow[] = decisionReg.items.map(d => {
-    const linked = actionReg.items.filter(a => a.source_decision === d.decision_id);
+    const linked = actionsByDecision.get(d.id) ?? [];
     return {
       id:                    d.id,
       decision_id:           d.decision_id,
@@ -250,14 +283,17 @@ export function DecisionsActionsAnalyticsPage() {
     };
   });
 
-  const overdueActions = countOverdueActions(actionReg.items.map(a => ({ ...a })), todayInLocalTime(new Date()));
-
-  const kpis: KpiDef[] = [
-    { label: "Total Decisions", value: String(decisionReg.items.length),                                                     tone: "primary" },
-    { label: "Total Actions",   value: String(actionReg.items.length),                                                       tone: "neutral" },
-    { label: "Implemented",     value: String(decisionReg.items.filter(d => d.implementation_status === "Completed").length), tone: "success" },
-    { label: "Overdue Actions", value: String(overdueActions),                                                                tone: "error"   },
-  ];
+  const summarize = (rows: TableRow[]): KpiDef[] => {
+    const linked = selectedReportLinks(rows, actionsByDecision);
+    const overdueActions = countOverdueActions(linked.map(a => ({ ...a })), todayInLocalTime(new Date()));
+    return [
+      { label: "Total Decisions", value: String(rows.length), tone: "primary" },
+      { label: "Total Actions",   value: String(linked.length), tone: "neutral" },
+      { label: "Implemented",     value: String(rows.filter(d => d.implementation_status === "Completed").length), tone: "success" },
+      { label: "Overdue Actions", value: String(overdueActions), tone: "error" },
+    ];
+  };
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Decisions & Actions",
@@ -278,6 +314,7 @@ export function DecisionsActionsAnalyticsPage() {
       status:     "implementation_status",
       date:       "effective_date",
     },
+    reportDateField: "effective_date",
     filters:    buildDecisionRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Decision Details",
@@ -288,6 +325,7 @@ export function DecisionsActionsAnalyticsPage() {
     onDataRetry: async () => {
       await Promise.all([decisionReg.refresh?.(), actionReg.refresh?.()]);
     },
+    filteredKpis: summarize,
     kpis: decisionReg.loading || actionReg.loading || decisionReg.error || actionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
@@ -314,14 +352,17 @@ export function FinancialResourceImpactPage() {
     approval_status:       d.approval_status,
   }));
 
-  const implemented = rows.filter(r => r.implementation_status === "Completed").length;
-  const pending     = rows.filter(r => r.implementation_status !== "Completed").length;
+  const summarize = (rows: TableRow[]): KpiDef[] => {
+    const implemented = rows.filter(r => r.implementation_status === "Completed").length;
+    const pending     = rows.filter(r => r.implementation_status !== "Completed").length;
 
-  const kpis: KpiDef[] = [
-    { label: "Decisions with Financial Impact", value: String(rows.length), tone: "primary" },
-    { label: "Implemented",                     value: String(implemented), tone: "success" },
-    { label: "Pending Implementation",          value: String(pending),     tone: "warning" },
-  ];
+    return [
+      { label: "Decisions with Financial Impact", value: String(rows.length), tone: "primary" },
+      { label: "Implemented",                     value: String(implemented), tone: "success" },
+      { label: "Pending Implementation",          value: String(pending),     tone: "warning" },
+    ];
+  };
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Financial & Resource Impact",
@@ -342,6 +383,7 @@ export function FinancialResourceImpactPage() {
       amount:     "financial_impact",
       date:       "effective_date",
     },
+    reportDateField: "effective_date",
     filters:    buildDecisionRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Decision Details",
@@ -350,6 +392,7 @@ export function FinancialResourceImpactPage() {
     dataLoading: Boolean(decisionReg.loading),
     dataError: decisionReg.error ?? null,
     onDataRetry: decisionReg.refresh,
+    filteredKpis: summarize,
     kpis: decisionReg.loading || decisionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;

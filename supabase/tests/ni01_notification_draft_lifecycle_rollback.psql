@@ -1,0 +1,75 @@
+-- Requires existing Convay schema and active root. No persistent test or DDL changes.
+\set ON_ERROR_STOP on
+BEGIN;
+\ir ../release-candidates/ni01_notification_draft_lifecycle.sql
+DO $test$ DECLARE root_id uuid; BEGIN
+  SELECT user_id INTO root_id FROM public.user_profiles WHERE account_role='super_admin' AND account_status='active' LIMIT 1;
+  IF root_id IS NULL THEN RAISE EXCEPTION 'No active root for test'; END IF;
+  PERFORM set_config('request.jwt.claim.sub',root_id::text,true);
+END $test$;
+SET LOCAL ROLE authenticated;
+DO $test$ DECLARE
+  v_id text:=gen_random_uuid()::text;
+  v_payload jsonb;
+  v_count int;
+  rejected boolean;
+BEGIN
+  v_payload:=jsonb_build_object('id',v_id,'rule_id','QA-ROLLBACK','rule_name','Rollback guard','trigger_event','Test','channels','In-App','recipients','Nobody','timing','None','template','Test','entity_type','Meeting','status','Draft');
+  rejected:=false;
+  BEGIN
+    INSERT INTO public.convay_entity_records(entity_key,record_id,payload) VALUES ('bms.notifyrules',v_id,jsonb_set(v_payload,'{status}','"Active"'));
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Active creation accepted'; END IF;
+  rejected:=false;
+  BEGIN
+    INSERT INTO public.convay_entity_records(entity_key,record_id,payload) VALUES ('bms.notifyrules',v_id,v_payload-'channels');
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Incomplete payload accepted'; END IF;
+  INSERT INTO public.convay_entity_records(entity_key,record_id,payload) VALUES ('bms.notifyrules',v_id,v_payload);
+  UPDATE public.convay_entity_records SET payload=jsonb_set(payload,'{rule_name}','"Rollback revised"') WHERE entity_key='bms.notifyrules' AND record_id=v_id;
+  SELECT count(*) INTO v_count FROM public.convay_entity_records WHERE entity_key='bms.notifyrules' AND record_id=v_id AND payload->>'rule_name'='Rollback revised';
+  IF v_count<>1 THEN RAISE EXCEPTION 'Valid draft update/readback failed'; END IF;
+  rejected:=false;
+  BEGIN
+    UPDATE public.convay_entity_records SET payload=jsonb_set(payload,'{status}','"Active"') WHERE entity_key='bms.notifyrules' AND record_id=v_id;
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Active transition accepted'; END IF;
+  rejected:=false;
+  BEGIN
+    UPDATE public.convay_entity_records SET payload=jsonb_set(payload,'{rule_id}','"ALTERED"') WHERE entity_key='bms.notifyrules' AND record_id=v_id;
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Identity mutation accepted'; END IF;
+  rejected:=false;
+  BEGIN
+    DELETE FROM public.convay_entity_records WHERE entity_key='bms.notifyrules' AND record_id=v_id;
+  EXCEPTION WHEN check_violation THEN rejected:=true; END;
+  IF NOT rejected THEN RAISE EXCEPTION 'Deletion accepted'; END IF;
+END $test$;
+RESET ROLE;
+SELECT 'NI-01 draft lifecycle guard: positive create/edit/readback and five negative checks passed' AS result;
+DO $t$ DECLARE r uuid; n uuid; BEGIN
+SELECT user_id INTO r FROM public.user_profiles WHERE account_role='super_admin' AND account_status='active' LIMIT 1;
+SELECT user_id INTO n FROM public.user_profiles WHERE account_role<>'super_admin' AND account_status='active' LIMIT 1;
+IF r IS NULL OR n IS NULL THEN RAISE EXCEPTION 'Required root/nonroot test actors absent'; END IF;
+PERFORM set_config('convay.qa.root',r::text,true); PERFORM set_config('convay.qa.nonroot',n::text,true); PERFORM set_config('convay.qa.rule',gen_random_uuid()::text,true); END $t$;
+SELECT set_config('request.jwt.claim.sub',current_setting('convay.qa.root'),true);
+SET LOCAL ROLE authenticated;
+DO $t$ DECLARE v text:=current_setting('convay.qa.rule'); c int; BEGIN
+INSERT INTO public.convay_entity_records(entity_key,record_id,payload) VALUES ('bms.notifyrules',v,jsonb_build_object('id',v,'rule_id','QA-ROLLBACK','rule_name','Rollback root only','trigger_event','Test','channels','System Notification','recipients','Nobody','timing','None','template','Test','entity_type','Meeting','status','Draft'));
+SELECT count(*) INTO c FROM public.convay_entity_records WHERE entity_key='bms.notifyrules' AND record_id=v;
+IF c<>1 THEN RAISE EXCEPTION 'Root readback denied'; END IF; END $t$;
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub',current_setting('convay.qa.nonroot'),true);
+SET LOCAL ROLE authenticated;
+DO $t$ DECLARE v text:=current_setting('convay.qa.rule'); c int; denied boolean:=false; q text:=gen_random_uuid()::text; BEGIN
+SELECT count(*) INTO c FROM public.convay_entity_records WHERE entity_key='bms.notifyrules' AND record_id=v;
+IF c<>0 THEN RAISE EXCEPTION 'Nonroot read allowed'; END IF;
+UPDATE public.convay_entity_records SET payload=jsonb_set(payload,'{rule_name}','"Unauthorized"') WHERE entity_key='bms.notifyrules' AND record_id=v;
+GET DIAGNOSTICS c=ROW_COUNT; IF c<>0 THEN RAISE EXCEPTION 'Nonroot update allowed'; END IF;
+BEGIN
+INSERT INTO public.convay_entity_records(entity_key,record_id,payload) VALUES ('bms.notifyrules',q,jsonb_build_object('id',q,'rule_id','QA-ROLLBACK2','rule_name','Rollback denied','trigger_event','Test','channels','System Notification','recipients','Nobody','timing','None','template','Test','entity_type','Meeting','status','Draft'));
+EXCEPTION WHEN insufficient_privilege THEN denied:=true; END;
+IF NOT denied THEN RAISE EXCEPTION 'Nonroot insert allowed'; END IF;
+END $t$; RESET ROLE;
+SELECT 'Root-only restrictive RLS: positive root and negative nonroot read/update/insert passed' AS result;
+ROLLBACK;

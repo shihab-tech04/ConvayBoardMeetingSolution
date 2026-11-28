@@ -1,0 +1,41 @@
+name: Convay Phase 1 — disposable directory and assignment scope
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/tests/phase1_directory_scope/**'
+      - '.github/workflows/convay-phase1-directory-scope-isolated.yml'
+permissions:
+  contents: read
+jobs:
+  scope-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start isolated PostgreSQL 17
+        run: |
+          docker run -d --name convay-phase1-scope -e POSTGRES_PASSWORD=isolated-fixture-only -e POSTGRES_DB=fixture -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for n in $(seq 1 45); do docker exec convay-phase1-scope pg_isready -U postgres -d fixture && exit 0; sleep 2; done
+          exit 1
+      - name: Reproduce and verify scoped candidate (synthetic only)
+        run: docker exec convay-phase1-scope psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -v keep_concurrency_fixture=1 -f /workspace/supabase/tests/phase1_directory_scope/rehearsal.psql
+      - name: Exercise actual concurrent sessions (synthetic only)
+        run: bash supabase/tests/phase1_directory_scope/concurrency.sh
+      - name: Reproduce revoked legacy access and verify registry and Storage RLS correction
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path("supabase/migrations/20261104171825_convay_document_workspace_registry_parity.sql").read_text()
+          start=src.index("CREATE OR REPLACE FUNCTION convay_private.document_scope_authorized(")
+          end=src.index("end $function$;",start)+len("end $function$;")
+          fixture=Path("supabase/tests/phase1_directory_scope/document_scope_baseline.sql").read_text()
+          assert src[start:end] in fixture, "Document baseline differs from source"
+          PY
+          docker exec convay-phase1-scope createdb -U postgres fixture_legacy_scope
+          docker exec convay-phase1-scope psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture_legacy_scope -f /workspace/supabase/tests/phase1_directory_scope/legacy_scope_revocation.psql
+      - name: Destroy disposable PostgreSQL
+        if: always()
+        run: docker rm -f convay-phase1-scope || true

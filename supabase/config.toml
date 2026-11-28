@@ -5,3 +5,6 @@ verify_jwt = true
 # This endpoint handles both authenticated hosts and anonymous capability-link guests.
 # The function validates host JWTs itself and validates guest links on every action.
 verify_jwt = false
+
+[functions.convay-voting]
+verify_jwt = true

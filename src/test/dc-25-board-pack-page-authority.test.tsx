@@ -57,7 +57,12 @@ describe("DC-21 safe board-pack draft entry", () => {
     expect(src).toContain("dataLoading: Boolean(reg.loading)");
     expect(src).toContain("dataError: reg.error");
     expect(src).toContain("await reg.add(draft)");
-    expect(src).toContain("await reg.update(id, patch)");
+    expect(src).toContain("await persistBoardPackDraftUpdate(existing, patch, {");
+    expect(src).toContain('await convayAuth.registry<BoardPack>("bms.boardpacks", "update", record, revision)');
+    expect(src).toContain("result.revision === revision + 1");
+    const persistence = readFileSync("src/app/pages/agenda-documents/boardPackDraftPersistence.ts", "utf8");
+    expect(persistence).toContain("await gateway.update(intended, before.revision)");
+    expect(persistence).toContain("after.revision === before.revision + 1 && matchesPatch(after.payload)");
     expect(src).toContain("actor = await convayAuth.restore()");
     expect(src).toContain('enabled: false');
   });

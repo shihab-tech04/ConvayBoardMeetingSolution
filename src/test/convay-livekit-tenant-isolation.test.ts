@@ -137,10 +137,14 @@ describe("regular meeting lookup and persistence safety", () => {
   it("guards both production gateways before provider issuance or SQL writes", () => {
     const attendance = readFileSync("supabase/functions/convay-attendance/index.ts","utf8");
     expect(edgeSource).toContain("checkAttendancePersistenceScope(meeting)");
-    expect(attendance).toContain("checkAttendancePersistenceScope(meetingRow)");
+    expect(edgeSource).toContain('Deno.env.get("CONVAY_SCOPED_ATTENDANCE_ENABLED") !== "true"');
+    expect(edgeSource).toContain(".releaseEnabled === true");
+    expect(edgeSource).toContain("!await scopedAttendanceReady(attendanceScope, canonicalMeetingId, user.id)");
+    expect(edgeSource.indexOf("!await scopedAttendanceReady")).toBeLessThan(edgeSource.indexOf("new AccessToken("));
+    expect(attendance).toContain("scopeFromPersistedSession(meetingRow.tenant_id, session.id, expectedSessionId, expectedTenantId)");
     expect(edgeSource).toContain("uniqueSavedMeeting(await jsonRequest");
     expect(attendance).toContain("uniqueSavedMeeting(await authorizedFetch");
     expect(edgeSource.indexOf("checkAttendancePersistenceScope(meeting)")).toBeLessThan(edgeSource.indexOf("new AccessToken("));
-    expect(attendance.indexOf("checkAttendancePersistenceScope(meetingRow)")).toBeLessThan(attendance.indexOf('await serviceRpc<Record<string, unknown>>("convay_read_live_attendance"'));
+    expect(attendance.indexOf("scopeFromPersistedSession(meetingRow.tenant_id")).toBeLessThan(attendance.indexOf('await serviceRpc<Record<string, unknown>>("convay_read_live_attendance_scoped"'));
   });
 });

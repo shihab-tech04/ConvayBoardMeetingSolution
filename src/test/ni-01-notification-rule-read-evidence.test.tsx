@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PageCfg } from "../app/pages/modulePageUtils";
 import { NotificationRulesPage } from "../app/pages/administration/NotificationPages";
@@ -37,21 +37,26 @@ beforeEach(() => {
   vi.clearAllMocks(); state.refresh.mockResolvedValue(undefined);
 });
 const record = { id: "actual-id", rule_id: "NR-REAL", rule_name: "Saved draft", status: "Draft", channels: "Email", recipients: "Owner", timing: "Immediately" };
-describe("NI-01 read-only release evidence", () => {
+describe("NI-01 read evidence preserved in draft lifecycle candidate", () => {
   it("reports the actual empty registry rather than the generated 22 rules", () => {
     render(<NotificationRulesPage />);
     expect(screen.getByTestId("rows").textContent).toBe("0");
     expect(state.cfg.kpis?.find(k => k.label === "Total Rules")?.value).toBe("0");
   });
-  it("maps authoritative records and counts, with no write controls active", () => {
+  it("maps authoritative records and counts, with delivery lifecycle actions still unavailable", () => {
     state.items = [record]; render(<NotificationRulesPage />);
     expect(state.cfg.rows).toEqual([{ ...record, channel: "Email", audience: "Owner", delay_minutes: "Immediately" }]);
     expect(state.cfg.kpis?.find(k => k.label === "Draft")?.value).toBe("1");
-    expect(state.cfg.drawerActions?.map(a => a.id)).toEqual(["edit", "activate", "deactivate", "duplicate", "archive"]);
-    expect(state.cfg.drawerActions?.every(a => a.enabled === false && a.disabledReason)).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Create Notification Rule" }));
-    expect(state.info).toHaveBeenCalledWith(expect.stringContaining("server-side lifecycle"));
-    expect(state.cfg.onRowCreate).toBeUndefined(); expect(state.cfg.onRowUpdate).toBeUndefined();
+    const actions = state.cfg.drawerActionsResolver!(state.cfg.rows[0]);
+    expect(actions.map(a => a.id)).toEqual(["edit", "activate", "deactivate", "duplicate", "archive"]);
+    for (const id of ["activate", "deactivate", "archive"]) {
+      expect(actions.find(a => a.id === id)?.enabled).toBe(false);
+    }
+    expect(actions.find(a => a.id === "edit")?.enabled).toBe(true);
+    expect(actions.find(a => a.id === "duplicate")?.enabled).toBe(true);
+    expect(state.cfg.entryBtn).toBe("Create Notification Rule");
+    expect(typeof state.cfg.onRowCreate).toBe("function");
+    expect(typeof state.cfg.onRowUpdate).toBe("function");
     expect(state.add).not.toHaveBeenCalled(); expect(state.update).not.toHaveBeenCalled(); expect(state.remove).not.toHaveBeenCalled();
   });
   it("does not mount the registry for a delegated non-root or unloaded session", () => {

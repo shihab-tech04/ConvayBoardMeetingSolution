@@ -13,7 +13,7 @@ describe("RP-04 decisions and actions analytics scope and source truth", () => {
     expect(countOverdueActions([{ due_date: "2026-11-01", implementation_status: "In Progress" }], "2026-11-20")).toBe(1);
   });
   it("computes overdue with local date and terminal status instead of UTC", () => {
-    expect(page).toContain("countOverdueActions(actionReg.items.map(a => ({ ...a })), todayInLocalTime(new Date()))");
+    expect(page).toContain("countOverdueActions(linked.map(a => ({ ...a })), todayInLocalTime(new Date()))");
     expect(page).not.toContain("new Date().toISOString().slice(0, 10)");
     expect(page).toContain("linked.filter(a => isActionClosed({ ...a })).length");
     expect(todayInLocalTime(new Date(2026, 10, 20))).toBe("2026-11-20");

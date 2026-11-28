@@ -45,7 +45,10 @@ jobs:
           # Quick Meeting guest/backend journeys via this release.
           VITE_CONVAY_REGULAR_LIVE_ENABLED: "true"
           VITE_CONVAY_QUICK_MEETING_ENABLED: "false"
+          CONVAY_PAGES_BUILD: "true"
         run: pnpm exec vite build --config vite.figma.config.ts --base /ConvayBoardMeetingSolution/
+      - name: Verify the document editor is deferred from startup
+        run: node scripts/verify-pages-editor-chunk.mjs
       - name: Verify production entry
         run: |
           test -s dist/index.html
@@ -59,13 +62,13 @@ jobs:
         run: |
           printf '{"commit":"%s","regular_live":true,"quick_meeting":false}\n' "$GITHUB_SHA" > dist/release.json
       - name: Upload production Pages artifact
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build-and-test
     runs-on: ubuntu-24.04
     environment:
@@ -76,6 +79,10 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Require authorized Main release event
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          case "$GITHUB_EVENT_NAME" in push|workflow_dispatch) ;; *) exit 1 ;; esac
       - name: Publish verified build
         id: deployment
         uses: actions/deploy-pages@v4

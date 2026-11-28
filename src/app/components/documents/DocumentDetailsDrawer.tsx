@@ -29,6 +29,7 @@ import {
   useBoardPackRegistry,
   usePrivateNoteRegistry,
   type BoardDocument,
+  type BoardPack,
   type DocumentVersion,
   type AuditEvent,
 } from "../../data/boardMeetingData";
@@ -50,9 +51,12 @@ import {
   documentShareGrantReadback,
   documentShareRevokeReadback,
 } from "./documentAccessReadback";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import { exactBoardPackLink, resolveBoardPackVersion, resolveDraftPack } from "./boardPackLinkPersistence";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getDocumentRepository } from "../../services/repositories/documentRepository";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
+import { retrieveVersionOriginalForDownload } from "./documentOriginalDownload";
 import type { DocumentRepository, DocumentAccessEntry } from "../../services/types/documents";
 import { getDocumentWorkspaceType } from "../../utils/documentFormat";
 import { canRestoreVersion, isLockedVersion } from "./documentVersionLock";
@@ -624,8 +628,17 @@ function VersionsTab({
   const [comparing, setComparing]       = useState<string | null>(null);
   const [diffChunks, setDiffChunks]     = useState<DiffChunk[] | null>(null);
   const [diffLoading, setDiffLoading]   = useState(false);
+  const [downloadingVersion, setDownloadingVersion] = useState<string | null>(null);
 
   const docId   = doc.doc_id ?? doc.id;
+  const versionDownload = useRef<{ documentId: string; token: symbol | null }>({ documentId: docId, token: null });
+  if (versionDownload.current.documentId !== docId) {
+    versionDownload.current = { documentId: docId, token: null };
+  }
+  useEffect(() => {
+    setDownloadingVersion(null);
+    return () => { versionDownload.current.token = null; };
+  }, [docId]);
   const versions = useMemo(
     () => versionReg.items
       .filter(v => v.document_id === docId)
@@ -673,6 +686,48 @@ function VersionsTab({
     versionReg.update(v.id, { version_name: nameInput.trim(), is_named: true });
     toast.success("Version named.");
     setNaming(null); setNameInput("");
+  };
+
+  const handleVersionDownload = async (v: DocumentVersion) => {
+    if (versionDownload.current.token || versionReg.loading || versionReg.error) return;
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_download", accessAtStart)) {
+      toast.error("You do not have permission to download this document version.");
+      return;
+    }
+    const token = Symbol("version-download");
+    versionDownload.current.token = token;
+    setDownloadingVersion(v.id);
+    const active = () => versionDownload.current.documentId === docId && versionDownload.current.token === token;
+    const assertCurrent = () => {
+      if (!active() || !documentActionSessionUnchanged("doc_download", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your document selection or access changed. Reopen the version before downloading.");
+      }
+    };
+    try {
+      await retrieveVersionOriginalForDownload(docId, v, doc.file_name ?? "document",
+        (id, versionId) => documentContentStore.getOriginalFile(id, versionId), assertCurrent,
+        (file, name) => {
+          const url = URL.createObjectURL(file);
+          const anchor = document.createElement("a");
+          try {
+            anchor.href = url;
+            anchor.download = name;
+            document.body.appendChild(anchor);
+            anchor.click();
+          } finally {
+            anchor.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 15_000);
+          }
+        });
+    } catch (error) {
+      if (active()) toast.error(error instanceof Error ? error.message : "Unable to download this document version.");
+    } finally {
+      if (active()) {
+        versionDownload.current.token = null;
+        setDownloadingVersion(null);
+      }
+    }
   };
 
   const handleCompare = async (v: DocumentVersion) => {
@@ -808,7 +863,10 @@ function VersionsTab({
                   <Button variant="ghost" size="sm" leadingIcon={Eye}>Preview</Button>
                 )}
                 {can("doc_download") && v.original_file_ref && (
-                  <Button variant="ghost" size="sm" leadingIcon={Download}>Download</Button>
+                  <Button variant="ghost" size="sm" leadingIcon={Download}
+                    loading={downloadingVersion === v.id}
+                    disabled={downloadingVersion !== null || Boolean(versionReg.loading) || Boolean(versionReg.error)}
+                    onClick={() => void handleVersionDownload(v)}>Download</Button>
                 )}
               </div>
             )}
@@ -1216,8 +1274,6 @@ function BoardPacksTab({ doc, can }: { doc: BoardDocument; can: (id: string) => 
   const linkReg     = useBoardPackDocumentLinkRegistry();
   const packReg     = useBoardPackRegistry();
   const versionReg  = useDocumentVersionRegistry();
-  const auditReg    = useAuditEventRegistry();
-  const currentUser = useCurrentUser();
 
   const [showAdd,    setShowAdd]    = useState(false);
   const [selPack,    setSelPack]    = useState("");
@@ -1226,84 +1282,102 @@ function BoardPacksTab({ doc, can }: { doc: BoardDocument; can: (id: string) => 
 
   const links = linkReg.items.filter(l => l.document_id === docId && l.link_status !== "removed");
 
-  // Highest version number from the version registry, falling back to the doc's own version field
-  const latestVersion = useMemo(() => {
-    const vers = versionReg.items.filter(v => v.document_id === docId);
-    if (!vers.length) return doc.version ?? "1.0";
-    return [...vers]
-      .sort((a, b) => parseFloat(b.version_number ?? "0") - parseFloat(a.version_number ?? "0"))[0]
-      .version_number ?? doc.version ?? "1.0";
-  }, [versionReg.items, docId, doc.version]);
-
+  const version = resolveBoardPackVersion(doc, versionReg.items);
+  const latestVersion = version?.version_number;
+  const canManage = can("doc_edit") && can("doc_share") && can("pack_create");
+  const ready = !linkReg.loading && !linkReg.error && !packReg.loading && !packReg.error && !versionReg.loading && !versionReg.error;
+  const busy = useRef(false);
+  const pendingLink = useRef<{ actorId: string; link: BoardPackDocumentLink } | null>(null);
+  const sessionEpoch = useRef(0);
+  useEffect(() => {
+    const invalidate = () => { sessionEpoch.current += 1; pendingLink.current = null; };
+    window.addEventListener("convay:entity-cache-cleared", invalidate);
+    return () => { window.removeEventListener("convay:entity-cache-cleared", invalidate); invalidate(); };
+  }, [docId]);
   const linkedPackIds = new Set(links.map(l => l.board_pack_id));
-  const packOptions   = packReg.items
-    .filter(p => !linkedPackIds.has(p.pack_id))
+  const packOptions = packReg.items.filter(p => p.approval_status === "Draft" && !linkedPackIds.has(p.pack_id) && !linkedPackIds.has(p.id))
     .map(p => `${p.pack_id} — ${p.pack_title}`);
 
-  const handleAdd = () => {
-    if (!selPack) { toast.error("Select a board pack."); return; }
-    setAdding(true);
-    const packId = selPack.split(" — ")[0];
-    const pack   = packReg.items.find(p => p.pack_id === packId);
-    if (!pack) { setAdding(false); return; }
-    const linkId = `LNK-${Date.now()}`;
-    linkReg.add({
-      id: linkId, link_id: linkId,
-      board_pack_id: pack.pack_id,
-      document_id: docId,
-      linked_version_id: latestVersion,
-      document_name: doc.doc_name,
-      board_pack_name: pack.pack_title,
-      section: selSection || undefined,
-      sort_order: links.length + 1,
-      added_by: currentUser.name,
-      added_at: new Date().toISOString(),
-      link_status: "active",
-    });
-    auditReg.add({
-      id: `AUD-${Date.now()}`, event_id: `AUD-${Date.now()}`,
-      entity_type: "Document", entity_id: docId,
-      action: "Added to Board Pack", actor: currentUser.name, actor_role: "User",
-      timestamp: new Date().toISOString(), ip_address: "",
-      details: `Added to "${pack.pack_title}" at version ${latestVersion}`,
-      approval_status: "Logged",
-    });
-    toast.success(`Added to "${pack.pack_title}" — version ${latestVersion} preserved.`);
-    setShowAdd(false); setSelPack(""); setSelSection(""); setAdding(false);
-  };
-
-  const handleUpdateVersion = (link: BoardPackDocumentLink) => {
-    if (link.linked_version_id === latestVersion) return;
-    linkReg.update(link.id, { linked_version_id: latestVersion });
-    auditReg.add({
-      id: `AUD-${Date.now()}`, event_id: `AUD-${Date.now()}`,
-      entity_type: "Document", entity_id: docId,
-      action: "Board Pack Link Version Updated", actor: currentUser.name, actor_role: "User",
-      timestamp: new Date().toISOString(), ip_address: "",
-      details: `Updated "${link.board_pack_name}" link from v${link.linked_version_id} to v${latestVersion}`,
-      approval_status: "Logged",
-    });
-    toast.success(`Board pack link updated to version ${latestVersion}.`);
-  };
-
-  const handleRemove = (link: BoardPackDocumentLink) => {
-    linkReg.update(link.id, { link_status: "removed" });
-    auditReg.add({
-      id: `AUD-${Date.now()}`, event_id: `AUD-${Date.now()}`,
-      entity_type: "Document", entity_id: docId,
-      action: "Removed from Board Pack", actor: currentUser.name, actor_role: "User",
-      timestamp: new Date().toISOString(), ip_address: "",
-      details: `Removed from "${link.board_pack_name}"`,
-      approval_status: "Logged",
-    });
-    toast.success("Removed from board pack.");
+  const changeLink = async (action: "add" | "version" | "remove", link?: BoardPackDocumentLink) => {
+    if (busy.current) return;
+    if (!canManage || !ready || (action !== "remove" && !version)) {
+      toast.error("Board pack, permissions and exact document version must be verified before saving."); return;
+    }
+    const access = readAccessSnapshot();
+    const epoch = sessionEpoch.current;
+    const assertCurrent = () => {
+      if (epoch !== sessionEpoch.current || !["doc_edit", "doc_share", "pack_create"].every(permission => documentActionSessionUnchanged(permission, access, readAccessSnapshot()))) {
+        throw new Error("Board-pack authority changed. Reopen this document.");
+      }
+    };
+    busy.current = true; setAdding(true);
+    try {
+      assertCurrent();
+      const actor = await convayAuth.restore(); assertCurrent();
+      if (!actor) throw new Error("Session expired. Sign in again.");
+      const [packs, documents, versions, savedLinks] = await Promise.all([
+        convayAuth.registry<BoardPack>("bms.boardpacks", "list"),
+        convayAuth.registry<BoardDocument>("bms.documents", "list"),
+        convayAuth.registry<DocumentVersion>("bms.docversions", "list"),
+        convayAuth.registry<BoardPackDocumentLink>("bms.doc.pack_links", "list"),
+      ]); assertCurrent();
+      const pack = resolveDraftPack(action === "add" ? selPack.split(" — ")[0] : link?.board_pack_id ?? "", packs.records.map(r => r.payload));
+      if (!pack) throw new Error("Select an authorized draft board pack.");
+      const foundDocs = documents.records.filter(({payload:row}) => row.id === docId || row.doc_id === docId);
+      if (foundDocs.length !== 1 || foundDocs[0].payload.id !== doc.id) throw new Error("Document identity changed. Refresh and reopen.");
+      const pin = resolveBoardPackVersion(foundDocs[0].payload, versions.records.map(r => r.payload));
+      if (action !== "remove" && (!pin || pin.version_id !== version?.version_id)) throw new Error("Document version changed. Refresh and reopen.");
+      let intended: BoardPackDocumentLink;
+      let revision: number | undefined;
+      let writeError: unknown;
+      if (action === "add") {
+        const pending = pendingLink.current;
+        if (pending && pending.actorId !== actor.user_id) throw new Error("Board-pack link belongs to a different actor.");
+        const previous = pending?.link;
+        if (previous && (previous.document_id !== docId || previous.board_pack_id !== pack.pack_id || previous.linked_version_id !== pin!.version_id || previous.section !== (selSection || undefined))) {
+          throw new Error("Retry the original pending board-pack link first.");
+        }
+        if (previous && exactBoardPackLink(savedLinks.records.map(r => r.payload), previous)) {
+          intended = previous;
+        } else {
+          if (savedLinks.records.some(({payload: row}) => row.document_id === docId && (row.board_pack_id === pack.pack_id || row.board_pack_id === pack.id) && row.link_status !== "removed")) throw new Error("Document is already linked to this pack.");
+          const id = globalThis.crypto.randomUUID();
+          intended = previous ?? {id, link_id:id, board_pack_id:pack.pack_id, document_id:docId, linked_version_id:pin!.version_id,
+            document_name:doc.doc_name, board_pack_name:pack.pack_title, section:selSection || undefined,
+            sort_order:savedLinks.records.filter(({payload:row}) => (row.board_pack_id === pack.pack_id || row.board_pack_id === pack.id) && row.link_status === "active").length + 1,
+            added_by:actor.display_name || actor.username || actor.user_id, added_at:new Date().toISOString(), link_status:"active"};
+          pendingLink.current = { actorId: actor.user_id, link: intended };
+          assertCurrent();
+          try { await convayAuth.registry<BoardPackDocumentLink>("bms.doc.pack_links", "create", intended); } catch (error) { writeError = error; }
+        }
+      } else {
+        const matches = savedLinks.records.filter(r => r.payload.id === link?.id);
+        if (matches.length !== 1 || !link || matches[0].payload.document_id !== docId ||
+            matches[0].payload.board_pack_id !== link.board_pack_id || matches[0].payload.linked_version_id !== link.linked_version_id ||
+            matches[0].payload.link_status !== link.link_status || !Number.isSafeInteger(matches[0].revision) || matches[0].revision < 1) {
+          throw new Error("Board-pack link changed. Refresh and reopen.");
+        }
+        revision = matches[0].revision;
+        intended = {...matches[0].payload, ...(action === "remove" ? {link_status:"removed" as const} : {linked_version_id:pin!.version_id})};
+        assertCurrent();
+        try { await convayAuth.registry<BoardPackDocumentLink>("bms.doc.pack_links", "update", intended, revision); } catch (error) { writeError = error; }
+      }
+      assertCurrent();
+      const saved = await convayAuth.registry<BoardPackDocumentLink>("bms.doc.pack_links", "list"); assertCurrent();
+      if (!exactBoardPackLink(saved.records.map(r => r.payload), intended) || (revision !== undefined && !saved.records.some(r=>r.payload.id===intended.id && r.revision===revision!+1))) throw writeError instanceof Error ? writeError : new Error("Board-pack link save was not confirmed. Refresh before retrying.");
+      if (action === "add") {pendingLink.current = null; setShowAdd(false); setSelPack(""); setSelSection("");}
+      try { await linkReg.refresh?.(); } catch { /* Exact SQL readback already confirmed. */ }
+      assertCurrent();
+      toast.success(action === "remove" ? "Removed from board pack." : action === "add" ? `Added to "${pack.pack_title}" — version ${pin!.version_number} preserved.` : `Board pack link updated to version ${pin!.version_number}.`);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Board-pack link could not be saved."); }
+    finally { busy.current = false; setAdding(false); }
   };
 
   return (
     <Section title="Board Packs" padded>
-      {can("doc_edit") && !showAdd && (
+      {canManage && !showAdd && (
         <div style={{ marginBottom: "0.75rem" }}>
-          <Button variant="ghost" size="sm" leadingIcon={Plus} onClick={() => setShowAdd(true)}>
+          <Button variant="ghost" size="sm" leadingIcon={Plus} disabled={!ready || !version} onClick={() => setShowAdd(true)}>
             Add to Board Pack
           </Button>
         </div>
@@ -1320,10 +1394,10 @@ function BoardPacksTab({ doc, can }: { doc: BoardDocument; can: (id: string) => 
           />
           <div className="doc-drawer__inline-form-actions">
             <Button variant="ghost" size="sm"
-              onClick={() => { setShowAdd(false); setSelPack(""); setSelSection(""); }}>
+              disabled={adding} onClick={() => { setShowAdd(false); setSelPack(""); setSelSection(""); }}>
               Cancel
             </Button>
-            <Button variant="primary" size="sm" loading={adding} onClick={handleAdd}>Add</Button>
+            <Button variant="primary" size="sm" loading={adding} disabled={!ready || !version || !canManage} onClick={() => void changeLink("add")}>Add</Button>
           </div>
         </div>
       )}
@@ -1333,7 +1407,9 @@ function BoardPacksTab({ doc, can }: { doc: BoardDocument; can: (id: string) => 
       )}
 
       {links.map(link => {
-        const isOutdated = link.linked_version_id !== latestVersion;
+        const isOutdated = Boolean(version && link.linked_version_id !== version.version_id);
+        const editable = Boolean(resolveDraftPack(link.board_pack_id, packReg.items));
+        const displayVersion = versionReg.items.find(v => v.document_id === docId && v.version_id === link.linked_version_id)?.version_number ?? link.linked_version_id;
         return (
           <div key={link.id} className="doc-drawer__pack-link">
             <div className="doc-drawer__pack-link-main">
@@ -1342,15 +1418,15 @@ function BoardPacksTab({ doc, can }: { doc: BoardDocument; can: (id: string) => 
                 <span className="doc-drawer__pack-link-name">{link.board_pack_name}</span>
                 <div className="doc-drawer__pack-link-meta">
                   {link.section && <span>{link.section}</span>}
-                  <span>Linked version: {link.linked_version_id}</span>
+                  <span>Linked version: {displayVersion}</span>
                   <span>Added {timeAgo(link.added_at)} by {link.added_by}</span>
                 </div>
                 {isOutdated && (
                   <div className="doc-drawer__pack-version-notice">
                     New version available ({latestVersion}).
-                    {can("doc_edit") && (
+                    {canManage && editable && (
                       <button type="button" className="doc-drawer__text-btn"
-                        onClick={() => handleUpdateVersion(link)}>
+                        disabled={adding || !ready} onClick={() => void changeLink("version", link)}>
                         Update to {latestVersion}
                       </button>
                     )}
@@ -1358,9 +1434,9 @@ function BoardPacksTab({ doc, can }: { doc: BoardDocument; can: (id: string) => 
                 )}
               </div>
             </div>
-            {can("doc_edit") && (
+            {canManage && editable && (
               <button type="button" className="doc-drawer__comment-action"
-                onClick={() => handleRemove(link)} aria-label="Remove from board pack">
+                disabled={adding || !ready} onClick={() => void changeLink("remove", link)} aria-label="Remove from board pack">
                 <Trash2 size={12} strokeWidth={2} />
               </button>
             )}

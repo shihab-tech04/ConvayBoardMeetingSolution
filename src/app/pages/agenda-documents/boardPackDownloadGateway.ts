@@ -10,9 +10,10 @@
  */
 import {
   composeAuthorizedBoardPack,
+  BOARD_PACK_MAX_FILES, BOARD_PACK_MAX_FILE_BYTES, BOARD_PACK_MAX_TOTAL_BYTES,
   safeBoardPackEntryName,
   type AuthorizedBoardPackFile,
-} from "../../utils/boardPackZip";
+} from "../../utils/boardPackZip.ts";
 
 export interface BoardPackManifestFile extends AuthorizedBoardPackFile {
   /** Server-recorded immutable original byte size, never client-provided. */
@@ -86,20 +87,25 @@ export function parseAuthorizedBoardPackManifest(
   if (!Number.isFinite(expiration) || expiration <= now) {
     throw new Error("The board pack authorization has expired.");
   }
-  if (!Array.isArray(input.files) || input.files.length < 1 || input.files.length > 400) {
+  if (!Array.isArray(input.files) || input.files.length < 1 || input.files.length > BOARD_PACK_MAX_FILES) {
     throw new Error("The authorized board pack has no valid document list.");
   }
   const seen = new Set<string>();
+  let totalBytes = 0;
   const files: BoardPackManifestFile[] = input.files.map((file: unknown) => {
     if (!isRecord(file) || !validIdentifier(file.documentId) ||
         !validFrozenVersionId(file.versionId) || !validIdentifier(file.fileName)) {
       throw new Error("The board pack contains an invalid document/version.");
     }
     if (!Number.isSafeInteger(file.sizeBytes) || Number(file.sizeBytes) < 0 ||
-        Number(file.sizeBytes) > 100 * 1024 * 1024 ||
+        Number(file.sizeBytes) > BOARD_PACK_MAX_FILE_BYTES ||
         (file.sha256 !== undefined &&
          (typeof file.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(file.sha256)))) {
       throw new Error("The board pack contains invalid original-file integrity metadata.");
+    }
+    totalBytes += Number(file.sizeBytes);
+    if (totalBytes > BOARD_PACK_MAX_TOTAL_BYTES) {
+      throw new Error("Board pack exceeds ZIP size limit.");
     }
     const pair = `${file.documentId}\0${file.versionId}`;
     if (seen.has(pair)) throw new Error("The board pack contains duplicate document versions.");
@@ -192,11 +198,17 @@ export async function prepareAuthorizedBoardPackDownload(
       }
       const receipt = await gateway.confirmReceipt(packId, manifest.manifestId);
       assertNotCancelled(signal);
+      if (Date.parse(manifest.expiresAt) <= currentTime()) {
+        throw new Error("Board pack authorization expired while confirming the audit receipt.");
+      }
       receiptId = parseConfirmedReceipt(receipt, packId, manifest.manifestId);
       return receiptId;
     },
   );
   assertNotCancelled(signal);
+  if (Date.parse(manifest.expiresAt) <= currentTime()) {
+    throw new Error("Board pack authorization expired before download completion.");
+  }
   if (!receiptId) throw new Error("A server-confirmed download receipt is required.");
   return {
     archive,

@@ -14,6 +14,9 @@ import {
  */
 export interface LiveAttendanceSnapshot extends RegularAttendanceReceipt {
   attendanceMap: Record<string, string>;
+  tenantId?: string | null;
+  sessionId?: string;
+  attendanceMode?: "Online" | "In-Person" | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -43,6 +46,13 @@ function validateReadback(value: unknown): LiveAttendanceSnapshot {
       || !Object.values(value.attendanceMap).every(isAttendanceStatus)) {
     throw new Error("The server did not return a complete attendance and quorum snapshot.");
   }
+  // SQL omits participants without a current-session attendance record. Any
+  // explicit own-row status must agree with the authoritative participant status.
+  const ownStatus = Object.prototype.hasOwnProperty.call(value.attendanceMap, value.participantId)
+    ? value.attendanceMap[value.participantId] : "Not Joined";
+  if (ownStatus !== value.status) {
+    throw new Error("Attendance participant status differs from the session snapshot.");
+  }
   return value as unknown as LiveAttendanceSnapshot;
 }
 async function gateway(body: Record<string, unknown>): Promise<unknown> {
@@ -54,10 +64,19 @@ async function gateway(body: Record<string, unknown>): Promise<unknown> {
   return await response.json() as unknown;
 }
 
+// The scope proof is mandatory for the coordinated scoped SQL/Edge activation.
+function assertScopedProof(value: unknown, expectedSessionId: string, expectedTenantId?: string | null) {
+  if (!isRecord(value) || value.sessionId !== expectedSessionId
+    || !(value.tenantId === null || (typeof value.tenantId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.tenantId)))
+    || (expectedTenantId !== undefined && value.tenantId !== expectedTenantId)) {
+    throw new Error("Attendance session or company changed. Reconnect before retrying.");
+  }
+}
 export async function readLiveAttendance(
-  meetingId: string, participantId: string,
+  meetingId: string, participantId: string, expectedSessionId?: string, expectedTenantId?: string | null,
 ): Promise<LiveAttendanceSnapshot> {
-  const result = await gateway({ action: "readback", meetingId, participantId });
+  const result = await gateway({ action: "readback", meetingId, participantId, ...(expectedSessionId ? { expectedSessionId, expectedTenantId } : {}) });
+  if (expectedSessionId) assertScopedProof(result, expectedSessionId, expectedTenantId);
   const snapshot = validateReadback(result);
   if (snapshot.meetingId !== meetingId || snapshot.participantId !== participantId) {
     throw new Error("Attendance readback belongs to another meeting or participant.");
@@ -71,6 +90,7 @@ export async function commitLiveAttendance(
   nextStatus: RegularMeetingAttendanceStatus,
   attendanceMode: "Online" | "In-Person",
   isCurrentScope: () => boolean = () => true,
+  expectedSessionId?: string,
 ): Promise<LiveAttendanceSnapshot> {
   // This prevents obsolete queued client work, not a substitute for server authorization.
   const assertCurrentScope = () => {
@@ -79,7 +99,7 @@ export async function commitLiveAttendance(
   assertCurrentScope();
   // Never assume a local cached revision. The read is scoped by the real actor
   // server-side, so an old tab cannot overwrite a newer participant record.
-  const initial = await readLiveAttendance(meetingId, participantId);
+  const initial = await readLiveAttendance(meetingId, participantId, expectedSessionId);
   assertCurrentScope();
   const intent: RegularAttendanceIntent = {
     meetingId, participantId, nextStatus,
@@ -87,9 +107,9 @@ export async function commitLiveAttendance(
     requestId: "lmatt_" + crypto.randomUUID().replace(/-/g, ""),
   };
   const receipt = await submitAndVerifyRegularAttendance(intent, {
-    submit: current => {
+    submit: async current => {
       assertCurrentScope();
-      return gateway({
+      const ack = await gateway({
         action: "commit",
         meetingId: current.meetingId,
         participantId: current.participantId,
@@ -97,11 +117,22 @@ export async function commitLiveAttendance(
         expectedRevision: current.expectedRevision,
         requestId: current.requestId,
         attendanceMode,
+        ...(expectedSessionId ? { expectedSessionId, expectedTenantId: initial.tenantId } : {}),
       });
+      if (expectedSessionId) assertScopedProof(ack, expectedSessionId, initial.tenantId);
+      if (expectedSessionId && initial.tenantId !== null && (!isRecord(ack) || ack.attendanceMode !== attendanceMode)) {
+        throw new Error("Attendance mode acknowledgement did not match the request.");
+      }
+      return ack;
     },
-    readback: (id, participant) => {
+    readback: async (id, participant) => {
       assertCurrentScope();
-      return readLiveAttendance(id, participant);
+      const saved = await readLiveAttendance(id, participant, expectedSessionId, initial.tenantId);
+      if (expectedSessionId) assertScopedProof(saved, expectedSessionId, initial.tenantId);
+      if (expectedSessionId && initial.tenantId !== null && saved.attendanceMode !== attendanceMode) {
+        throw new Error("Attendance mode readback differs from the committed command.");
+      }
+      return saved;
     },
   });
   assertCurrentScope();

@@ -31,6 +31,30 @@ create table convay_private.live_attendance_session_history(
 alter table convay_private.live_attendance_session_history enable row level security;
 revoke all on convay_private.live_attendance_session_history from public,anon,authenticated,service_role;
 
+-- Company activation is independently disabled by default. Preserve the existing
+-- legacy release switch; the company gate never turns off the write guard.
+create table convay_private.live_attendance_company_gate (
+  singleton boolean primary key default true check(singleton),
+  enabled boolean not null default false
+);
+alter table convay_private.live_attendance_company_gate enable row level security;
+revoke all on convay_private.live_attendance_company_gate from public,anon,authenticated,service_role;
+insert into convay_private.live_attendance_company_gate(singleton,enabled) values(true,false);
+
+-- Fail-closed suspension retains all receipts/history and invalidates current
+-- company quorum evidence. No destructive down migration or legacy reset.
+create function convay_private.suspend_company_attendance_quorum() returns trigger
+language plpgsql security definer set search_path='' as $$begin
+  if old.enabled and not new.enabled then
+    update convay_private.live_quorum_snapshots set met=false,revision=revision+1,updated_at=clock_timestamp()
+      where tenant_id is not null and met=true;
+  end if;
+  return new;
+end$$;
+revoke all on function convay_private.suspend_company_attendance_quorum() from public,anon,authenticated,service_role;
+create trigger suspend_company_attendance_quorum after update of enabled on convay_private.live_attendance_company_gate
+for each row execute function convay_private.suspend_company_attendance_quorum();
+
 -- Private resolver: exact SQL tenant and current persisted session. The
 -- service-only caller establishes auth.uid from the verified actor first.
 -- Lock the meeting and active session so authorization and persistence use
@@ -221,10 +245,15 @@ begin
   -- CALLER TRUST: this RPC has EXECUTE only for service_role. Edge verifies the
   -- Supabase Auth JWT, project account state and actual LiveKit participant.
   -- Never grant this RPC to authenticated/anon.
-  if (select enabled from convay_private.live_attendance_release_gate
-      where singleton=true) is distinct from true then
-    raise exception 'Authoritative live attendance has not been activated'
-      using errcode='42501';
+  -- Hold both release rows until commit so suspension cannot race a write.
+  perform 1 from convay_private.live_attendance_release_gate where singleton=true and enabled=true for share;
+  if not found then
+    raise exception 'Authoritative live attendance has not been activated' using errcode='42501';
+  end if;
+  if p_tenant_id is not null then
+    perform 1 from convay_private.live_attendance_company_gate where singleton=true and enabled=true for share;
+    if not found then raise exception 'Company attendance has not been activated' using errcode='42501'; end if;
+    if p_session_id is null then raise exception 'Explicit company session required' using errcode='22023'; end if;
   end if;
   if p_actor_id is null or p_meeting_id !~ '^[A-Za-z0-9_-]{1,180}$'
     or p_participant_id !~ '^[A-Za-z0-9_-]{1,180}$'
@@ -319,7 +348,11 @@ begin
     if v_previous.session_id is distinct from v_current_session or v_previous.actor_id<>p_actor_id or v_previous.meeting_id<>v_actual_mid
        or v_previous.participant_id<>p_participant_id
        or v_previous.next_status<>p_next_status
-       or v_previous.expected_revision<>p_expected_revision then
+       or v_previous.expected_revision<>p_expected_revision
+       -- New scoped receipts bind the attendance mode; historical legacy receipts
+       -- lack this field and retain their original replay contract.
+       or ((p_tenant_id is not null or v_previous.receipt ? 'attendanceMode')
+           and v_previous.receipt->>'attendanceMode' is distinct from p_attendance_mode) then
       raise exception 'An idempotency key was reused for another command' using errcode='23505';
     end if;
     return v_previous.receipt;
@@ -373,6 +406,7 @@ begin
     v_payload:=v_existing.payload || pg_catalog.jsonb_build_object(
       'live_session_id',v_current_session,
       'attendance_status',p_next_status,
+      'attendance_mode',p_attendance_mode,
       'check_in_time',case when p_next_status in ('Present','Temporarily Away') then v_record_at::text
         else coalesce(v_existing.payload->>'check_in_time','') end,
       'check_out_time',case when not v_existing_current then '' when p_next_status='Left' then v_record_at::text
@@ -533,7 +567,7 @@ begin
   end if;
   v_receipt:=pg_catalog.jsonb_build_object(
     'requestId',p_request_id,'meetingId',v_actual_mid,'participantId',p_participant_id,'tenantId',p_tenant_id,'sessionId',v_current_session,
-    'status',p_next_status,'attendanceId',v_att_id,'attendanceRevision',v_att_revision,
+    'status',p_next_status,'attendanceMode',p_attendance_mode,'attendanceId',v_att_id,'attendanceRevision',v_att_revision,
     'quorum',pg_catalog.jsonb_build_object('revision',v_quorum_revision,
       'required',v_required,'present',v_present,'met',v_met)
   );
@@ -645,9 +679,10 @@ begin
   return pg_catalog.jsonb_build_object(
     'requestId',coalesce(v_latest.request_id,'initial_1234567890123456'),
     'meetingId',v_mid,'participantId',p_participant_id,'tenantId',p_tenant_id,'sessionId',v_current_session,
-    'status',v_status,'attendanceId',coalesce(v_row.record_id,''),
+    'status',v_status,'attendanceMode',case when v_row.record_id is not null and convay_private.live_attendance_row_current(v_row.payload,p_tenant_id,v_current_session,v_reopened) then v_row.payload->>'attendance_mode' else null end,'attendanceId',coalesce(v_row.record_id,''),
     'attendanceRevision',coalesce(v_row.revision,0),
-    'quorum',v_quorum,'attendanceMap',v_attendees
+    'quorum',v_quorum,'attendanceMap',v_attendees,
+    'releaseEnabled',coalesce((select enabled from convay_private.live_attendance_release_gate where singleton=true),false) and (p_tenant_id is null or coalesce((select enabled from convay_private.live_attendance_company_gate where singleton=true),false))
   );
 end;
 $$;

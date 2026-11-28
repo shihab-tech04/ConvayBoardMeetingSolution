@@ -56,6 +56,12 @@ export interface PageCfg {
   dataErrorDescription?: string;
   onDataRetry?: () => void | Promise<void>;
   kpis?: KpiDef[];
+  /** Opt-in report summary over all filtered rows, before pagination. */
+  filteredKpis?: (rows: TableRow[]) => KpiDef[];
+  /** Explicit date dimension for strict report date filtering. */
+  reportDateField?: string;
+  /** Keep an existing print control inert until its authorized output is verified. */
+  printDisabledReason?: string;
   entryBtn?: string;
   extraBtns?: {
     id: string; label: string; icon: IconComponent; color?: string;

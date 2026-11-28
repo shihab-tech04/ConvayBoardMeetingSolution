@@ -23,7 +23,25 @@ begin
  ('bms.quorumrules','rule-A',a,'{"meeting_id":"MTG-SHARED","status":"Active","minimum_members_count":"1"}'),
  ('bms.quorumrules','rule-B',b,'{"meeting_id":"MTG-SHARED","status":"Active","minimum_members_count":"1"}'),
  ('bms.quorumrules','rule-L',null,'{"meeting_id":"MTG-LEGACY","status":"Active","minimum_members_count":"1"}');
+ update convay_private.live_attendance_release_gate set enabled=false where singleton=true;
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A');
+ if (ra->'releaseEnabled') is distinct from 'false'::jsonb then raise exception 'Disabled release proof incorrect';end if;
  update convay_private.live_attendance_release_gate set enabled=true where singleton=true;
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A');
+ if (ra->'releaseEnabled') is distinct from 'false'::jsonb then raise exception 'Company gate defaults enabled';end if;
+ begin
+   perform public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',0,'company_disabled_00001',true,'Online',a,'SES-A');
+   raise exception 'Disabled company accepted';
+ exception when insufficient_privilege then null;end;
+ ra:=public.convay_commit_live_attendance(ul,'MTG-LEGACY',ul::text,'Present',0,'legacy_request_000001',true,'Online');
+ if ra#>>'{quorum,met}'<>'true' then raise exception 'Company suspension disrupted legacy';end if;
+ update convay_private.live_attendance_company_gate set enabled=true where singleton=true;
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A');
+ if (ra->'releaseEnabled') is distinct from 'true'::jsonb then raise exception 'Enabled release proof incorrect';end if;
+ begin
+   perform public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',0,'missing_session_000001',true,'Online',a,null);
+   raise exception 'Implicit company session accepted';
+ exception when invalid_parameter_value then null;end;
  ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',0,'same_request_00000001',true,'Online',a,'SES-A');
  rb:=public.convay_commit_live_attendance_scoped(ub,'MTG-SHARED',ub::text,'Present',0,'same_request_00000001',true,'Online',b,'SES-B');
  if ra#>>'{quorum,met}'<>'true' or rb#>>'{quorum,met}'<>'true' then raise exception 'Tenant quorum calculation failed';end if;
@@ -60,6 +78,46 @@ begin
  if ra#>>'{quorum,met}'<>'true' then raise exception 'Reopened session quorum failed';end if;
  if (select count(*) from convay_private.live_attendance_session_history where tenant_id=a and prior_session_id='SES-A')<>1 then raise exception 'Previous session evidence lost';end if;
  if (select revision from convay_private.live_quorum_snapshots where tenant_id=b and meeting_id='MTG-SHARED')<>prev_b_revision then raise exception 'Foreign tenant quorum invalidated';end if;
+ -- Simulate controlled suspension/re-enable without deleting any source data.
+ update convay_private.live_attendance_company_gate set enabled=false where singleton=true;
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A-R2');
+ if ra->>'releaseEnabled'<>'false' or ra#>>'{quorum,met}'<>'false' then raise exception 'Suspension did not invalidate company quorum';end if;
+ if (select count(*) from convay_private.live_attendance_session_history where tenant_id=a and prior_session_id='SES-A')<>1 or (select count(*) from convay_private.live_attendance_commands where tenant_id=a)<>2 then raise exception 'Suspension lost receipt/history';end if;
+ if not (select met from convay_private.live_quorum_snapshots where tenant_id is null and meeting_id='MTG-LEGACY') then raise exception 'Suspension affected legacy quorum';end if;
+ begin
+   perform public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',prev_revision,'reopen_request_000001',true,'Online',a,'SES-A-R2');
+   raise exception 'Suspended company replay accepted';
+ exception when insufficient_privilege then null;end;
+ update convay_private.live_attendance_company_gate set enabled=true where singleton=true;
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A-R2');
+ if ra->>'releaseEnabled'<>'true' or ra#>>'{quorum,met}'<>'false' then raise exception 'Re-enable restored stale quorum';end if;
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',(ra->>'attendanceRevision')::bigint,'resume_request_0000001',true,'Online',a,'SES-A-R2');
+ if ra#>>'{quorum,met}'<>'true' then raise exception 'Fresh verified command failed after re-enable';end if;
+ if has_table_privilege('authenticated','convay_private.live_attendance_company_gate','UPDATE') or has_table_privilege('service_role','convay_private.live_attendance_company_gate','UPDATE') then raise exception 'Company gate writable by application roles';end if;
+ raise notice 'Default-off, explicit session, legacy preservation, company suspension/re-enable and gate ACL PASS';
+ -- Existing approved rule can exclude virtual presence in Hybrid mode. Actual
+ -- physical check-in must replace the persisted mode, not just the status.
+ update public.convay_entity_records set payload=payload||'{"mode":"Hybrid"}'::jsonb where tenant_id=a and entity_key='bms.meetings' and record_id='record-A';
+ update public.convay_entity_records set payload=payload||'{"count_virtual_attendance":false}'::jsonb where tenant_id=a and entity_key='bms.quorumrules' and record_id='rule-A';
+ ra:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A-R2');
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',(ra->>'attendanceRevision')::bigint,'hybrid_online_000001',true,'Online',a,'SES-A-R2');
+ if ra->>'attendanceMode' is distinct from 'Online' or ra#>>'{quorum,met}' is distinct from 'false' then raise exception 'Virtual presence counted under physical-only rule';end if;
+ prev_revision:=(ra->>'attendanceRevision')::bigint;
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',prev_revision,'hybrid_physical_00001',false,'In-Person',a,'SES-A-R2');
+ if ra->>'attendanceMode' is distinct from 'In-Person' or ra#>>'{quorum,met}' is distinct from 'true' then raise exception 'Hybrid physical mode was not persisted/countable';end if;
+ rb:=public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A-R2');
+ if rb->>'attendanceMode' is distinct from 'In-Person' or rb->>'attendanceRevision' is distinct from ra->>'attendanceRevision' then raise exception 'Hybrid mode readback differs from ACK';end if;
+ if public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',prev_revision,'hybrid_physical_00001',false,'In-Person',a,'SES-A-R2') is distinct from ra then raise exception 'Same-mode replay changed receipt';end if;
+ begin
+   perform public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',prev_revision,'hybrid_physical_00001',true,'Online',a,'SES-A-R2');
+   raise exception 'Different-mode replay accepted';
+ exception when unique_violation then null;end;
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Temporarily Away',(rb->>'attendanceRevision')::bigint,'hybrid_away_00000001',false,'In-Person',a,'SES-A-R2');
+ if ra->>'status' is distinct from 'Temporarily Away' or ra#>>'{quorum,met}' is distinct from 'true' then raise exception 'Away status violated existing physical quorum rule';end if;
+ ra:=public.convay_commit_live_attendance_scoped(ua,'MTG-SHARED',ua::text,'Present',(ra->>'attendanceRevision')::bigint,'hybrid_return_000001',false,'In-Person',a,'SES-A-R2');
+ if ra->>'status' is distinct from 'Present' or ra#>>'{quorum,met}' is distinct from 'true' then raise exception 'Return failed';end if;
+ if not exists(select 1 from public.convay_entity_records where tenant_id=a and entity_key='bms.liveSessions' and record_id='SES-A-R2' and payload->>'session_status'='active') then raise exception 'Away ended meeting';end if;
+ raise notice 'Hybrid mode persistence, mode-bound idempotency, temporary away/return under existing quorum rule PASS';
  update convay_private.tenant_memberships set membership_state='revoked',revoked_at=now() where tenant_id=a and user_id=ua;
  begin
    perform public.convay_read_live_attendance_scoped(ua,'MTG-SHARED',ua::text,a,'SES-A-R2');

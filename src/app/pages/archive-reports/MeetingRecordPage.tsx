@@ -1,5 +1,9 @@
-import { useState } from "react";
-import { recordListState } from "./recordListState";
+import { useEffect, useRef, useState } from "react";
+import { recordListCountLabel, recordListState } from "./recordListState";
+import { resolveRecordMeeting, selectMeetingRecordLinks } from "./meetingRecordLinks";
+import { legacyNamedArchiveVotes, recordedVoteCount } from "./legacyArchiveVoteView";
+import { persistMinutesReviewTransition } from "./minutesReviewPersistence";
+import type { Minutes } from "../../data/boardMeetingData";
 import { normalizeRecordedQuorum } from "./recordedQuorumStatus";
 import {
   buildMinutesRevisionRequest, canArchiveMinutes, canEditMinutesContent,
@@ -8,7 +12,7 @@ import {
 import { useParams, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { convayAuth } from "../../services/supabase/convayAuth";
-import { useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import {
   ArrowLeft, Users, Calendar, FileText, Mic, Video,
   MessageSquare, Vote, CheckSquare, BookOpen, Clock,
@@ -82,6 +86,17 @@ function EmptyState({ icon: Icon, message }: { icon: React.ElementType; message:
   );
 }
 
+function SourceReadNotice({ loading, name, retry }: { loading: boolean; name: string; retry: () => unknown }) {
+  if (loading) return <div role="status" aria-live="polite"><EmptyState icon={RefreshCw} message={`Loading ${name}…`} /></div>;
+  return (
+    <div role="alert" style={{ textAlign: "center", paddingBottom: "1rem" }}>
+      <EmptyState icon={AlertCircle} message={`${name} unavailable. Refresh before continuing.`} />
+      <button type="button" onClick={() => { void Promise.resolve().then(retry).catch(() => toast.error(`Unable to load ${name}.`)); }}
+        style={{ padding: "0.4rem 0.8rem", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-foreground)", cursor: "pointer" }}>Retry Loading</button>
+    </div>
+  );
+}
+
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: 10, padding: "1.25rem", marginBottom: "1rem" }}>
@@ -134,6 +149,15 @@ export function MeetingRecordPage() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [editMinutesId, setEditMinutesId] = useState<string | null>(null);
+  const [editSelection, setEditSelection] = useState<(Minutes & { source_revision: number; accessSnapshot: ReturnType<typeof readAccessSnapshot> }) | null>(null);
+  const editEpoch = useRef(0);
+  const editInFlight = useRef(false);
+  useEffect(() => {
+    const invalidate = () => { editEpoch.current += 1; setEditMinutesId(null); setEditSelection(null); };
+    invalidate();
+    window.addEventListener("convay:entity-cache-cleared", invalidate);
+    return () => { editEpoch.current += 1; window.removeEventListener("convay:entity-cache-cleared", invalidate); };
+  }, [meetingId]);
   const [busyMinutesId, setBusyMinutesId] = useState<string | null>(null);
   const [revisionMinutesId, setRevisionMinutesId] = useState<string | null>(null);
   const [revisionInstructions, setRevisionInstructions] = useState("");
@@ -160,7 +184,7 @@ export function MeetingRecordPage() {
   const interactionReg = useMeetingInteractionRegistry();
   const sessionReg     = useLiveMeetingSessionRegistry();
 
-  const meeting = meetingReg.items.find(m => m.id === meetingId || m.meeting_id === meetingId);
+  const meeting = resolveRecordMeeting(meetingReg.items, meetingId);
 
   // A pending/failed SQL list is not evidence that a meeting does not exist.
   if (meetingReg.loading) {
@@ -200,7 +224,7 @@ export function MeetingRecordPage() {
         <AlertCircle size={48} style={{ margin: "0 auto 1rem", color: "#ef4444", display: "block" }} />
         <h2 style={{ fontSize: "1.2rem", fontWeight: 700, marginBottom: "0.5rem" }}>Meeting Not Found</h2>
         <p style={{ color: "var(--color-muted-foreground)", marginBottom: "1.5rem" }}>
-          No meeting record found for ID: {meetingId}
+          No uniquely identifiable meeting record found for ID: {meetingId}
         </p>
         <button onClick={() => navigate(-1)} style={{ padding: "0.5rem 1.25rem", borderRadius: 8, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}>
           Go Back
@@ -247,9 +271,15 @@ export function MeetingRecordPage() {
   const meetingQuorumEvts = quorumEventReg.items.filter(q => q.meeting_id === mid);
   const meetingMotions    = motionReg.items.filter(m => m.meeting_id === mid);
   const meetingVotes      = voteReg.items.filter(v => v.meeting_id === mid);
-  const meetingDecisions  = decisionReg.items.filter(d => d.meeting_id === mid || d.source_meeting === mid);
-  const meetingResolutions = resolutionReg.items.filter(r => r.meeting_id === mid || r.source_meeting === mid);
-  const meetingActions    = actionReg.items.filter(a => a.meeting_id === mid || a.source_meeting === mid);
+  const decisionLinks = selectMeetingRecordLinks(meetingReg.items, meeting, decisionReg.items);
+  const meetingDecisions = decisionLinks.rows;
+  const decisionReadError = decisionReg.error || (!decisionReg.loading && decisionLinks.integrityError);
+  const resolutionLinks = selectMeetingRecordLinks(meetingReg.items, meeting, resolutionReg.items);
+  const meetingResolutions = resolutionLinks.rows;
+  const resolutionReadError = resolutionReg.error || (!resolutionReg.loading && resolutionLinks.integrityError);
+  const actionLinks = selectMeetingRecordLinks(meetingReg.items, meeting, actionReg.items);
+  const meetingActions = actionLinks.rows;
+  const actionReadError = actionReg.error || (!actionReg.loading && actionLinks.integrityError);
   const meetingMinutes    = minutesReg.items.filter(m => m.meeting_id === mid);
   const meetingAudit      = auditReg.items.filter(a => a.meeting_id === mid);
   const meetingInteractions = interactionReg.items.filter(i => i.meeting_id === mid);
@@ -284,10 +314,10 @@ export function MeetingRecordPage() {
         <KV label="Governance Body"   value={meeting.governance_body} />
         <KV label="Participants"      value={meeting.participant_count} />
         <KV label="Quorum Required"   value={meeting.quorum_required} />
-        <KV label="Agenda Items"      value={String(meetingAgendas.length)} />
-        <KV label="Minutes Records"   value={String(meetingMinutes.length)} />
-        <KV label="Decisions"         value={String(meetingDecisions.length)} />
-        <KV label="Actions"           value={String(meetingActions.length)} />
+        <KV label="Agenda Items"      value={recordListCountLabel(Boolean(agendaReg.loading || agendaLinks.loading), agendaReg.error || agendaLinks.error, meetingAgendas.length)} />
+        <KV label="Minutes Records"   value={recordListCountLabel(Boolean(minutesReg.loading), minutesReg.error, meetingMinutes.length)} />
+        <KV label="Decisions"         value={recordListCountLabel(Boolean(decisionReg.loading), decisionReadError, meetingDecisions.length)} />
+        <KV label="Actions"           value={recordListCountLabel(Boolean(actionReg.loading), actionReadError, meetingActions.length)} />
       </SectionCard>
       {meetingSessions.length > 0 && (
         <SectionCard title="Live Session">
@@ -525,6 +555,8 @@ export function MeetingRecordPage() {
   };
 
   const renderMotions = () => {
+    if (motionReg.error || voteReg.error) return <EmptyState icon={Vote} message="Motion and vote history unavailable. Refresh before continuing." />;
+    if (motionReg.loading || voteReg.loading) return <EmptyState icon={Vote} message="Loading motion and vote history…" />;
     if (meetingMotions.length === 0 && meetingVotes.length === 0) {
       return <EmptyState icon={Vote} message="No motions recorded for this meeting." />;
     }
@@ -533,11 +565,12 @@ export function MeetingRecordPage() {
         {meetingMotions.length === 0 ? (
           <EmptyState icon={Vote} message="No motions recorded for this meeting." />
         ) : meetingMotions.map(motion => {
-          const votes = votesByMotion[motion.id] ?? [];
-          const forCount     = parseInt(motion.votes_for)    || votes.filter(v => v.vote === "For").length;
-          const againstCount = parseInt(motion.votes_against) || votes.filter(v => v.vote === "Against").length;
-          const abstainCount = parseInt(motion.abstentions)  || votes.filter(v => v.vote === "Abstain" || v.vote === "Abstained").length;
-          const total        = forCount + againstCount + abstainCount || 1;
+          const votes = legacyNamedArchiveVotes(votesByMotion[motion.id] ?? []);
+          const forCount = recordedVoteCount(motion.votes_for);
+          const againstCount = recordedVoteCount(motion.votes_against);
+          const abstainCount = recordedVoteCount(motion.abstentions);
+          const totalsKnown = forCount !== null && againstCount !== null && abstainCount !== null;
+          const total = (forCount ?? 0) + (againstCount ?? 0) + (abstainCount ?? 0);
           const passed = motion.status === "Passed";
           const rejected = motion.status === "Rejected" || motion.status === "Failed";
 
@@ -565,14 +598,14 @@ export function MeetingRecordPage() {
               {/* Vote progress */}
               <div style={{ background: "var(--color-muted)", borderRadius: 8, padding: "0.85rem 1rem", marginBottom: votes.length > 0 ? "0.85rem" : 0 }}>
                 <p style={{ margin: "0 0 0.65rem", fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--color-muted-foreground)" }}>
-                  Vote Results — {forCount + againstCount + abstainCount} vote{forCount + againstCount + abstainCount !== 1 ? "s" : ""} cast
+                  Vote Results — {totalsKnown ? `${total} vote${total !== 1 ? "s" : ""} cast` : "Recorded totals unavailable"}
                 </p>
-                {[
+                {totalsKnown && [
                   { label: "For",     count: forCount,     color: "#22c55e" },
                   { label: "Against", count: againstCount, color: "#ef4444" },
                   { label: "Abstain", count: abstainCount, color: "#94a3b8" },
                 ].map(({ label, count, color }) => {
-                  const pct = total > 0 ? (count / total) * 100 : 0;
+                  const pct = total > 0 ? ((count ?? 0) / total) * 100 : 0;
                   return (
                     <div key={label} style={{ display: "flex", alignItems: "center", gap: "0.65rem", marginBottom: "0.4rem" }}>
                       <span style={{ minWidth: 52, fontSize: "0.75rem", fontWeight: 600, color }}>{label}</span>
@@ -621,8 +654,10 @@ export function MeetingRecordPage() {
 
   const renderDecisions = () => (
     <>
-      <SectionCard title={`Decisions (${meetingDecisions.length})`}>
-        {meetingDecisions.length === 0 ? (
+      <SectionCard title={`Decisions (${recordListCountLabel(Boolean(decisionReg.loading), decisionReadError, meetingDecisions.length)})`}>
+        {decisionReadError || decisionReg.loading ? (
+          <SourceReadNotice loading={!decisionReadError && Boolean(decisionReg.loading)} name="decisions" retry={() => Promise.all([meetingReg.refresh?.(), decisionReg.refresh?.()])} />
+        ) : meetingDecisions.length === 0 ? (
           <EmptyState icon={CheckSquare} message="No decisions recorded." />
         ) : meetingDecisions.map(d => (
           <div key={d.id} style={{ padding: "0.6rem 0", borderBottom: "1px solid var(--color-border)", fontSize: "0.82rem" }}>
@@ -635,8 +670,10 @@ export function MeetingRecordPage() {
           </div>
         ))}
       </SectionCard>
-      <SectionCard title={`Resolutions (${meetingResolutions.length})`}>
-        {meetingResolutions.length === 0 ? (
+      <SectionCard title={`Resolutions (${recordListCountLabel(Boolean(resolutionReg.loading), resolutionReadError, meetingResolutions.length)})`}>
+        {resolutionReadError || resolutionReg.loading ? (
+          <SourceReadNotice loading={!resolutionReadError && Boolean(resolutionReg.loading)} name="resolutions" retry={() => Promise.all([meetingReg.refresh?.(), resolutionReg.refresh?.()])} />
+        ) : meetingResolutions.length === 0 ? (
           <EmptyState icon={CheckCircle} message="No resolutions recorded." />
         ) : meetingResolutions.map(r => (
           <div key={r.id} style={{ padding: "0.6rem 0", borderBottom: "1px solid var(--color-border)", fontSize: "0.82rem" }}>
@@ -648,8 +685,10 @@ export function MeetingRecordPage() {
           </div>
         ))}
       </SectionCard>
-      <SectionCard title={`Action Items (${meetingActions.length})`}>
-        {meetingActions.length === 0 ? (
+      <SectionCard title={`Action Items (${recordListCountLabel(Boolean(actionReg.loading), actionReadError, meetingActions.length)})`}>
+        {actionReadError || actionReg.loading ? (
+          <SourceReadNotice loading={!actionReadError && Boolean(actionReg.loading)} name="action items" retry={() => Promise.all([meetingReg.refresh?.(), actionReg.refresh?.()])} />
+        ) : meetingActions.length === 0 ? (
           <EmptyState icon={CheckSquare} message="No action items recorded." />
         ) : meetingActions.map(a => (
           <div key={a.id} style={{ padding: "0.6rem 0", borderBottom: "1px solid var(--color-border)", fontSize: "0.82rem" }}>
@@ -667,7 +706,9 @@ export function MeetingRecordPage() {
 
   const renderMinutes = () => (
     <>
-      {meetingMinutes.length === 0 ? (
+      {minutesReg.error || minutesReg.loading ? (
+        <SourceReadNotice loading={!minutesReg.error && Boolean(minutesReg.loading)} name="minutes" retry={() => minutesReg.refresh?.()} />
+      ) : meetingMinutes.length === 0 ? (
         <EmptyState icon={FileText} message="No minutes records found for this meeting." />
       ) : meetingMinutes.map(m => (
         <SectionCard key={m.id} title={`${m.minutes_id} — Version ${m.version ?? "1.0"}`}>
@@ -795,10 +836,10 @@ export function MeetingRecordPage() {
               </div>
             </div>
           )}
-          {editMinutesId === m.id && canEditMinutesContent(m.approval_status, canEditMinutes) ? (
+          {editMinutesId === m.id && editSelection?.id === m.id && canEditMinutesContent(m.approval_status, canEditMinutes) ? (
             <div>
               <textarea
-                defaultValue={m.discussion_summary ?? m.quorum_statement ?? ""}
+                defaultValue={editSelection.discussion_summary ?? ""}
                 id={`min-edit-${m.id}`}
                 rows={12}
                 style={{ width: "100%", fontFamily: "monospace", fontSize: "0.78rem", borderRadius: 6, padding: "0.5rem", background: "var(--color-muted)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", resize: "vertical", boxSizing: "border-box" }}
@@ -807,32 +848,49 @@ export function MeetingRecordPage() {
                 <button
                   onClick={async () => {
                     const el = document.getElementById(`min-edit-${m.id}`) as HTMLTextAreaElement | null;
-                    if (!el || busyMinutesId !== null) return;
+                    if (!el || busyMinutesId !== null || editInFlight.current || !editSelection || editSelection.id !== m.id) return;
                     const latest = minutesReg.items.find(item => item.id === m.id);
                     if (!canEditMinutesContent(latest?.approval_status, canEditMinutes)) {
                       toast.error("Only draft or returned minutes can be edited by an authorized author.");
                       return;
                     }
+                    const selection = editSelection;
+                    const epoch = editEpoch.current;
+                    const discussion = el.value;
+                    const assertCurrent = () => {
+                      const currentAccess = readAccessSnapshot();
+                      if (editEpoch.current !== epoch || currentAccess !== selection.accessSnapshot || !currentAccess.loaded || currentAccess.error ||
+                          !(currentAccess.is_super_admin || currentAccess.effective_permissions.includes("min_create"))) {
+                        throw new Error("Minutes authority changed. Reopen the editor before saving.");
+                      }
+                    };
+                    editInFlight.current = true;
                     setBusyMinutesId(m.id);
                     try {
-                      const saved = await minutesReg.update(m.id, { discussion_summary: el.value });
-                      if (saved === false) return; // Registry already reports failed server writes.
+                      await persistMinutesReviewTransition<Minutes>(selection, current => {
+                        if (!canEditMinutesContent(current.approval_status, true)) throw new Error("Minutes are no longer editable.");
+                        return { approval_status: current.approval_status, discussion_summary: discussion };
+                      }, {
+                        assertCurrent,
+                        list: async () => (await convayAuth.registry<Minutes>("bms.minutes", "list")).records,
+                        update: async (record, revision) => (await convayAuth.registry<Minutes>("bms.minutes", "update", record, revision)).revision,
+                      });
+                      assertCurrent();
                       setEditMinutesId(null);
-                      try {
-                        await minutesReg.refresh?.();
-                        toast.success("Minutes content updated.");
-                      } catch {
-                        toast.info("Minutes saved; refresh to confirm the updated content.");
-                      }
+                      setEditSelection(null);
+                      try { await minutesReg.refresh?.(); }
+                      catch { toast.info("Minutes saved; refresh to load the latest content."); }
+                      assertCurrent();
+                      toast.success("Minutes content updated and verified.");
                     } catch (error) {
                       toast.error(error instanceof Error ? error.message : "Could not update minutes.");
-                    } finally { setBusyMinutesId(null); }
+                    } finally { editInFlight.current = false; setBusyMinutesId(null); }
                   }}
                   style={{ padding: "4px 14px", borderRadius: 6, fontSize: "0.8rem", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}
                 >
                   Save
                 </button>
-                <button onClick={() => setEditMinutesId(null)} style={{ padding: "4px 14px", borderRadius: 6, fontSize: "0.8rem", background: "var(--color-muted)", color: "var(--color-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}>
+                <button onClick={() => { setEditMinutesId(null); setEditSelection(null); }} style={{ padding: "4px 14px", borderRadius: 6, fontSize: "0.8rem", background: "var(--color-muted)", color: "var(--color-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}>
                   Cancel
                 </button>
               </div>
@@ -840,13 +898,24 @@ export function MeetingRecordPage() {
           ) : (
             <div>
               <pre style={{ fontSize: "0.78rem", whiteSpace: "pre-wrap", background: "var(--color-muted)", borderRadius: 6, padding: "0.75rem", maxHeight: 320, overflowY: "auto", color: "var(--color-foreground)", lineHeight: 1.6 }}>
-                {m.discussion_summary || m.quorum_statement || "No content captured."}
+                {m.discussion_summary || "No discussion summary captured."}
               </pre>
+              {m.quorum_statement && <KV label="Quorum Statement" value={m.quorum_statement} />}
               {canEditMinutesContent(m.approval_status, canEditMinutes) && (
                 <button
                   type="button"
                   disabled={busyMinutesId !== null}
-                  onClick={() => setEditMinutesId(m.id)}
+                  onClick={() => {
+                    const revision = minutesReg.getRevision?.(m.id);
+                    const authorization = readAccessSnapshot();
+                    if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 || !authorization.loaded || authorization.error ||
+                        !(authorization.is_super_admin || authorization.effective_permissions.includes("min_create"))) {
+                      toast.error("The minutes revision or author access is unavailable. Refresh and retry.");
+                      return;
+                    }
+                    setEditSelection({ ...m, source_revision: revision, accessSnapshot: authorization });
+                    setEditMinutesId(m.id);
+                  }}
                   style={{ marginTop: "0.5rem", padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "var(--color-muted)", color: "var(--color-muted-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}
                 >
                   Edit Minutes
@@ -860,8 +929,10 @@ export function MeetingRecordPage() {
   );
 
   const renderAudit = () => (
-    <SectionCard title={`Audit Events (${meetingAudit.length})`}>
-      {meetingAudit.length === 0 ? (
+    <SectionCard title={`Audit Events (${recordListCountLabel(Boolean(auditReg.loading), auditReg.error, meetingAudit.length)})`}>
+      {auditReg.error || auditReg.loading ? (
+          <SourceReadNotice loading={!auditReg.error && Boolean(auditReg.loading)} name="audit history" retry={() => auditReg.refresh?.()} />
+        ) : meetingAudit.length === 0 ? (
         <EmptyState icon={Clock} message="No audit events recorded for this meeting." />
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse" }}>

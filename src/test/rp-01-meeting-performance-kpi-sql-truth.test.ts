@@ -30,7 +30,9 @@ describe("RP-01 Meeting Performance SQL-confirmed KPIs", () => {
       expect(page).toContain(field);
     }
     expect(page).toContain("mobileCardMapping:");
-    expect(page).toContain("filters:    BASE_FILTERS");
+    expect(page).toContain("filters:    buildMeetingRegisterFilters(rows)");
+    expect(page).toContain('m.meeting_date.slice(0, 4)');
+    expect(page).not.toContain("BASE_FILTERS");
     expect(page).toContain("drawerCols:  MEETING_DRAWER_COLS");
     expect(page).toContain("actions:    ROW_VIEW");
   });

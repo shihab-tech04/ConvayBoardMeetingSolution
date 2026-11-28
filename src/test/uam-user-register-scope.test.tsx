@@ -83,7 +83,7 @@ describe("UAM-01/AC-07 user register authorization lifetime", () => {
     expect(screen.queryByRole("button",{name:"Previous Member"})).not.toBeInTheDocument();
   });
   it("preserves the page during refresh and clamps only after authoritative directory shrink", async () => {
-    const users=Array.from({length:11},(_,i)=>({...member,user_id:"member-"+i,display_name:"Member "+i}));
+    const users=Array.from({length:11},(_,i)=>({...member,user_id:`33333333-3333-4333-8333-${String(i).padStart(12,"0")}`,display_name:"Member "+i}));
     mocks.users.mockResolvedValue({users});
     render(<SupabaseUserManagementPage/>);
     await screen.findByRole("button",{name:"Member 0"});

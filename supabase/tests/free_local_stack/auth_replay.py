@@ -1,0 +1,762 @@
+"""Real local GoTrue/Auth + PostgREST test, never a hosted database.
+The only bootstrap substitution is the first migration's existing identity binding,
+using the new disposable Auth root. All other checked-in migrations run unchanged.
+This is a source replay, not a native backup of production data or a release.
+"""
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import json
+import io
+import zipfile
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import time
+import uuid
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+
+ROOT = Path(__file__).resolve().parents[3]
+env = {}
+for line in Path(sys.argv[1]).read_text().splitlines():
+    if re.fullmatch(r'[A-Z_][A-Z0-9_]*=.*', line):
+        k, v = line.split("=", 1)
+        values = shlex.split(v)
+        if len(values) == 1:
+            env[k] = values[0]
+base = env.get("API_URL", "").rstrip("/")
+parsed = urlparse(base)
+assert parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost") and parsed.port == 54321 and not parsed.username and not parsed.path, "Nonlocal API refused"
+anon = env.get("ANON_KEY") or env.get("PUBLISHABLE_KEY")
+service = env.get("SERVICE_ROLE_KEY") or env.get("SECRET_KEY")
+assert anon and service, "Missing disposable local credentials"
+db = "supabase_db_convay-free-rehearsal"
+subprocess.run(["docker", "inspect", db], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def sql(source, dbname="postgres", tuples=False, local_restore_admin=False):
+    assert dbname in ("postgres", "convay_native_fixture")
+    # Use the existing administrator only in the disposable local container.
+    # Do not grant memberships, alter roles or use this for hosted databases.
+    role = "supabase_admin" if local_restore_admin else "postgres"
+    args = ["docker", "exec", "-i", db, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", role, "-d", dbname]
+    if tuples:
+        args += ["-A", "-t"]
+    p = subprocess.run(args, input=source, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if p.returncode:
+        raise RuntimeError("Local SQL failed: " + p.stderr[-1600:])
+    return p.stdout.strip()
+
+def call(path, token, data=None, method=None, expected=(200, 201, 204), service_call=False):
+    assert path.startswith("/") and not path.startswith("//")
+    headers = {"apikey": service if service_call else anon, "Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    if method in ("POST","PATCH","DELETE") and path.startswith("/rest/v1/") and "/rpc/" not in path:
+        headers["Prefer"] = "return=representation"
+    req = Request(base + path, json.dumps(data).encode() if data is not None else None, headers, method=method)
+    try:
+        with urlopen(req, timeout=30) as response:
+            status, raw = response.status, response.read()
+    except HTTPError as e:
+        status, raw = e.code, e.read()
+    if status not in expected:
+        # Never emit passwords, credentials, session tokens or Auth responses.
+        code = ""
+        try:
+            code = str(json.loads(raw).get("code", ""))
+        except Exception:
+            pass
+        raise AssertionError(f"{method or 'GET'} {path.split('?')[0]}: unexpected HTTP {status} / {code}")
+    return json.loads(raw) if raw else None
+
+def principal(label):
+    email = f"convay-local-{label}@example.com"
+    password = secrets.token_urlsafe(24) + "aA1!"
+    user = call("/auth/v1/admin/users", service, {"email":email,"password":password,"email_confirm":True}, service_call=True)
+    uid = str(uuid.UUID(user["id"]))
+    return {"id":uid, "email":email, "password":password}
+
+def login(user):
+    r = call("/auth/v1/token?grant_type=password", anon, {"email":user["email"],"password":user["password"]})
+    assert r["user"]["id"] == user["id"]
+    token = r["access_token"]
+    assert call("/auth/v1/user", token)["id"] == user["id"]
+    return token
+
+def rpc(name, token, data, expected=(200,)):
+    return call("/rest/v1/rpc/" + name, token, data, expected=expected)
+def rid():
+    return str(uuid.uuid4())
+root = principal("root")
+a = principal("company-a")
+b = principal("company-b")
+legacy = principal("legacy")
+
+# Supabase dashboard-created projects may have a platform RLS event trigger
+# before application migrations. If missing, reproduce the same local-only
+# behavior (public table creation enables RLS), not a no-op bypass.
+if sql("SELECT to_regprocedure('public.rls_auto_enable()') IS NOT NULL;", tuples=True) == "f":
+    sql("""
+CREATE FUNCTION public.rls_auto_enable() RETURNS event_trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path='pg_catalog' AS $$
+DECLARE cmd record; tbl name;
+BEGIN
+ FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands()
+  WHERE command_tag IN ('CREATE TABLE','CREATE TABLE AS','SELECT INTO')
+    AND object_type IN ('table','partitioned table')
+ LOOP
+  IF cmd.schema_name='public' THEN
+   SELECT relname INTO tbl FROM pg_class WHERE oid=cmd.objid;
+   EXECUTE format('ALTER TABLE IF EXISTS %I.%I ENABLE ROW LEVEL SECURITY',cmd.schema_name,tbl);
+  END IF;
+ END LOOP;
+END $$;
+CREATE EVENT TRIGGER ensure_rls ON ddl_command_end
+ WHEN TAG IN ('CREATE TABLE','CREATE TABLE AS','SELECT INTO')
+ EXECUTE FUNCTION public.rls_auto_enable();
+""")
+migrations = sorted((ROOT / "supabase/migrations").glob("*.sql"))
+assert migrations and migrations[0].name == "20261103170409_bootstrap_single_super_admin_profile.sql"
+for index, file in enumerate(migrations):
+    source = file.read_text()
+    if index == 0:
+        pattern = r"where id = '[0-9a-f-]{36}'::uuid\s+and lower\(email\) = '[^']+'"
+        source, n = re.subn(pattern, "where id = '" + root["id"] + "'::uuid\n    and lower(email) = '" + root["email"] + "'", source)
+        assert n == 1, "Bootstrap binding changed; do not weaken original identity verification"
+    print("Applying local source migration", file.name, flush=True)
+    sql(source)
+print("SOURCE_MIGRATION_REPLAY_PASS", len(migrations), flush=True)
+
+# Apply exact reviewed candidate files only on the disposable local stack.
+for rel in [
+    "supabase/tests/phase1_directory_scope/migration_candidate.sql",
+    "supabase/tests/phase2_draft_resume/candidate.sql",
+    "supabase/release-candidates/ni01_notification_draft_lifecycle.sql",
+    "supabase/tests/phase1_directory_scope/document_create_candidate.sql",
+]:
+    print("Applying local staged candidate", rel, flush=True)
+    sql((ROOT / rel).read_text())
+
+# Trusted fixture setup only: create application profiles and minimal role
+# permission for actual GoTrue users. No direct tenant or draft fixture rows.
+role = rid()
+profiles = ",\n".join(f"('{u['id']}','fixture-{i}','Fixture {i}','user','active','{u['email']}')" for i,u in enumerate([a,b,legacy]))
+sql(f"""
+INSERT INTO public.user_profiles(user_id,username,display_name,account_role,account_status,email) VALUES {profiles};
+INSERT INTO public.convay_roles(id,name,description) VALUES ('{role}','Local fixture role','Disposable Auth REST test');
+INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('{role}','admin_templates'),('{role}','mtg_view'),('{role}','gov_org_view'),('{role}','doc_view'),('{role}','doc_upload'),('{role}','doc_edit'),('{role}','doc_archive'),('{role}','admin_notifications'),('{role}','admin_integrations');
+INSERT INTO public.convay_user_roles(user_id,role_id,assigned_by) SELECT user_id,'{role}','{root['id']}' FROM public.user_profiles WHERE account_role='user';
+NOTIFY pgrst,'reload schema';
+""")
+rt, at, bt, lt = (login(u) for u in (root,a,b,legacy))
+# Allow PostgREST to observe the schema cache reload, without replaying writes.
+for attempt in range(30):
+    try:
+        rpc("convay_company_directory",rt,{"p_action":"list"})
+        # Inspect OpenAPI, never retry a document mutation to wait for cache.
+        assert "/rpc/convay_create_document_record" in call("/rest/v1/",rt).get("paths",{}), "Document RPC schema cache not ready"
+        break
+    except AssertionError:
+        if attempt == 29: raise
+        time.sleep(1)
+
+def tenant_action(action, **kw):
+    return rpc("convay_tenant_admin",rt,{"p_action":action,"p_request_id":rid(),**kw})
+# TEN-01: real Auth denial, validation, idempotency and uniqueness.
+for token in (at, bt, lt, anon):
+    rpc("convay_tenant_admin",token,{"p_action":"create","p_request_id":rid(),"p_display_name":"Denied company"},expected=(401,403))
+rpc("convay_tenant_admin",rt,{"p_action":"create","p_request_id":rid(),"p_display_name":"  "},expected=(400,))
+create_a={"p_action":"create","p_request_id":rid(),"p_display_name":"Local company A"}
+created_a=rpc("convay_tenant_admin",rt,create_a)
+assert rpc("convay_tenant_admin",rt,create_a)==created_a
+rpc("convay_tenant_admin",rt,{**create_a,"p_display_name":"Conflicting company"},expected=(409,))
+rpc("convay_tenant_admin",rt,{**create_a,"p_request_id":rid(),"p_display_name":" local COMPANY a "},expected=(409,))
+ta=created_a["tenant_id"]
+assert created_a["lifecycle_state"]=="provisioning" and created_a["tenant_active"] is False
+tb = tenant_action("create",p_display_name="Local company B")["tenant_id"]
+assert ta != tb
+tenant_action("add_member",p_tenant_id=ta,p_member_user_id=a["id"],p_member_role="tenant_admin")
+tenant_action("add_member",p_tenant_id=tb,p_member_user_id=b["id"],p_member_role="tenant_admin")
+def companies(token):
+    return {r["id"] for r in rpc("convay_company_directory",token,{"p_action":"list"})["companies"]}
+assert companies(at)=={ta} and companies(bt)=={tb}
+assert companies(rt)=={ta,tb}
+rpc("convay_company_directory",at,{"p_action":"read","p_tenant_id":tb},expected=(403,))
+rpc("convay_company_directory",bt,{"p_action":"read","p_tenant_id":ta},expected=(403,))
+rpc("convay_member_directory",at,{},expected=(403,))
+rpc("convay_member_directory",bt,{},expected=(403,))
+
+definition={"steps":[{"id":"details","title":"Meeting details","fields":[{"id":"purpose","label":"Purpose","type":"text","required":True}]},{"id":"review","title":"Review","fields":[]}]}
+template=rpc("convay_meeting_template_manage",at,{"p_action":"create","p_payload":{"tenant_id":ta,"title":"Local board template","template_key":"local_board","definition":definition,"request_id":rid()}})["template_id"]
+rpc("convay_meeting_template_manage",at,{"p_action":"publish","p_payload":{"template_id":template,"expected_revision":1,"request_id":rid()}})
+rpc("convay_meeting_template_manage",bt,{"p_action":"read","p_payload":{"template_id":template,"revision":1}},expected=(403,))
+intent={"request_id":rid(),"template_id":template,"template_revision":1,"meeting_title":"Local board draft","values":{"purpose":"Budget"},"wizard_step_id":"review","partial_save":True}
+saved=rpc("convay_company_meeting_drafts",at,{"p_action":"create","p_tenant_id":ta,"p_payload":intent})
+replay=rpc("convay_company_meeting_drafts",at,{"p_action":"create","p_tenant_id":ta,"p_payload":intent})
+assert saved==replay
+draft_id=saved["draft_id"]
+def read_draft(token,tenant,expected=(200,)):
+    return rpc("convay_company_draft_lifecycle",token,{"p_action":"read","p_tenant_id":tenant,"p_payload":{"draft_id":draft_id}},expected=expected)
+draft=read_draft(at,ta)["draft"]
+assert draft["wizard_step_id"]=="review" and draft["values"]==intent["values"] and draft["definition"]==definition
+read_draft(bt,ta,expected=(403,))
+rpc("convay_company_draft_lifecycle",anon,{"p_action":"list","p_tenant_id":ta,"p_payload":{}},expected=(401,403))
+
+# TEN-06/07: separate genuine sessions, scoped audit, lifecycle denial,
+# retained staged data and restoration with the original access token.
+def tenant_audit(token,tenant,expected=(200,)):
+    return rpc("convay_tenant_audit",token,{"p_tenant_id":tenant},expected=expected)
+before_audit=tenant_audit(at,ta)
+assert tenant_audit(rt,ta)==before_audit
+assert any(e["request_id"]==create_a["p_request_id"] and e["actor_id"]==root["id"] and e["action"]=="create" for e in before_audit)
+assert sum(e["request_id"]==create_a["p_request_id"] for e in before_audit)==1
+tenant_audit(bt,ta,expected=(403,))
+tenant_audit(at,tb,expected=(403,))
+tenant_audit(lt,ta,expected=(403,))
+tenant_audit(anon,ta,expected=(401,403))
+for token in (at,bt,lt):
+    rpc("convay_tenant_admin",token,{"p_action":"suspend","p_request_id":rid(),"p_tenant_id":ta},expected=(403,))
+suspension=tenant_action("suspend",p_tenant_id=ta)
+assert suspension["lifecycle_state"]=="suspended"
+assert rpc("convay_company_directory",rt,{"p_action":"read","p_tenant_id":ta})["company"]["lifecycle_state"]=="suspended"
+read_draft(at,ta,expected=(403,))
+rpc("convay_tenant_admin",rt,{"p_action":"suspend","p_request_id":rid(),"p_tenant_id":ta},expected=(400,))
+resumption=tenant_action("resume",p_tenant_id=ta)
+assert resumption["lifecycle_state"]=="provisioning" and resumption["tenant_active"] is False
+assert read_draft(at,ta)["draft"]==draft
+after_audit=tenant_audit(rt,ta)
+assert all(e in after_audit for e in before_audit)
+assert {e["id"] for e in after_audit}-{e["id"] for e in before_audit}=={suspension["audit_event_id"],resumption["audit_event_id"]}
+assert tenant_audit(at,ta)==after_audit
+assert companies(bt)=={tb}
+print("LOCAL_TENANT_LIFECYCLE_AUDIT_PASS: root-only creation, duplicate and replay handling, tenant audit isolation, suspend denial and non-destructive resume",flush=True)
+
+# AD-04/RP-09: bounded allowlisted projection of real immutable event sources.
+# Install only in the disposable local database, never on hosted SQL.
+sql((ROOT/"supabase/release-candidates/ad04_rp09_audit_projection.sql").read_text())
+sql("NOTIFY pgrst,'reload schema';")
+for attempt in range(30):
+    if "/rpc/convay_report_audit_events" in call("/rest/v1/",rt).get("paths",{}): break
+    if attempt == 29: raise AssertionError("Audit RPC schema cache not ready")
+    time.sleep(1)
+root_audit=rpc("convay_report_audit_events",rt,{"p_workflow_only":True})
+assert root_audit["scope"]=="platform" and root_audit["limited"] is False
+assert any(e["source"]=="Meeting template" and e["target_id"]==template and e["action"]=="publish" and e["revision"]=="1" and e["actor_id"]==a["id"] for e in root_audit["events"])
+assert all(set(e)=={"event_id","source","target_id","actor_id","occurred_at","action","revision","request_id","tenant_id"} for e in root_audit["events"])
+for token in (at,bt,lt,anon):
+    rpc("convay_report_audit_events",token,{"p_workflow_only":True},expected=(401,403))
+    rpc("convay_report_audit_events",token,{"p_workflow_only":False},expected=(401,403))
+# A delegated audit grant is necessary but cannot authorize another company.
+sql(f"INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('{role}','admin_audit_log');")
+try:
+    own=rpc("convay_report_audit_events",at,{"p_workflow_only":False})
+    other=rpc("convay_report_audit_events",bt,{"p_workflow_only":False})
+    assert own["scope"]==other["scope"]=="tenant"
+    assert any(e["target_id"]==template for e in own["events"])
+    assert all(e["tenant_id"]==ta and not e["source"].startswith("bms.") for e in own["events"])
+    assert all(e["tenant_id"]==tb and e["target_id"]!=template for e in other["events"])
+    rpc("convay_report_audit_events",lt,{"p_workflow_only":False},expected=(403,))
+finally:
+    sql(f"DELETE FROM public.convay_role_permissions WHERE role_id='{role}' AND permission_id='admin_audit_log';")
+rpc("convay_report_audit_events",at,{"p_workflow_only":False},expected=(403,))
+# Verify the new registry journal guard with a disposable transaction.
+sql("""DO $$ BEGIN
+ BEGIN UPDATE convay_private.entity_changes SET operation='UPDATE' WHERE false;
+ RAISE EXCEPTION 'audit update unexpectedly allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN DELETE FROM convay_private.entity_changes WHERE false;
+ RAISE EXCEPTION 'audit delete unexpectedly allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN TRUNCATE convay_private.entity_changes;
+ RAISE EXCEPTION 'audit truncate unexpectedly allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ END $$;""")
+print("LOCAL_AD04_RP09_AUDIT_PROJECTION_PASS: source identity, root and tenant scope, revocation, metadata-only projection and immutable registry journal",flush=True)
+
+
+# TEN-02 / UAM-09 / AC: verified ordinary member and separate real sessions.
+# Fixture setup grants only the existing meeting-view permission. All tenant
+# enrollment and role transitions go through the authorized public RPCs.
+restricted = principal("restricted-member")
+restricted_role = rid()
+sql(f"""
+INSERT INTO public.user_profiles(user_id,username,display_name,account_role,account_status,email)
+VALUES ('{restricted['id']}','fixture-restricted','Restricted fixture','user','active','{restricted['email']}');
+INSERT INTO public.convay_roles(id,name,description) VALUES ('{restricted_role}','Local restricted fixture role','Disposable Auth REST test');
+INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('{restricted_role}','mtg_view');
+INSERT INTO public.convay_user_roles(user_id,role_id,assigned_by) VALUES ('{restricted['id']}','{restricted_role}','{root['id']}');
+""")
+mt = login(restricted)
+member_request={"p_tenant_id":ta,"p_email":restricted["email"],"p_member_role":"member","p_request_id":rid()}
+receipt=rpc("convay_company_member_enroll",at,member_request)
+assert receipt["member_user_id"]==restricted["id"] and receipt["member_role"]=="member"
+assert rpc("convay_company_member_enroll",at,member_request)==receipt
+assert companies(mt)==set()
+for tenant in (ta,tb):
+    rpc("convay_company_directory",mt,{"p_action":"read","p_tenant_id":tenant},expected=(403,))
+    tenant_audit(mt,tenant,expected=(403,))
+read_draft(mt,ta,expected=(403,))
+rpc("convay_company_member_enroll",at,{**member_request,"p_member_role":"tenant_admin","p_request_id":rid()},expected=(403,))
+rpc("convay_company_member_enroll",at,{**member_request,"p_tenant_id":tb,"p_request_id":rid()},expected=(403,))
+def membership_read(token, tenant):
+    rows=rpc("convay_company_directory",token,{"p_action":"read","p_tenant_id":tenant})["members"]
+    matches=[r for r in rows if r["user_id"]==restricted["id"]]
+    assert len(matches)==1
+    return matches[0]
+initial=membership_read(rt,ta)
+assert initial["membership_role"]=="member" and initial["membership_state"]=="active"
+promotion={"p_action":"add_member","p_tenant_id":ta,"p_member_user_id":restricted["id"],"p_member_role":"tenant_admin","p_request_id":rid()}
+with ThreadPoolExecutor(max_workers=2) as pool:
+    results=list(pool.map(lambda _: rpc("convay_tenant_admin",rt,promotion),range(2)))
+assert results[0]==results[1]
+assert membership_read(rt,ta)["revision"]==initial["revision"]+1
+assert membership_read(at,ta)["membership_role"]=="tenant_admin"
+assert companies(mt)=={ta}
+assert membership_read(mt,ta)["membership_role"]=="tenant_admin"
+assert companies(bt)=={tb}
+assert sum(e["request_id"]==promotion["p_request_id"] for e in tenant_audit(rt,ta))==1
+# Obtain a genuine second session, refresh it, then retain both tokens across
+# the root-authorized role demotion. No fabricated claim or browser grant.
+second=call("/auth/v1/token?grant_type=password",anon,{"email":restricted["email"],"password":restricted["password"]})
+renewed=call("/auth/v1/token?grant_type=refresh_token",anon,{"refresh_token":second["refresh_token"]})
+assert renewed["user"]["id"]==restricted["id"]
+mt2=renewed["access_token"]
+assert companies(mt2)=={ta}
+tenant_action("add_member",p_tenant_id=ta,p_member_user_id=restricted["id"],p_member_role="member")
+assert membership_read(rt,ta)["revision"]==initial["revision"]+2
+for token in (mt,mt2,login(restricted)):
+    assert companies(token)==set()
+    tenant_audit(token,ta,expected=(403,))
+    rpc("convay_company_directory",token,{"p_action":"read","p_tenant_id":ta},expected=(403,))
+    read_draft(token,ta,expected=(403,))
+assert companies(at)=={ta} and companies(bt)=={tb}
+print("LOCAL_TENANT_ROLE_REASSIGNMENT_PASS: verified restricted member, root-only promotion, concurrent idempotency, second-session refresh, immediate demotion denial",flush=True)
+
+
+# Reproduce global fallback through real API, not a fabricated JWT.
+record={"entity_key":"bms.templates","record_id":"local-legacy-template","payload":{"id":"local-legacy-template","title":"Legacy fixture"}}
+call("/rest/v1/convay_entity_records",rt,record,method="POST")
+path="/rest/v1/convay_entity_records?select=record_id&entity_key=eq.bms.templates&record_id=eq.local-legacy-template"
+assert len(call(path,lt))==1 and call(path,at)==[]
+tenant_action("revoke_member",p_tenant_id=ta,p_member_user_id=a["id"])
+assert companies(at)==set()
+read_draft(at,ta,expected=(403,))
+assert len(call(path,at))==1, "Existing fallback was not reproduced"
+sql((ROOT/"supabase/tests/phase1_directory_scope/legacy_scope_candidate.sql").read_text())
+sql((ROOT/"supabase/tests/phase1_directory_scope/document_scope_candidate.sql").read_text())
+assert call(path,at)==[] and call(path,bt)==[] and len(call(path,lt))==1 and len(call(path,rt))==1
+# Same genuine access token after revocation; do not mint a test claim.
+rpc("convay_member_directory",at,{},expected=(403,))
+print("LOCAL_REAL_AUTH_REST_PASS: company creation, A/B authorization, template publish, partial draft idempotency/readback, revoked membership, legacy registry denial", flush=True)
+
+# Actual authenticated PostgREST and Storage operations with synthetic data.
+# Root and delegated users have the module permission; the scope boundary
+# must independently reject tenant B and the revoked A account.
+doc_id = "local-legacy-doc-" + rid()
+doc = {"entity_key":"bms.documents","record_id":doc_id,"payload":{"id":doc_id,"doc_id":doc_id,"title":"Local fixture document","confidentiality":"Public"}}
+receipt=rpc("convay_create_document_record",rt,{"p_record":doc["payload"]})
+assert receipt==[{"record_id":doc_id,"revision":1}]
+rpc("convay_create_document_record",rt,{"p_record":doc["payload"]},expected=(409,))
+for token in (at,bt,anon):
+    denied_doc_id="denied-"+rid()
+    rpc("convay_create_document_record",token,{"p_record":{"id":denied_doc_id,"doc_id":denied_doc_id,"title":"Denied","confidentiality":"Public"}},expected=(401,403))
+    assert sql("SELECT count(*) FROM public.convay_entity_records WHERE record_id='"+denied_doc_id+"';",tuples=True)=="0"
+print("LOCAL_ATOMIC_DOCUMENT_CREATE_PASS: authorized receipt, duplicate identity rejected, revoked/foreign/anonymous writes denied and rolled back",flush=True)
+content_id = "local-content-" + rid()
+content = {"id":content_id,"document_id":doc_id,"content_type":"editor_json","content":"{\"type\":\"doc\",\"content\":[]}"}
+call("/rest/v1/convay_document_content",rt,content,method="POST")
+content_path = "/rest/v1/convay_document_content?select=id,document_id,content&id=eq." + content_id
+assert len(call(content_path,rt)) == 1 and len(call(content_path,lt)) == 1
+assert call(content_path,at) == [] and call(content_path,bt) == []
+assert call(content_path,at,{"content":"denied"},method="PATCH") == []
+assert call(content_path,bt,method="DELETE") == []
+assert call(content_path,rt)[0]["content"] == content["content"]
+call("/rest/v1/convay_document_content",at,{**content,"id":"denied-"+rid()},method="POST",expected=(403,))
+object_bytes=b"Disposable Convay document content"
+object_path="/storage/v1/object/convay-documents/"+doc_id+"/fixture.txt"
+def storage(path,token,method="GET",data=None,expected=(200,201)):
+    req=Request(base+path,data,{"apikey":anon,"Authorization":"Bearer "+token,"Content-Type":"text/plain"},method=method)
+    try:
+        with urlopen(req,timeout=30) as resp:
+            status,raw=resp.status,resp.read()
+    except HTTPError as exc:
+        status,raw=exc.code,exc.read()
+    assert status in expected, f"Storage {method}: unexpected HTTP {status}"
+    return raw
+storage(object_path,rt,"POST",object_bytes)
+assert storage(object_path,rt)==object_bytes and storage(object_path,lt)==object_bytes
+storage(object_path,at,expected=(400,403,404))
+storage(object_path,bt,expected=(400,403,404))
+storage("/storage/v1/object/convay-documents/"+doc_id+"/denied.txt",at,"POST",object_bytes,expected=(400,403))
+print("LOCAL_DOCUMENT_REST_STORAGE_PASS: real upload/readback, legitimate legacy access, revoked and foreign tenant read/write denial",flush=True)
+
+# DC-21/23/24: staged link guard on the disposable full schema, real Auth/PostgREST.
+# Production migration/activation is not authorized by this local rehearsal.
+sql((ROOT/"supabase/release-candidates/dc21_board_pack_link_integrity.sql").read_text())
+pack_registry="/rest/v1/convay_entity_records"
+pack_id="local-pack-"+rid(); version_id="local-version-"+rid(); link_id="local-link-"+rid()
+pack_ref="BPK-local-"+rid()
+pack_payload={"id":pack_id,"pack_id":pack_ref,"pack_title":"Local draft","approval_status":"Draft","version":"V1"}
+call(pack_registry,rt,{"entity_key":"bms.boardpacks","record_id":pack_id,"payload":pack_payload},method="POST")
+version_payload={"id":version_id,"version_id":version_id,"document_id":doc_id,"version_number":"1.0","approval_status":"Draft"}
+call(pack_registry,rt,{"entity_key":"bms.docversions","record_id":version_id,"payload":version_payload},method="POST")
+link_payload={"id":link_id,"link_id":link_id,"board_pack_id":pack_id,"document_id":doc_id,"linked_version_id":version_id,"link_status":"active"}
+link_body={"entity_key":"bms.doc.pack_links","record_id":link_id,"payload":link_payload}
+link_path=pack_registry+"?entity_key=eq.bms.doc.pack_links&record_id=eq."+link_id
+for bad_pin in ("1.0","latest","missing"):
+    call(pack_registry,rt,{**link_body,"payload":{**link_payload,"linked_version_id":bad_pin}},method="POST",expected=(400,409))
+    assert call(link_path,rt)==[]
+call(pack_registry,rt,{**link_body,"payload":{**link_payload,"board_pack_id":"unknown-pack"}},method="POST",expected=(403,))
+for token in (at,bt,lt,anon):
+    call(pack_registry,token,link_body,method="POST",expected=(401,403))
+call(pack_registry,rt,link_body,method="POST")
+assert call(link_path,rt)[0]["payload"]==link_payload
+# Both record and display aliases identify the same pack. A second current
+# link must fail even when its ID and board-pack reference differ.
+for alias in (pack_id,pack_ref):
+    duplicate_id="local-duplicate-"+rid()
+    duplicate={**link_payload,"id":duplicate_id,"link_id":duplicate_id,"board_pack_id":alias}
+    call(pack_registry,rt,{**link_body,"record_id":duplicate_id,"payload":duplicate},method="POST",expected=(400,409))
+    assert call(pack_registry+"?record_id=eq."+duplicate_id,rt)==[]
+# Remove/re-add is allowed, but reactivating the previous row would duplicate
+# the current membership. Keep the original fixture active for later tests.
+call(link_path,rt,{"payload":{**link_payload,"link_status":"removed"}},method="PATCH")
+replacement_id="local-replacement-"+rid()
+replacement={**link_payload,"id":replacement_id,"link_id":replacement_id,"board_pack_id":pack_ref}
+replacement_path=pack_registry+"?record_id=eq."+replacement_id
+call(pack_registry,rt,{**link_body,"record_id":replacement_id,"payload":replacement},method="POST")
+call(link_path,rt,{"payload":link_payload},method="PATCH",expected=(400,409))
+call(replacement_path,rt,method="DELETE")
+call(link_path,rt,{"payload":link_payload},method="PATCH")
+# Two authenticated requests race for the same new pack/document pair.
+# Only one current membership may commit, including mixed aliases.
+race_pack="local-race-pack-"+rid(); race_ref="BPK-race-"+rid()
+call(pack_registry,rt,{"entity_key":"bms.boardpacks","record_id":race_pack,"payload":{**pack_payload,"id":race_pack,"pack_id":race_ref}},method="POST")
+race_ids=["local-race-link-"+rid(),"local-race-link-"+rid()]
+def race_link(pair):
+    identity,alias=pair
+    return call(pack_registry,rt,{**link_body,"record_id":identity,"payload":{**link_payload,"id":identity,"link_id":identity,"board_pack_id":alias}},method="POST",expected=(201,400,409))
+with ThreadPoolExecutor(max_workers=2) as pool:
+    list(pool.map(race_link,zip(race_ids,(race_pack,race_ref))))
+assert sum(len(call(pack_registry+"?record_id=eq."+i,rt)) for i in race_ids)==1
+print("LOCAL_BOARD_PACK_MEMBERSHIP_UNIQUENESS_PASS: alias duplicate, removal/re-add, reactivation denial and concurrent insertion",flush=True)
+call(link_path,rt,{"payload":{**link_payload,"board_pack_id":"other-pack"}},method="PATCH",expected=(400,409))
+assert call(link_path,rt)[0]["payload"]==link_payload
+pack_path=pack_registry+"?entity_key=eq.bms.boardpacks&record_id=eq."+pack_id
+# Reproduce an existing non-draft pack without claiming the publish journey works.
+call(pack_path,rt,{"payload":{**pack_payload,"approval_status":"Approved"}},method="PATCH")
+call(link_path,rt,{"payload":{**link_payload,"link_status":"removed"}},method="PATCH",expected=(400,409))
+call(link_path,rt,method="DELETE",expected=(400,409))
+assert call(link_path,rt)[0]["payload"]==link_payload
+print("LOCAL_BOARD_PACK_LINK_INTEGRITY_PASS: exact version, valid draft, invalid alias, unauthorized actor, reparent and non-draft mutation denial",flush=True)
+
+# DC-23/24 staged atomic publication snapshot. Real Auth, real Storage object,
+# same approved parent and exact-version link. No synthetic hosted data.
+sql((ROOT/"supabase/release-candidates/dc23_board_pack_publication_snapshot.sql").read_text())
+sql((ROOT/"supabase/release-candidates/dc25_board_pack_retention_download.sql").read_text())
+time.sleep(2)
+meeting_id="local-pack-meeting-"+rid()
+call(pack_registry,rt,{"entity_key":"bms.meetings","record_id":meeting_id,"payload":{"id":meeting_id,"meeting_id":meeting_id,"meeting_title":"Local pack meeting","approval_status":"Draft"}},method="POST")
+# A new draft references the fixture meeting and existing exact document version.
+pub_id="local-publish-pack-"+rid(); pub_ref="BPK-publish-"+rid()
+pub_payload={**pack_payload,"id":pub_id,"pack_id":pub_ref,"meeting_id":meeting_id,"related_meeting":meeting_id}
+pub_path=pack_registry+"?entity_key=eq.bms.boardpacks&record_id=eq."+pub_id
+call(pack_registry,rt,{"entity_key":"bms.boardpacks","record_id":pub_id,"payload":pub_payload},method="POST")
+call(pub_path,rt,{"payload":{**pub_payload,"approval_status":"Published"}},method="PATCH",expected=(400,409))
+call(pub_path,rt,{"payload":{**pub_payload,"status":"Published"}},method="PATCH",expected=(400,409))
+call(pub_path,rt,{"payload":{**pub_payload,"publication_manifest_id":rid()}},method="PATCH",expected=(400,409))
+pub_link="local-publish-link-"+rid()
+call(pack_registry,rt,{**link_body,"record_id":pub_link,"payload":{**link_payload,"id":pub_link,"link_id":pub_link,"board_pack_id":pub_id}},method="POST")
+approved={**pub_payload,"approval_status":"Approved"}
+call(pub_path,rt,{"payload":approved},method="PATCH")
+published={**approved,"approval_status":"Published"}
+# Missing original must leave the prior approval and private snapshot unchanged.
+call(pub_path,rt,{"payload":published},method="PATCH",expected=(400,409))
+assert call(pub_path,rt)[0]["payload"]==approved
+assert sql("SELECT count(*) FROM convay_private.board_pack_publication_snapshots WHERE pack_record_id='"+pub_id+"';",tuples=True)=="0"
+original_name=doc_id+"/"+version_id+"/original/"+rid()
+original_path="/storage/v1/object/convay-documents/"+original_name
+storage(original_path,rt,"POST",object_bytes)
+assert storage(original_path,rt)==object_bytes
+original_row={"id":"file:"+doc_id+":"+version_id,"document_id":doc_id,"version_id":version_id,"content_type":"original_file","storage_path":original_name,"file_name":"fixture.txt","mime_type":"text/plain","size":len(object_bytes)}
+call("/rest/v1/convay_document_content",rt,original_row,method="POST")
+for token in (at,bt,anon):
+    denied=call(pub_path,token,{"payload":published},method="PATCH",expected=(200,401,403))
+    assert denied==[] or isinstance(denied,dict)
+assert call(pub_path,rt)[0]["payload"]==approved
+# Fresh exact parent revision, and an atomic immutable snapshot plus audit.
+rev=call(pub_path,rt)[0]["revision"]
+# Actual dedicated UI publication contract, not a client-side status edit.
+for token in (at,bt,anon):
+    rpc("convay_publish_board_pack",token,{"p_pack":pub_id,"p_revision":rev},expected=(401,403,404))
+receipt=rpc("convay_publish_board_pack",rt,{"p_pack":pub_id,"p_revision":rev})
+assert receipt["recordId"]==pub_id and receipt["revision"]==rev+1 and receipt["approvalStatus"]=="Published"
+assert rpc("convay_publish_board_pack",rt,{"p_pack":pub_id,"p_revision":rev})==receipt
+rpc("convay_publish_board_pack",rt,{"p_pack":pub_id,"p_revision":rev-1},expected=(400,409))
+rows=call(pub_path,rt)
+assert len(rows)==1 and rows[0]["revision"]==rev+1
+frozen=rows[0]["payload"]
+assert frozen["approval_status"]=="Published" and frozen["frozen_revision"]==rev+1 and frozen["published_by"]==root["id"]
+assert frozen["document_count"]=="1" and frozen["publication_manifest_id"]
+snapshot=json.loads(sql("SELECT to_jsonb(s)::text FROM convay_private.board_pack_publication_snapshots s WHERE pack_record_id='"+pub_id+"';",tuples=True))
+assert snapshot["manifest_id"]==frozen["publication_manifest_id"] and snapshot["pack_payload"]==frozen
+assert snapshot["files"][0]["documentId"]==doc_id and snapshot["files"][0]["versionId"]==version_id
+assert snapshot["files"][0]["storagePath"]==original_name and snapshot["files"][0]["sizeBytes"]==len(object_bytes)
+assert snapshot["files"][0]["objectId"]
+assert call(pub_path+"&revision=eq."+str(rev),rt,{"payload":published},method="PATCH")==[]
+call(pub_path,rt,{"payload":{**frozen,"pack_title":"Tampered"}},method="PATCH",expected=(400,409))
+call(pub_path,rt,method="DELETE",expected=(400,409))
+assert call(pub_path,rt)[0]["payload"]==frozen
+assert sql("SELECT count(*) FROM convay_private.board_pack_publication_snapshots WHERE pack_record_id='"+pub_id+"';",tuples=True)=="1"
+print("LOCAL_BOARD_PACK_PUBLICATION_SNAPSHOT_PASS: draft denial, missing original atomic rollback, unauthorized denial, real Storage identity, immutable publication and stale revision denial",flush=True)
+# DC-24/25: actual Storage bytes stay unchanged after attempted replacement
+# and bulk deletion. The authenticated download contract must reauthorize at
+# receipt time; it must not accept foreign, expired or substituted tickets.
+metadata_path="/rest/v1/convay_document_content?id=eq."+original_row["id"]
+call(metadata_path,rt,{"size":1},method="PATCH",expected=(400,409))
+call(metadata_path,rt,method="DELETE",expected=(400,409))
+assert call(metadata_path,rt)[0]["storage_path"]==original_name
+version_path=pack_registry+"?entity_key=eq.bms.docversions&record_id=eq."+version_id
+call(version_path,rt,{"payload":{**version_payload,"version_number":"99"}},method="PATCH",expected=(400,409))
+call(version_path,rt,method="DELETE",expected=(400,409))
+assert call(version_path,rt)[0]["payload"]==version_payload
+# PUT and bulk DELETE use the actual Storage service (not SQL metadata DML).
+# Some Storage versions return an empty successful result for RLS-filtered
+# deletion, so authoritative original-byte readback is the decisive assertion.
+storage(original_path,rt,"PUT",b"tampered",expected=(400,403,404,409,500))
+bulk_req=Request(base+"/storage/v1/object/convay-documents",json.dumps({"prefixes":[original_name]}).encode(),
+    {"apikey":anon,"Authorization":"Bearer "+rt,"Content-Type":"application/json"},method="DELETE")
+try:
+    with urlopen(bulk_req,timeout=30) as res:
+        assert res.status in (200,204)
+except HTTPError as exc:
+    assert exc.code in (400,403,404,409,500)
+assert storage(original_path,rt)==object_bytes
+assert call(metadata_path,rt)[0]["size"]==len(object_bytes)
+# Unpublished files remain editable; the retention guard applies only to pins.
+free_name=doc_id+"/unpublished/"+rid()
+free_path="/storage/v1/object/convay-documents/"+free_name
+storage(free_path,rt,"POST",b"unpublished")
+storage(free_path,rt,"PUT",b"updated unpublished")
+assert storage(free_path,rt)==b"updated unpublished"
+manifest_rpc="convay_board_pack_download_manifest"
+receipt_rpc="convay_board_pack_download_receipt"
+for token in (at,bt,anon):
+    rpc(manifest_rpc,token,{"p_pack":pub_id},expected=(401,403,404))
+grant=rpc(manifest_rpc,rt,{"p_pack":pub_id})
+assert grant["packId"]==pub_id and grant["approvalStatus"]=="Published"
+assert grant["frozenRevision"]==frozen["frozen_revision"]
+assert grant["files"]==[{"documentId":doc_id,"versionId":version_id,"fileName":"fixture.txt","sizeBytes":len(object_bytes)}]
+assert grant["manifestId"]!=snapshot["manifest_id"]
+# Check real retained bytes under the same signed-in actor before confirming.
+assert storage(original_path,rt)==object_bytes
+params={"p_pack":pub_id,"p_manifest":grant["manifestId"]}
+for token in (at,bt,anon):
+    rpc(receipt_rpc,token,params,expected=(401,403,404))
+rpc(receipt_rpc,rt,{**params,"p_pack":pack_id},expected=(403,))
+rpc(receipt_rpc,rt,{**params,"p_manifest":rid()},expected=(403,))
+confirmed=rpc(receipt_rpc,rt,params)
+assert confirmed["packId"]==pub_id and confirmed["manifestId"]==grant["manifestId"] and confirmed["receiptId"]
+assert rpc(receipt_rpc,rt,params)==confirmed
+# A real non-admin legacy actor has the exact download/view permissions but
+# cannot obtain this pack without the canonical meeting participant link.
+sql("INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('"+role+"','pack_view'),('"+role+"','doc_download');")
+rpc(manifest_rpc,lt,{"p_pack":pub_id},expected=(403,))
+participant_id="local-pack-participant-"+rid()
+participant={"id":participant_id,"meeting_id":meeting_id,"user_id":legacy["id"],"participant_type":"Member","selection_source_type":"individual","invitation_status":"pending","quorum_eligible":False,"voting_eligible":False,"is_required":False}
+call(pack_registry,rt,{"entity_key":"bms.meetingParticipantLinks","record_id":participant_id,"payload":participant},method="POST")
+participant_grant=rpc(manifest_rpc,lt,{"p_pack":pub_id})
+assert participant_grant["files"]==grant["files"]
+rpc(receipt_rpc,lt,params,expected=(403,))
+participant_params={"p_pack":pub_id,"p_manifest":participant_grant["manifestId"]}
+assert rpc(receipt_rpc,lt,participant_params)["receiptId"]
+call(pack_registry+"?entity_key=eq.bms.meetingParticipantLinks&record_id=eq."+participant_id,rt,method="DELETE")
+rpc(receipt_rpc,lt,participant_params,expected=(403,))
+rpc(manifest_rpc,lt,{"p_pack":pub_id},expected=(403,))
+sql("DELETE FROM public.convay_role_permissions WHERE role_id='"+role+"' AND permission_id IN ('pack_view','doc_download');")
+assert sql("SELECT count(*) FROM convay_private.board_pack_download_authorizations WHERE id='"+grant["manifestId"]+"' AND receipt_id='"+confirmed["receiptId"]+"' AND actor_id='"+root["id"]+"';",tuples=True)=="1"
+expired=rpc(manifest_rpc,rt,{"p_pack":pub_id})
+sql("UPDATE convay_private.board_pack_download_authorizations SET issued_at=now()-interval '10 minutes',expires_at=now()-interval '5 minutes' WHERE id='"+expired["manifestId"]+"';")
+rpc(receipt_rpc,rt,{"p_pack":pub_id,"p_manifest":expired["manifestId"]},expected=(403,))
+# Exercise the actual TypeScript UI transport and deterministic ZIP writer
+# against local Auth/REST/Storage. No mocked gateway or fabricated archive.
+completed=subprocess.run(["node","--experimental-strip-types",str(ROOT/"supabase/tests/free_local_stack/board_pack_download.node.mts")],
+    input=json.dumps({"base":base,"anon":anon,"token":rt,"packId":pub_id,"frozenRevision":frozen["frozen_revision"]}).encode(),
+    stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45)
+assert completed.returncode==0,"Actual board-pack UI transport/ZIP failed (local credentials suppressed)"
+with zipfile.ZipFile(io.BytesIO(completed.stdout)) as archive:
+    assert archive.testzip() is None and archive.namelist()==["fixture.txt"]
+    assert archive.read("fixture.txt")==object_bytes
+print("LOCAL_BOARD_PACK_ORIGINAL_RETENTION_DOWNLOAD_PASS: real retained bytes, mutation denial, unaffected unpinned original, authenticated manifest, idempotent audit receipt, denied foreign and expired requests",flush=True)
+
+
+
+# NI-01: real authenticated create/read/update with immutable lifecycle.
+# This is draft-only, no provider send or notification delivery.
+rule_id=rid()
+payload={"id":rule_id,"rule_id":"LOCAL-QA","rule_name":"Local notification draft","trigger_event":"Test","channels":"In-App","recipients":"Nobody","timing":"None","template":"Test","entity_type":"Meeting","status":"Draft"}
+rule={"entity_key":"bms.notifyrules","record_id":rule_id,"payload":payload}
+registry="/rest/v1/convay_entity_records"
+rule_path=registry+"?entity_key=eq.bms.notifyrules&record_id=eq."+rule_id
+call(registry,rt,rule,method="POST")
+assert call(rule_path,rt)[0]["payload"]["status"]=="Draft"
+updated={**payload,"rule_name":"Revised local draft"}
+call(rule_path,rt,{"payload":updated},method="PATCH")
+assert call(rule_path,rt)[0]["payload"]==updated
+call(rule_path,rt,{"payload":{**updated,"status":"Active"}},method="PATCH",expected=(400,409))
+call(rule_path,rt,method="DELETE",expected=(400,409))
+assert call(rule_path,lt)==[] and call(rule_path,bt)==[]
+assert call(rule_path,lt,{"payload":{**updated,"rule_name":"Denied"}},method="PATCH")==[]
+denied_id=rid()
+call(registry,lt,{"entity_key":"bms.notifyrules","record_id":denied_id,"payload":{**payload,"id":denied_id}},method="POST",expected=(403,))
+assert call(rule_path,rt)[0]["payload"]==updated
+print("LOCAL_NOTIFICATION_REST_PASS: draft create/edit/readback, activation/deletion denied, delegated module permission cannot bypass root boundary",flush=True)
+
+# NI-15: trusted fixture writes Pending Setup, never fabricated Connected
+# provider evidence. Verify real browser-role PostgREST reads and denials.
+sql("INSERT INTO public.convay_provider_connections(provider_id,status) VALUES ('smtp-email','Pending Setup');")
+provider_path="/rest/v1/convay_provider_connections?select=provider_id,status,verified_at&provider_id=eq.smtp-email"
+assert call(provider_path,rt)==[{"provider_id":"smtp-email","status":"Pending Setup","verified_at":None}]
+assert call(provider_path,lt)==[] and call(provider_path,bt)==[]
+call(provider_path,rt,{"status":"Disconnected"},method="PATCH",expected=(403,))
+assert call(provider_path,rt)[0]["status"]=="Pending Setup"
+print("LOCAL_PROVIDER_REST_PASS: root read, nonroot denial and browser-write denial; actual provider connectivity not tested",flush=True)
+
+# Deny-by-default and public privileged-function catalog audit. Do not add
+# policies or remove intentional RPC privileges merely to silence advisors.
+assert sql("""SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+WHERE n.nspname IN ('public','convay_private') AND c.relkind IN ('r','p')
+AND c.relrowsecurity AND NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid)
+AND (has_table_privilege('anon',c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+OR has_table_privilege('authenticated',c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'));""",tuples=True)=="0"
+assert sql("""SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon',p.oid,'EXECUTE');""",tuples=True)=="0"
+print("LOCAL_DENY_DEFAULT_CATALOG_PASS: policyless RLS tables have no direct browser-role grants; no anonymous public privileged RPC execution",flush=True)
+
+
+# A native PostgreSQL archive of the local synthetic app schemas.
+# This does not back up hosted data or Storage object bytes.
+# Verify the local archive table of contents is readable; actual production
+# restoration remains a distinct mandatory gate.
+dump = subprocess.run(["docker","exec",db,"pg_dump","-U","postgres","-d","postgres","-Fc","-n","public","-n","convay_private","-n","auth","-n","storage"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True).stdout
+assert dump.startswith(b"PGDMP") and len(dump)>1024
+toc = subprocess.run(["docker","exec","-i",db,"pg_restore","-l"],input=dump,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True).stdout
+assert b"TABLE DATA auth users" in toc and b"TABLE DATA convay_private company_meeting_draft_staging" in toc and b"TABLE DATA storage objects" in toc
+import hashlib
+print("LOCAL_SYNTHETIC_NATIVE_ARCHIVE_PASS",len(dump),hashlib.sha256(dump).hexdigest(),flush=True)
+
+# Restore the actual archive into a newly created database in the same
+# disposable PostgreSQL cluster. No production DSN, managed project, external
+# Storage objects, or public artifact is involved. Keep ownership and ACLs.
+restore_db = "convay_native_fixture"
+assert sql("SELECT current_user='supabase_admin' AND rolsuper FROM pg_roles WHERE rolname=current_user;",tuples=True,local_restore_admin=True)=="t", "Disposable native restore administrator unavailable"
+subprocess.run(["docker","exec",db,"createdb","-U","supabase_admin","-T","template0",restore_db],check=True)
+# pg_dump -n does not include external extension dependencies. Recreate the
+# compatible local extension baseline explicitly before restoring the archive.
+extensions = json.loads(sql("""
+SELECT COALESCE(json_agg(json_build_object('name',e.extname,'version',e.extversion,'schema',n.nspname)),'[]')
+FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace
+WHERE e.extname IN ('pgcrypto','uuid-ossp','pg_trgm','citext','pgjwt')
+ AND n.nspname NOT IN ('public','convay_private','auth','storage')
+""",tuples=True))
+def ident(s):
+    return '"' + s.replace('"','""') + '"'
+def lit(s):
+    return "'" + s.replace("'","''") + "'"
+for ext in extensions:
+    sql("CREATE SCHEMA IF NOT EXISTS " + ident(ext["schema"]) + "; CREATE EXTENSION IF NOT EXISTS "
+        + ident(ext["name"]) + " WITH SCHEMA " + ident(ext["schema"]) + " VERSION " + lit(ext["version"]) + ";",
+        dbname=restore_db,local_restore_admin=True)
+# The target was created from template0, not restored over an existing app.
+# pg_restore --clean still tries DROP POLICY on nonexistent tables; remove
+# only the template's default public schema if the archive creates it.
+if re.search(rb"(?m)^\d+;.* SCHEMA - public ",toc):
+    sql("DROP SCHEMA public;",dbname=restore_db,local_restore_admin=True)
+restore = subprocess.run(["docker","exec","-i",db,"pg_restore","-U","supabase_admin","-d",restore_db,
+                          "--exit-on-error"],
+                         input=dump,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+if restore.returncode:
+    raise RuntimeError("Local native restore failed: " + restore.stderr.decode(errors="replace")[-2200:])
+# Compare every table's row count and deterministic row-content digest, plus
+# RLS flags, table owners, normalized table grants, function owners/grants
+# and the actual RLS policy definitions. Only counts and the final PASS are
+# logged; never emit Auth rows, password hashes, or tokens.
+scope="'public','convay_private','auth','storage'"
+table_names=json.loads(sql("SELECT COALESCE(json_agg(json_build_array(n.nspname,c.relname) ORDER BY n.nspname,c.relname),'[]') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p')",tuples=True))
+assert table_names
+digest_query=" UNION ALL ".join("SELECT "+lit(schema+"."+table)+" AS relation, count(*)::bigint AS rows, md5(COALESCE(string_agg(md5(to_jsonb(t)::text),',' ORDER BY md5(to_jsonb(t)::text)),'')) AS digest FROM "+ident(schema)+"."+ident(table)+" t" for schema,table in table_names)
+digest_query="SELECT COALESCE(json_agg(x ORDER BY relation),'[]') FROM ("+digest_query+") x;"
+assert json.loads(sql(digest_query,tuples=True,local_restore_admin=True))==json.loads(sql(digest_query,dbname=restore_db,tuples=True,local_restore_admin=True)), "Restored row counts/content differ"
+print("LOCAL_SYNTHETIC_NATIVE_ROWS_PASS",len(table_names),"tables restored with identical row counts and content",flush=True)
+# Roles are cluster-level and are already present in the same disposable
+# cluster. Compare granted privileges including default ACL semantics.
+catalog_queries=[
+"SELECT COALESCE(json_agg(x ORDER BY nspname,relname),'[]') FROM (SELECT n.nspname,c.relname,c.relkind,c.relrowsecurity,c.relforcerowsecurity,pg_get_userbyid(c.relowner) AS owner FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p','v','m','S')) x",
+"SELECT COALESCE(json_agg(x ORDER BY nspname,relname,grantor,grantee,privilege_type,is_grantable),'[]') FROM (SELECT n.nspname,c.relname,pg_get_userbyid(a.grantor) AS grantor,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,a.privilege_type,a.is_grantable FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault((CASE WHEN c.relkind='S' THEN 's' ELSE 'r' END)::\"char\",c.relowner))) a WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p','v','m','S')) x",
+"SELECT COALESCE(json_agg(x ORDER BY schemaname,tablename,policyname),'[]') FROM (SELECT schemaname,tablename,policyname,permissive,roles,cmd,qual,with_check FROM pg_policies WHERE schemaname IN ("+scope+")) x",
+"SELECT COALESCE(json_agg(x ORDER BY nspname,proname,args),'[]') FROM (SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid) args,pg_get_userbyid(p.proowner) AS owner,p.prosecdef,p.proconfig,pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname IN ("+scope+") AND p.prokind IN ('f','p')) x",
+"SELECT COALESCE(json_agg(x ORDER BY nspname,proname,args,grantor,grantee,privilege_type,is_grantable),'[]') FROM (SELECT n.nspname,p.proname,pg_get_function_identity_arguments(p.oid) args,pg_get_userbyid(a.grantor) AS grantor,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,a.privilege_type,a.is_grantable FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a WHERE n.nspname IN ("+scope+") AND p.prokind IN ('f','p')) x",
+]
+for index,q in enumerate(catalog_queries,1):
+    assert json.loads(sql(q,tuples=True,local_restore_admin=True))==json.loads(sql(q,dbname=restore_db,tuples=True,local_restore_admin=True)), "Restored security catalog mismatch "+str(index)
+print("LOCAL_SYNTHETIC_NATIVE_RESTORE_PASS",len(table_names),"tables and five security catalogs",flush=True)
+
+# Verify native structural recovery independently of the security catalogs.
+# Compare names and definitions, not database-specific OIDs.  The synthetic
+# source and restore share a cluster, so role recovery is not claimed here.
+structural_queries = {
+    "constraints": "SELECT COALESCE(json_agg(x ORDER BY schema_name,relation_name,constraint_name),'[]') FROM (SELECT n.nspname schema_name,c.relname relation_name,k.conname constraint_name,k.contype,k.condeferrable,k.condeferred,k.convalidated,pg_get_constraintdef(k.oid) definition FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+")) x",
+    "indexes": "SELECT COALESCE(json_agg(x ORDER BY schema_name,index_name),'[]') FROM (SELECT n.nspname schema_name,c.relname index_name,i.indisunique,i.indisprimary,i.indisvalid,i.indisready,pg_get_indexdef(c.oid) definition FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+")) x",
+    "triggers": "SELECT COALESCE(json_agg(x ORDER BY schema_name,relation_name,trigger_name),'[]') FROM (SELECT n.nspname schema_name,c.relname relation_name,t.tgname trigger_name,t.tgenabled,pg_get_triggerdef(t.oid) definition FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+") AND NOT t.tgisinternal) x",
+    "sequences": "SELECT COALESCE(json_agg(x ORDER BY schemaname,sequencename),'[]') FROM (SELECT schemaname,sequencename,sequenceowner,data_type::text,start_value,min_value,max_value,increment_by,cycle,cache_size,last_value FROM pg_sequences WHERE schemaname IN ("+scope+")) x",
+    "columns": "SELECT COALESCE(json_agg(x ORDER BY schema_name,relation_name,column_number),'[]') FROM (SELECT n.nspname schema_name,c.relname relation_name,a.attnum column_number,a.attname,format_type(a.atttypid,a.atttypmod) data_type,a.attnotnull,a.attidentity,a.attgenerated,pg_get_expr(d.adbin,d.adrelid) default_expression FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p') AND a.attnum>0 AND NOT a.attisdropped) x",
+}
+for label, query in structural_queries.items():
+    source_catalog = json.loads(sql(query,tuples=True,local_restore_admin=True))
+    restored_catalog = json.loads(sql(query,dbname=restore_db,tuples=True,local_restore_admin=True))
+    if label == "columns" and source_catalog != restored_catalog:
+        # pg_dump/pg_restore reconstructs live columns in logical order; it
+        # does not preserve dropped-column placeholders in physical attnum.
+        # Prove that every changed ordinal is accounted for by real dropped
+        # attributes, and compare ALL remaining properties without changes.
+        from collections import defaultdict
+        gaps_query = "SELECT COALESCE(json_agg(x ORDER BY schema_name,relation_name,attnum),'[]') FROM (SELECT n.nspname schema_name,c.relname relation_name,a.attnum FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p') AND a.attnum>0 AND a.attisdropped) x"
+        def logical_columns(rows, dropped):
+            gaps = defaultdict(set)
+            for gap in dropped:
+                gaps[(gap["schema_name"],gap["relation_name"])].add(gap["attnum"])
+            result = []
+            seen = defaultdict(int)
+            for row in rows:
+                table = (row["schema_name"],row["relation_name"])
+                seen[table] += 1
+                ordinal = row["column_number"]
+                logical = ordinal - sum(gap < ordinal for gap in gaps[table])
+                assert logical == seen[table], "Column ordinal gap not explained by dropped attributes"
+                result.append({**row, "column_number":logical})
+            return result
+        source_gaps = json.loads(sql(gaps_query,tuples=True,local_restore_admin=True))
+        restored_gaps = json.loads(sql(gaps_query,dbname=restore_db,tuples=True,local_restore_admin=True))
+        source_logical = logical_columns(source_catalog,source_gaps)
+        restored_logical = logical_columns(restored_catalog,restored_gaps)
+        # Report only schema metadata in this synthetic environment; never
+        # log row data, default expressions, credentials, or tokens.
+        source_by_name = {(r["schema_name"],r["relation_name"],r["attname"]):r for r in source_catalog}
+        restored_by_name = {(r["schema_name"],r["relation_name"],r["attname"]):r for r in restored_catalog}
+        for key in sorted(source_by_name.keys() | restored_by_name.keys()):
+            left,right = source_by_name.get(key),restored_by_name.get(key)
+            if left != right:
+                if left is None or right is None:
+                    print("LOCAL_NATIVE_COLUMN_DIFF",key,"missing on source" if left is None else "missing on restore",flush=True)
+                else:
+                    fields = sorted(k for k in left if left[k] != right[k])
+                    print("LOCAL_NATIVE_COLUMN_DIFF",key,"fields",fields,"physical ordinals",left["column_number"],right["column_number"],flush=True)
+        assert source_logical == restored_logical, "Restored structural catalog mismatch: logical columns (not explained by dropped attributes)"
+        print("LOCAL_NATIVE_COLUMN_GAPS_PASS",len(source_gaps),len(restored_gaps),flush=True)
+    else:
+        assert source_catalog == restored_catalog, "Restored structural catalog mismatch: " + label
+    print("LOCAL_NATIVE_STRUCTURE_PASS",label,len(source_catalog),flush=True)
+# pg_sequences.last_value is NULL for an unused sequence. Verify the exact
+# is_called flag as well, without advancing any source or restored sequence.
+sequences = json.loads(sql("SELECT COALESCE(json_agg(json_build_array(schemaname,sequencename) ORDER BY schemaname,sequencename),'[]') FROM pg_sequences WHERE schemaname IN ("+scope+")",tuples=True,local_restore_admin=True))
+for schema, sequence in sequences:
+    state_query = "SELECT json_build_array(last_value,is_called) FROM " + ident(schema) + "." + ident(sequence)
+    assert json.loads(sql(state_query,tuples=True,local_restore_admin=True)) == json.loads(sql(state_query,dbname=restore_db,tuples=True,local_restore_admin=True)), "Restored sequence state differs"
+print("LOCAL_NATIVE_SEQUENCE_STATE_PASS",len(sequences),flush=True)

@@ -32,5 +32,6 @@ export function requireRoleAssignmentReadback(
   if (expected.size !== requestedRoleIds.length) unverified();
   const actual = snapshot.user_assignments
     .filter(item => item.user_id === userId).map(item => item.role_id);
-  if (actual.length !== expected.size || actual.some(id => !expected.has(id))) unverified();
+  if (actual.length !== expected.size || new Set(actual).size !== actual.length
+    || actual.some(id => !expected.has(id))) unverified();
 }

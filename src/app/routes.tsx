@@ -9,7 +9,7 @@ import { SubscribersPage } from "./pages/subscribers/SubscribersPage";
 import { CompanyAdminWorkspacePage } from "./pages/company/CompanyAdminWorkspacePage";
 import { useAccessSnapshot } from "./services/supabase/convayAccess";
 
-// ─── Static page imports (no lazy — dynamic import() fails in Make proxy) ────
+// ─── Static page imports; the controlled Pages build defers the document editor only. ────
 
 import { LiveMeetingPage }          from "./pages/meetings/LiveMeetingPage";
 import { QuickMeetingGuestPage, QuickMeetingHostPage, QuickMeetingLaunchPage } from "./pages/meetings/QuickMeetingPages";
@@ -17,14 +17,14 @@ import { DashboardPage }            from "./pages/dashboard/DashboardPage";
 import { PSRDashboardPage }         from "./pages/dashboard/PSRDashboardPage";
 import { CombinedDashboardPage }    from "./pages/dashboard/CombinedDashboardPage";
 import { NotificationsPage } from "./pages/dashboard/NotificationsPage";
-import { ReportViewPage }           from "./pages/report/ReportViewPage";
+import { AuditProjectionPage } from "./pages/administration/AuditProjectionPage";
 import { ReturnViewApprovalPage }   from "./pages/return-register/ReturnViewApprovalPage";
 import { OnlineReturnRegisterPage } from "./pages/return-register/OnlineReturnRegisterPage";
 import { OfflineReturnRegisterPage } from "./pages/return-register/OfflineReturnRegisterPage";
 import { OnlineArchivePage }        from "./pages/return-register/OnlineArchivePage";
 import { Register4ListPage }        from "./pages/register-stock/Register4ListPage";
 import { TaxRegistryPage }          from "./pages/register-stock/TaxRegistryPage";
-import { DocumentEditorPage }       from "./pages/agenda-documents/DocumentEditorPage";
+import { DocumentEditorRoute }      from "./pages/agenda-documents/DocumentEditorRoute";
 import { BoardPacksPage }           from "./pages/agenda-documents/BoardPacksPage";
 import { PSRApprovalPage }          from "./pages/psr-verification/PSRApprovalPage";
 import { PSREditRequestPage }       from "./pages/psr-verification/PSREditRequestPage";
@@ -82,7 +82,7 @@ function ParticipationRoute()           { return <ParticipationAnalyticsPage />;
 function GovernanceReportRoute()        { return <GovernanceReportPage />; }
 function DecisionsActionsRoute()        { return <DecisionsActionsAnalyticsPage />; }
 function FinancialResourceImpactRoute() { return <FinancialResourceImpactPage />; }
-function AuditTrailRoute()              { return <ReportViewPage reportId="user-activity-report" />; }
+function AuditTrailRoute()              { return <AuditProjectionPage />; }
 
 function AdminOnly({ children }: { children: ReactNode }) {
   const allowed = useSelector((state: RootState) => state.auth.isAuthenticated && state.currentUser.role === "super_admin");
@@ -102,7 +102,7 @@ function UsersAdminRoute() { return <AdminOnly><SupabaseUserManagementPage /></A
 function RolesAdminRoute() { return <AdminOnly><RoleManagementPage /></AdminOnly>; }
 function PermissionsAdminRoute() { return <AdminOnly><PermissionListPage /></AdminOnly>; }
 
-// preloadAllRoutes is a no-op now — all routes are statically imported
+// Do not preload the production document-editor chunk; it belongs to the authorized route.
 export function preloadAllRoutes() {}
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ export const router = createBrowserRouter([
       { path: "agenda-documents/agenda-management",                        Component: Register4ListPage },
       { path: "agenda-documents/board-packs",                              Component: BoardPacksPage },
       { path: "agenda-documents/document-library",                         Component: TaxRegistryPage },
-      { path: "agenda-documents/document-library/:documentId/editor",      Component: DocumentEditorPage },
+      { path: "agenda-documents/document-library/:documentId/editor",      Component: DocumentEditorRoute },
 
       // ── Decisions & Follow-up ─────────────────────────────────────────────
       { path: "decisions-followup/decisions",    Component: PSRApprovalPage },
