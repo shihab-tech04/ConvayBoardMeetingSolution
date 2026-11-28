@@ -285,6 +285,36 @@ storage(object_path,bt,expected=(400,403,404))
 storage("/storage/v1/object/convay-documents/"+doc_id+"/denied.txt",at,"POST",object_bytes,expected=(400,403))
 print("LOCAL_DOCUMENT_REST_STORAGE_PASS: real upload/readback, legitimate legacy access, revoked and foreign tenant read/write denial",flush=True)
 
+# DC-21/23/24: staged link guard on the disposable full schema, real Auth/PostgREST.
+# Production migration/activation is not authorized by this local rehearsal.
+sql((ROOT/"supabase/release-candidates/dc21_board_pack_link_integrity.sql").read_text())
+pack_registry="/rest/v1/convay_entity_records"
+pack_id="local-pack-"+rid(); version_id="local-version-"+rid(); link_id="local-link-"+rid()
+pack_payload={"id":pack_id,"pack_id":pack_id,"pack_title":"Local draft","approval_status":"Draft","version":"V1"}
+call(pack_registry,rt,{"entity_key":"bms.boardpacks","record_id":pack_id,"payload":pack_payload},method="POST")
+version_payload={"id":version_id,"version_id":version_id,"document_id":doc_id,"version_number":"1.0","approval_status":"Draft"}
+call(pack_registry,rt,{"entity_key":"bms.docversions","record_id":version_id,"payload":version_payload},method="POST")
+link_payload={"id":link_id,"link_id":link_id,"board_pack_id":pack_id,"document_id":doc_id,"linked_version_id":version_id,"link_status":"active"}
+link_body={"entity_key":"bms.doc.pack_links","record_id":link_id,"payload":link_payload}
+link_path=pack_registry+"?entity_key=eq.bms.doc.pack_links&record_id=eq."+link_id
+for bad_pin in ("1.0","latest","missing"):
+    call(pack_registry,rt,{**link_body,"payload":{**link_payload,"linked_version_id":bad_pin}},method="POST",expected=(400,409))
+    assert call(link_path,rt)==[]
+call(pack_registry,rt,{**link_body,"payload":{**link_payload,"board_pack_id":"unknown-pack"}},method="POST",expected=(403,))
+for token in (at,bt,lt,anon):
+    call(pack_registry,token,link_body,method="POST",expected=(401,403))
+call(pack_registry,rt,link_body,method="POST")
+assert call(link_path,rt)[0]["payload"]==link_payload
+call(link_path,rt,{"payload":{**link_payload,"board_pack_id":"other-pack"}},method="PATCH",expected=(400,409))
+assert call(link_path,rt)[0]["payload"]==link_payload
+pack_path=pack_registry+"?entity_key=eq.bms.boardpacks&record_id=eq."+pack_id
+# Reproduce an existing non-draft pack without claiming the publish journey works.
+call(pack_path,rt,{"payload":{**pack_payload,"approval_status":"Approved"}},method="PATCH")
+call(link_path,rt,{"payload":{**link_payload,"link_status":"removed"}},method="PATCH",expected=(400,409))
+call(link_path,rt,method="DELETE",expected=(400,409))
+assert call(link_path,rt)[0]["payload"]==link_payload
+print("LOCAL_BOARD_PACK_LINK_INTEGRITY_PASS: exact version, valid draft, invalid alias, unauthorized actor, reparent and non-draft mutation denial",flush=True)
+
 # NI-01: real authenticated create/read/update with immutable lifecycle.
 # This is draft-only, no provider send or notification delivery.
 rule_id=rid()
