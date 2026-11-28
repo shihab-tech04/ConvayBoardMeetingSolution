@@ -6,7 +6,12 @@ const tools = process.env.MEDIA_TOOLS_DIR;
 assert(tools, 'Disposable tools directory required');
 const { chromium } = require(path.join(tools,'node_modules/playwright'));
 const { AccessToken, RoomServiceClient } = require(path.join(tools,'node_modules/livekit-server-sdk'));
-const sdk = fs.readFileSync(path.join(tools,'node_modules/livekit-client/dist/livekit-client.umd.min.js'));
+// jsDelivr generates the .min.js variant; the npm distribution declares its UMD entry.
+const clientDir=path.join(tools,'node_modules/livekit-client');
+const clientPackage=JSON.parse(fs.readFileSync(path.join(clientDir,'package.json'),'utf8'));
+assert.equal(clientPackage.version,'2.23.0');
+assert.match(clientPackage.main,/\.umd\.js$/);
+const sdk=fs.readFileSync(path.resolve(clientDir,clientPackage.main));
 const URL='http://127.0.0.1:5173/supabase/tests/livekit_browser/fixture.html';
 const serverUrl='ws://127.0.0.1:7880';
 const service=new RoomServiceClient('http://127.0.0.1:7880','devkey','secret');
