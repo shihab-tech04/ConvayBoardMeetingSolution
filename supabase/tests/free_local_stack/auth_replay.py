@@ -580,7 +580,47 @@ structural_queries = {
 for label, query in structural_queries.items():
     source_catalog = json.loads(sql(query,tuples=True,local_restore_admin=True))
     restored_catalog = json.loads(sql(query,dbname=restore_db,tuples=True,local_restore_admin=True))
-    assert source_catalog == restored_catalog, "Restored structural catalog mismatch: " + label
+    if label == "columns" and source_catalog != restored_catalog:
+        # pg_dump/pg_restore reconstructs live columns in logical order; it
+        # does not preserve dropped-column placeholders in physical attnum.
+        # Prove that every changed ordinal is accounted for by real dropped
+        # attributes, and compare ALL remaining properties without changes.
+        from collections import defaultdict
+        gaps_query = "SELECT COALESCE(json_agg(x ORDER BY schema_name,relation_name,attnum),'[]') FROM (SELECT n.nspname schema_name,c.relname relation_name,a.attnum FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p') AND a.attnum>0 AND a.attisdropped) x"
+        def logical_columns(rows, dropped):
+            gaps = defaultdict(set)
+            for gap in dropped:
+                gaps[(gap["schema_name"],gap["relation_name"])].add(gap["attnum"])
+            result = []
+            seen = defaultdict(int)
+            for row in rows:
+                table = (row["schema_name"],row["relation_name"])
+                seen[table] += 1
+                ordinal = row["column_number"]
+                logical = ordinal - sum(gap < ordinal for gap in gaps[table])
+                assert logical == seen[table], "Column ordinal gap not explained by dropped attributes"
+                result.append({**row, "column_number":logical})
+            return result
+        source_gaps = json.loads(sql(gaps_query,tuples=True,local_restore_admin=True))
+        restored_gaps = json.loads(sql(gaps_query,dbname=restore_db,tuples=True,local_restore_admin=True))
+        source_logical = logical_columns(source_catalog,source_gaps)
+        restored_logical = logical_columns(restored_catalog,restored_gaps)
+        # Report only schema metadata in this synthetic environment; never
+        # log row data, default expressions, credentials, or tokens.
+        source_by_name = {(r["schema_name"],r["relation_name"],r["attname"]):r for r in source_catalog}
+        restored_by_name = {(r["schema_name"],r["relation_name"],r["attname"]):r for r in restored_catalog}
+        for key in sorted(source_by_name.keys() | restored_by_name.keys()):
+            left,right = source_by_name.get(key),restored_by_name.get(key)
+            if left != right:
+                if left is None or right is None:
+                    print("LOCAL_NATIVE_COLUMN_DIFF",key,"missing on source" if left is None else "missing on restore",flush=True)
+                else:
+                    fields = sorted(k for k in left if left[k] != right[k])
+                    print("LOCAL_NATIVE_COLUMN_DIFF",key,"fields",fields,"physical ordinals",left["column_number"],right["column_number"],flush=True)
+        assert source_logical == restored_logical, "Restored structural catalog mismatch: logical columns (not explained by dropped attributes)"
+        print("LOCAL_NATIVE_COLUMN_GAPS_PASS",len(source_gaps),len(restored_gaps),flush=True)
+    else:
+        assert source_catalog == restored_catalog, "Restored structural catalog mismatch: " + label
     print("LOCAL_NATIVE_STRUCTURE_PASS",label,len(source_catalog),flush=True)
 # pg_sequences.last_value is NULL for an unused sequence. Verify the exact
 # is_called flag as well, without advancing any source or restored sequence.
