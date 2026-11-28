@@ -75,3 +75,31 @@ describe("staged authoritative attendance tenant/session handshake", () => {
     await expect(readLiveAttendance("MTG-1","actor-1",scope.sessionId)).rejects.toThrow(/session or company changed/);
   });
 });
+
+
+describe("attendance snapshot participant consistency", () => {
+  it.each([{ "actor-1": "Left" }, {}, { "actor-1": "Temporarily Away" }])("rejects contradictory current-session map %j", async attendanceMap => {
+    vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async () => reply({...receipt, attendanceMap}));
+    await expect(readLiveAttendance("MTG-1", "actor-1", scope.sessionId)).rejects.toThrow(/status differs/);
+  });
+  it("accepts absent current attendance as Not Joined", async () => {
+    vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async () => reply(initial));
+    await expect(readLiveAttendance("MTG-1", "actor-1", scope.sessionId)).resolves.toEqual(initial);
+  });
+  it("does not commit after contradictory initial snapshot", async () => {
+    const spy = vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async () => reply({...initial, attendanceMap: {"actor-1":"Present"}}));
+    await expect(commitLiveAttendance("MTG-1","actor-1","Present","Online",()=>true,scope.sessionId)).rejects.toThrow(/status differs/);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+  it("rejects contradictory independent readback even when acknowledgement matches", async () => {
+    let calls=0, requestId="";
+    vi.spyOn(convayAuth, "authenticatedRequest").mockImplementation(async (_path,init)=>{
+      const body=JSON.parse(String(init?.body)); calls++;
+      if(calls===1)return reply(initial);
+      if(body.action==="commit")requestId=body.requestId;
+      return reply({...receipt,requestId,...(calls===3?{attendanceMap:{"actor-1":"Left"}}:{})});
+    });
+    await expect(commitLiveAttendance("MTG-1","actor-1","Present","Online",()=>true,scope.sessionId)).rejects.toThrow(/status differs/);
+    expect(calls).toBe(3);
+  });
+});

@@ -46,6 +46,13 @@ function validateReadback(value: unknown): LiveAttendanceSnapshot {
       || !Object.values(value.attendanceMap).every(isAttendanceStatus)) {
     throw new Error("The server did not return a complete attendance and quorum snapshot.");
   }
+  // SQL omits participants without a current-session attendance record. Any
+  // explicit own-row status must agree with the authoritative participant status.
+  const ownStatus = Object.prototype.hasOwnProperty.call(value.attendanceMap, value.participantId)
+    ? value.attendanceMap[value.participantId] : "Not Joined";
+  if (ownStatus !== value.status) {
+    throw new Error("Attendance participant status differs from the session snapshot.");
+  }
   return value as unknown as LiveAttendanceSnapshot;
 }
 async function gateway(body: Record<string, unknown>): Promise<unknown> {
