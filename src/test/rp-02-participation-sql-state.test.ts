@@ -24,7 +24,9 @@ describe("RP-02 participation analytics SQL read-state integrity", () => {
     for (const name of ["Total Meetings", "Total Participants", "Avg Per Meeting", "In-Person", "Virtual", "Participation Analytics"]) {
       expect(page).toContain(name);
     }
-    expect(page).toContain("filters:    BASE_FILTERS");
+    expect(page).toContain("filters:    buildMeetingRegisterFilters(rows)");
+    expect(page).toContain('m.meeting_date.slice(0, 4)');
+    expect(page).not.toContain("BASE_FILTERS");
     expect(page).toContain("drawerCols:  MEETING_DRAWER_COLS");
     expect(page).toContain("mobileCardMapping:");
   });

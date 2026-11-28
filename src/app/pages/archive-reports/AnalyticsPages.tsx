@@ -1,6 +1,7 @@
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
-import { fc, BADGE, BASE_FILTERS } from "../modulePageUtils";
+import { fc, BADGE } from "../modulePageUtils";
+import { buildMeetingRegisterFilters } from "../return-register/meetingRegisterReadiness";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
 import { buildGovernanceReportFilters } from "./governanceReportView";
@@ -35,6 +36,7 @@ export function MeetingPerformanceAnalyticsPage() {
     committee:        m.committee,
     meeting_type:     m.meeting_type,
     meeting_date:     m.meeting_date,
+    meeting_year:     /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(m.meeting_date) ? m.meeting_date.slice(0, 4) : "",
     chairperson:      m.chairperson,
     agenda_count:     m.agenda_count,
     participant_count: m.participant_count,
@@ -76,7 +78,7 @@ export function MeetingPerformanceAnalyticsPage() {
       status:     "approval_status",
       date:       "meeting_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildMeetingRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Meeting Details",
     drawerCols:  MEETING_DRAWER_COLS,
@@ -104,6 +106,7 @@ export function ParticipationAnalyticsPage() {
     committee:        m.committee,
     meeting_type:     m.meeting_type,
     meeting_date:     m.meeting_date,
+    meeting_year:     /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(m.meeting_date) ? m.meeting_date.slice(0, 4) : "",
     chairperson:      m.chairperson,
     secretary:        m.secretary,
     participant_count: m.participant_count,
@@ -144,7 +147,7 @@ export function ParticipationAnalyticsPage() {
       status:     "approval_status",
       date:       "meeting_date",
     },
-    filters:    BASE_FILTERS,
+    filters:    buildMeetingRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Meeting Details",
     drawerCols:  MEETING_DRAWER_COLS,
