@@ -4,6 +4,7 @@ using the new disposable Auth root. All other checked-in migrations run unchange
 This is a source replay, not a native backup of production data or a release.
 """
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import json
 import re
 import secrets
@@ -290,7 +291,8 @@ print("LOCAL_DOCUMENT_REST_STORAGE_PASS: real upload/readback, legitimate legacy
 sql((ROOT/"supabase/release-candidates/dc21_board_pack_link_integrity.sql").read_text())
 pack_registry="/rest/v1/convay_entity_records"
 pack_id="local-pack-"+rid(); version_id="local-version-"+rid(); link_id="local-link-"+rid()
-pack_payload={"id":pack_id,"pack_id":pack_id,"pack_title":"Local draft","approval_status":"Draft","version":"V1"}
+pack_ref="BPK-local-"+rid()
+pack_payload={"id":pack_id,"pack_id":pack_ref,"pack_title":"Local draft","approval_status":"Draft","version":"V1"}
 call(pack_registry,rt,{"entity_key":"bms.boardpacks","record_id":pack_id,"payload":pack_payload},method="POST")
 version_payload={"id":version_id,"version_id":version_id,"document_id":doc_id,"version_number":"1.0","approval_status":"Draft"}
 call(pack_registry,rt,{"entity_key":"bms.docversions","record_id":version_id,"payload":version_payload},method="POST")
@@ -305,6 +307,35 @@ for token in (at,bt,lt,anon):
     call(pack_registry,token,link_body,method="POST",expected=(401,403))
 call(pack_registry,rt,link_body,method="POST")
 assert call(link_path,rt)[0]["payload"]==link_payload
+# Both record and display aliases identify the same pack. A second current
+# link must fail even when its ID and board-pack reference differ.
+for alias in (pack_id,pack_ref):
+    duplicate_id="local-duplicate-"+rid()
+    duplicate={**link_payload,"id":duplicate_id,"link_id":duplicate_id,"board_pack_id":alias}
+    call(pack_registry,rt,{**link_body,"record_id":duplicate_id,"payload":duplicate},method="POST",expected=(400,409))
+    assert call(pack_registry+"?record_id=eq."+duplicate_id,rt)==[]
+# Remove/re-add is allowed, but reactivating the previous row would duplicate
+# the current membership. Keep the original fixture active for later tests.
+call(link_path,rt,{"payload":{**link_payload,"link_status":"removed"}},method="PATCH")
+replacement_id="local-replacement-"+rid()
+replacement={**link_payload,"id":replacement_id,"link_id":replacement_id,"board_pack_id":pack_ref}
+replacement_path=pack_registry+"?record_id=eq."+replacement_id
+call(pack_registry,rt,{**link_body,"record_id":replacement_id,"payload":replacement},method="POST")
+call(link_path,rt,{"payload":link_payload},method="PATCH",expected=(400,409))
+call(replacement_path,rt,method="DELETE")
+call(link_path,rt,{"payload":link_payload},method="PATCH")
+# Two authenticated requests race for the same new pack/document pair.
+# Only one current membership may commit, including mixed aliases.
+race_pack="local-race-pack-"+rid(); race_ref="BPK-race-"+rid()
+call(pack_registry,rt,{"entity_key":"bms.boardpacks","record_id":race_pack,"payload":{**pack_payload,"id":race_pack,"pack_id":race_ref}},method="POST")
+race_ids=["local-race-link-"+rid(),"local-race-link-"+rid()]
+def race_link(pair):
+    identity,alias=pair
+    return call(pack_registry,rt,{**link_body,"record_id":identity,"payload":{**link_payload,"id":identity,"link_id":identity,"board_pack_id":alias}},method="POST",expected=(201,400,409))
+with ThreadPoolExecutor(max_workers=2) as pool:
+    list(pool.map(race_link,zip(race_ids,(race_pack,race_ref))))
+assert sum(len(call(pack_registry+"?record_id=eq."+i,rt)) for i in race_ids)==1
+print("LOCAL_BOARD_PACK_MEMBERSHIP_UNIQUENESS_PASS: alias duplicate, removal/re-add, reactivation denial and concurrent insertion",flush=True)
 call(link_path,rt,{"payload":{**link_payload,"board_pack_id":"other-pack"}},method="PATCH",expected=(400,409))
 assert call(link_path,rt)[0]["payload"]==link_payload
 pack_path=pack_registry+"?entity_key=eq.bms.boardpacks&record_id=eq."+pack_id

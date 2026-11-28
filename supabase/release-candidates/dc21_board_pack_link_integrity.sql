@@ -9,6 +9,7 @@ declare
   t uuid;
   parent_count bigint;
   parent_record text;
+  parent_external text;
   parent_state text;
   document_count bigint;
   canonical_document text;
@@ -37,7 +38,8 @@ begin
     raise exception 'Board pack link requires exact identities' using errcode='23514';
   end if;
   -- Serialize against updates to the selected pack. Lock the actual visible row,
-  -- never a guessed ID; reject aliases matching multiple rows.
+  -- never a guessed ID; reject aliases matching multiple rows. An exclusive
+  -- row lock serializes competing membership inserts as well as publication.
   select count(*),min(record_id) into parent_count,parent_record
     from public.convay_entity_records
     where entity_key='bms.boardpacks' and tenant_id is not distinct from t
@@ -45,10 +47,10 @@ begin
   if parent_count<>1 then
     raise exception 'Board pack is unavailable or ambiguous' using errcode='42501';
   end if;
-  select payload->>'approval_status' into parent_state
+  select payload->>'approval_status',payload->>'pack_id' into parent_state,parent_external
     from public.convay_entity_records
     where entity_key='bms.boardpacks' and record_id=parent_record
-      and tenant_id is not distinct from t for share;
+      and tenant_id is not distinct from t for update;
   if parent_state is distinct from 'Draft' then
     raise exception 'Only draft board pack membership can change' using errcode='23514';
   end if;
@@ -68,15 +70,30 @@ begin
   end if;
   if jsonb_typeof(p->'linked_version_id') is distinct from 'string'
      or nullif(btrim(p->>'linked_version_id'),'') is null
+     or p->>'linked_version_id' is distinct from btrim(p->>'linked_version_id')
      or lower(p->>'linked_version_id') in ('latest','live') then
     raise exception 'Board pack requires an exact document version identity' using errcode='23514';
   end if;
   select count(*) into version_count from public.convay_entity_records
     where entity_key='bms.docversions' and tenant_id is not distinct from t
       and payload->>'document_id' in (canonical_document,external_document)
-      and payload->>'version_id'=p->>'linked_version_id';
+      and payload->>'version_id'=p->>'linked_version_id'
+      and payload->>'version_id' is distinct from payload->>'version_number';
   if version_count<>1 then
     raise exception 'Board pack requires one authorized exact document version' using errcode='23514';
+  end if;
+  -- The UI permits only one current membership per document and pack. Resolve
+  -- both canonical and legacy aliases under the same tenant and parent lock.
+  -- Removed history is retained; it does not prevent a fresh membership.
+  if p->>'link_status' <> 'removed' and exists (
+    select 1 from public.convay_entity_records l
+    where l.entity_key='bms.doc.pack_links' and l.tenant_id is not distinct from t
+      and l.record_id <> new.record_id
+      and l.payload->>'board_pack_id' in (parent_record,parent_external)
+      and l.payload->>'document_id' in (canonical_document,external_document)
+      and l.payload->>'link_status' is distinct from 'removed'
+  ) then
+    raise exception 'Document already belongs to this board pack' using errcode='23514';
   end if;
   return new;
 end;
