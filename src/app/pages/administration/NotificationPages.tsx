@@ -4,16 +4,23 @@
  *  - MessageTemplatesPage
  *  - DeliveryLogsPage
  */
+import { useRef } from "react";
 import {
-  MessageSquare, CheckCircle, Pencil, Pause, Copy, Archive, Download, RefreshCw,
+  Bell, MessageSquare, Mail, Smartphone, Monitor,
+  CheckCircle, XCircle, Pencil, Pause, Copy, Archive, Download,
+  AlertTriangle, RefreshCw,
 } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, TableRow, KpiDef, ColDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS, dg } from "../modulePageUtils";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
-import { toast } from "sonner";
-import { useNotificationRuleRegistry } from "../../data/boardMeetingData";
+import { useNotificationRuleRegistry, type NotificationRule } from "../../data/boardMeetingData";
 import { hasAccess, readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import type { FormField } from "../../components/forms/EntryForm";
+import { toast } from "sonner";
+
+// ─── Local sample data ────────────────────────────────────────────────────────
+
 
 /**
  * NI-03 — Delivery logs must come from server-authoritative, provider-backed
@@ -88,32 +95,92 @@ const DELIVERY_LOG_DRAWER_COLS: ColDef[] = [
 
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
+/**
+ * NI-01 registry integration. The existing bms.notifyrules generic registry has
+ * an admin_notifications SQL permission mapping; no new shared RLS/table is made
+ * by this page. Only Draft rules can be created until server-confirmed delivery
+ * activation and event dispatch are implemented. No fake delivery claims.
+ */
+const RULE_FORM_FIELDS: FormField[] = [
+  { key: "rule_name", label: "Rule Name", type: "text", required: true },
+  { key: "trigger_event", label: "Trigger Event", type: "text", required: true },
+  { key: "channels", label: "Channel", type: "text", required: true },
+  { key: "recipients", label: "Audience", type: "text", required: true },
+  { key: "timing", label: "Delay / Timing", type: "text", required: true },
+  { key: "template", label: "Template", type: "text", required: true },
+  { key: "entity_type", label: "Event Entity Type", type: "text", required: true },
+];
+
+const RULE_FIELDS = [
+  "rule_name", "trigger_event", "channels", "recipients", "timing", "template", "entity_type",
+] as const;
+type RuleValues = Pick<NotificationRule, (typeof RULE_FIELDS)[number]>;
+
+function validateRuleValues(input: Record<string, unknown>): RuleValues {
+  const result = {} as RuleValues;
+  for (const key of RULE_FIELDS) {
+    const value = input[key];
+    if (typeof value !== "string" || !value.trim() || value.trim().length > 180) {
+      throw new Error("Enter a valid " + key.replace(/_/g, " ") + " (maximum 180 characters).");
+    }
+    result[key] = value.trim();
+  }
+  return result;
+}
+
+async function confirmNotificationRule(
+  registry: ReturnType<typeof useNotificationRuleRegistry>,
+  id: string,
+  values: RuleValues,
+  expectedStatus: NotificationRule["status"],
+  expectedRuleId: string,
+  isCurrent: () => boolean,
+): Promise<boolean> {
+  // A transport ACK alone must not be presented as a verified saved rule.
+  if (!registry.refresh || !isCurrent()) return false;
+  await registry.refresh();
+  if (!isCurrent()) return false;
+  const authoritative = registry.getById(id);
+  return Boolean(
+    authoritative && authoritative.id === id &&
+    authoritative.status === expectedStatus &&
+    authoritative.rule_id === expectedRuleId &&
+    RULE_FIELDS.every(field => authoritative[field] === values[field]),
+  );
+}
+
 export function NotificationRulesPage() {
   const access = useAccessSnapshot();
   if (!access.loaded || !access.is_super_admin || !hasAccess("admin_notifications", access)) return null;
-  return <NotificationRulesReadOnly />;
+  return <NotificationRulesDraftPage />;
 }
 
-// NI-01: read real records only. Write controls remain gated until the
-// independently reviewed server lifecycle and authorization migration is live.
-function NotificationRulesReadOnly() {
+function NotificationRulesDraftPage() {
   const access = useAccessSnapshot();
   const registry = useNotificationRuleRegistry();
-  const readable = access.loaded && access.is_super_admin && hasAccess("admin_notifications", access) && !registry.loading && !registry.error;
-  const rows: TableRow[] = readable ? registry.items.map(rule => ({
-    ...rule, channel: rule.channels, audience: rule.recipients, delay_minutes: rule.timing,
-  })) : [];
-  const unavailable = "Notification rule changes require the verified server-side lifecycle and authorization policy.";
-  const kpis: KpiDef[] = readable ? [
-    { label: "Total Rules",  value: String(rows.length),                                              tone: "primary"  },
-    { label: "Active",       value: String(rows.filter(r => r.status === "Active").length),           tone: "success"  },
-    { label: "Draft",        value: String(rows.filter(r => r.status === "Draft").length),            tone: "neutral"  },
-    { label: "Inactive",     value: String(rows.filter(r => r.status === "Inactive").length),         tone: "warning"  },
+  const canManage = access.loaded && access.is_super_admin && hasAccess("admin_notifications", access);
+  // A stale or denied read cannot authorize changes from an already-open drawer.
+  const canEditDraft = canManage && !registry.loading && !registry.error;
+  const isCurrent = () => readAccessSnapshot() === access && canManage;
+  // Retain the original UUID after an ambiguous acknowledgement/readback.
+  // A retry must recover that exact row or submit the same identity, never fork it.
+  const pendingCreate = useRef<{ access: typeof access; record: NotificationRule } | null>(null);
+  const rows: TableRow[] = (canEditDraft ? registry.items : []).map(rule => ({
+    ...rule,
+    channel: rule.channels,
+    audience: rule.recipients,
+    delay_minutes: rule.timing,
+  }));
+  const kpis: KpiDef[] = canEditDraft ? [
+    { label: "Total Rules", value: String(rows.length), tone: "primary" },
+    { label: "Active", value: String(rows.filter(row => row.status === "Active").length), tone: "success" },
+    { label: "Draft", value: String(rows.filter(row => row.status === "Draft").length), tone: "neutral" },
+    { label: "Inactive", value: String(rows.filter(row => row.status === "Inactive").length), tone: "warning" },
   ] : [{ label: "Rule evidence", value: "Unverified", tone: "warning" }];
-
+  const unavailable = "Delivery activation needs a verified event transport, policy and provider acknowledgement.";
   const cfg: PageCfg = {
     title: "Notification Rules",
-    desc:  "Review server-backed notification rules. Rule creation, editing and activation require the verified server-side lifecycle; delivery remains unverified.",
+    desc: "Review server-backed notification rules. Draft rules are persisted in Convay; activation and actual message delivery remain unverified.",
     cols: [
       fc("rule_id",       "Rule ID"),
       fc("rule_name",     "Rule Name"),
@@ -124,36 +191,92 @@ function NotificationRulesReadOnly() {
       BADGE("status",     "Status"),
     ],
     mobileCardMapping: {
-      primary:    "rule_name",
+      primary: "rule_name",
       identifier: "rule_id",
-      meta:       ["trigger_event", "channel", "audience"],
-      status:     "status",
+      meta: ["trigger_event", "channel", "audience"],
+      status: "status",
     },
-    filters:      BASE_FILTERS,
-    actions:      ROW_VIEW,
-    drawerTitle:  "Notification Rule Details",
-    drawerCols:   NOTIF_RULE_DRAWER_COLS,
-    drawerActions: [
-      { id: "edit",       label: "Edit Rule",    icon: Pencil,      color: "#3b82f6", enabled: false, disabledReason: unavailable },
-      { id: "activate",   label: "Activate",     icon: CheckCircle, color: "#22c55e", enabled: false, disabledReason: unavailable },
-      { id: "deactivate", label: "Deactivate",   icon: Pause,       color: "#f59e0b", enabled: false, disabledReason: unavailable },
-      { id: "duplicate",  label: "Duplicate",    icon: Copy,        color: "#8b5cf6", enabled: false, disabledReason: unavailable },
-      { id: "archive",    label: "Archive",      icon: Archive,     color: "#ef4444", enabled: false, disabledReason: unavailable },
-    ],
+    filters: BASE_FILTERS,
+    actions: ROW_VIEW,
+    drawerTitle: "Notification Rule Details",
+    drawerCols: NOTIF_RULE_DRAWER_COLS,
+    drawerActionsResolver(row) {
+      const editAllowed = canEditDraft && (row.status === "Draft" || row.status === "Inactive");
+      return [
+        { id: "edit", label: "Edit Rule", icon: Pencil, color: "#3b82f6",
+          enabled: editAllowed, disabledReason: editAllowed ? undefined :
+            "You need admin_notifications permission, and active rules must first be safely deactivated." },
+        { id: "activate", label: "Activate", icon: CheckCircle, color: "#22c55e",
+          enabled: false, disabledReason: unavailable },
+        { id: "deactivate", label: "Deactivate", icon: Pause, color: "#f59e0b",
+          enabled: false, disabledReason: unavailable },
+        { id: "duplicate", label: "Duplicate", icon: Copy, color: "#8b5cf6",
+          enabled: canEditDraft, disabledReason: "A verified rule read and admin_notifications permission are required." },
+        { id: "archive", label: "Archive", icon: Archive, color: "#ef4444",
+          enabled: false, disabledReason: "Archiving requires approved server-side rule lifecycle and audit policy." },
+      ];
+    },
     rows,
     dataLoading: registry.loading,
     dataError: registry.error,
     dataErrorTitle: "Notification rules could not be loaded",
     onDataRetry: () => {
-      if (readAccessSnapshot() === access && access.is_super_admin) void registry.refresh?.().catch(() => undefined);
+      if (isCurrent()) void registry.refresh?.().catch(() => undefined);
     },
     kpis,
-    entryBtn:  "Create Notification Rule",
-    onEntryBtnClick: () => { toast.info(unavailable); },
+    entryBtn: canEditDraft ? "Create Notification Rule" : undefined,
+    formFields: RULE_FORM_FIELDS,
+    awaitCreateSave: true,
+    async onRowCreate(values) {
+      if (!canEditDraft || !isCurrent()) return false;
+      const normalized = validateRuleValues(values);
+      let pending = pendingCreate.current;
+      if (pending && pending.access !== access) {
+        throw new Error("Access changed during the previous save. Reopen Notification Rules and verify the saved record before creating another.");
+      }
+      if (pending && !RULE_FIELDS.every(field => pending!.record[field] === normalized[field])) {
+        throw new Error("A previous draft save is unconfirmed. Retry the original values or reopen the saved rule before starting another.");
+      }
+      if (!pending) {
+        const id = crypto.randomUUID();
+        pending = { access, record: {
+          id, rule_id: "NR-" + id.slice(0, 8).toUpperCase(),
+          ...normalized, status: "Draft", created_at: "",
+        } };
+        pendingCreate.current = pending;
+      } else {
+        if (!registry.refresh) return false;
+        await registry.refresh();
+        if (!isCurrent()) return false;
+        const existing = registry.getById(pending.record.id);
+        if (existing) {
+          if (existing.status !== "Draft" || existing.rule_id !== pending.record.rule_id ||
+              !RULE_FIELDS.every(field => existing[field] === normalized[field])) {
+            throw new Error("The saved draft differs from the requested values. Reopen the authoritative record before editing.");
+          }
+          pendingCreate.current = null;
+          return true;
+        }
+      }
+      if (!isCurrent()) return false;
+      const created = pending.record;
+      const saved = await registry.add(created);
+      if (!saved || !isCurrent()) return false;
+      const confirmed = await confirmNotificationRule(registry, created.id, normalized, "Draft", created.rule_id, isCurrent);
+      if (confirmed) pendingCreate.current = null;
+      return confirmed;
+    },
+    async onRowUpdate(id, values) {
+      if (!canEditDraft || !isCurrent()) return false;
+      const current = registry.getById(id);
+      if (!current || (current.status !== "Draft" && current.status !== "Inactive")) return false;
+      const normalized = validateRuleValues(values);
+      const saved = await registry.update(id, normalized);
+      return saved && isCurrent() && await confirmNotificationRule(registry, id, normalized, current.status, current.rule_id, isCurrent);
+    },
     searchPlaceholder: "Search notification rules",
   };
-
-  return <GenPage key={readable ? "verified-rules" : "unverified-rules"} cfg={cfg} />;
+  return <GenPage key={canEditDraft ? "verified-rules" : "unverified-rules"} cfg={cfg} />;
 }
 
 /**
