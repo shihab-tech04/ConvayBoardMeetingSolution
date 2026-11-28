@@ -1,0 +1,49 @@
+name: Convay LM — real isolated LiveKit browser media
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/app/pages/meetings/**'
+      - 'supabase/functions/convay-livekit/**'
+      - 'supabase/tests/livekit_browser/**'
+      - '.github/workflows/convay-livekit-browser-rehearsal.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-provider-media:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install isolated pinned media tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/convay-media-tools" --no-audit --no-fund playwright@1.56.1 livekit-client@2.23.0 livekit-server-sdk@2.19.2
+          "$RUNNER_TEMP/convay-media-tools/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Start real loopback LiveKit and actual component fixture
+        run: |
+          set -euo pipefail
+          docker run -d --name convay-local-livekit --network host livekit/livekit-server:v1.9.11 --dev --bind 127.0.0.1
+          pnpm exec vite --config supabase/tests/livekit_browser/vite.config.mjs > "$RUNNER_TEMP/convay-media-vite.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:7880/ >/dev/null && curl -fsS http://127.0.0.1:5173/supabase/tests/livekit_browser/fixture.html >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Exercise two actual browser media peers and provider lifecycle
+        env:
+          MEDIA_TOOLS_DIR: ${{ runner.temp }}/convay-media-tools
+        run: xvfb-run -a node supabase/tests/livekit_browser/rehearse.cjs
+      - name: Clean up disposable provider
+        if: always()
+        run: docker rm -f convay-local-livekit || true

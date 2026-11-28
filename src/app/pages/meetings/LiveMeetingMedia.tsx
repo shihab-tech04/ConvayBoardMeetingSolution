@@ -52,7 +52,7 @@ function savedMeetingAdmission(meetingId: string, expectedSessionId?: string) {
 function MemberTile({ member, local, refresh, compact = false }: { member: any; local: boolean; refresh: number; compact?: boolean }) {
   const video = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const attached: Array<{ publication: any; element: HTMLMediaElement }> = [];
+    const attached: Array<{ track: any; element: HTMLMediaElement }> = [];
     const attach = (publication: any, target: HTMLDivElement | null) => {
       if (!publication?.track || !target) return;
       const element = publication.track.attach() as HTMLMediaElement;
@@ -65,15 +65,15 @@ function MemberTile({ member, local, refresh, compact = false }: { member: any; 
         element.style.objectFit = "contain";
       }
       target.appendChild(element);
-      attached.push({ publication, element });
+      attached.push({ track: publication.track, element });
       void element.play().catch(() => {});
     };
     const videoPubs = [...member.videoTrackPublications.values()] as any[];
     attach(videoPubs.find(p => p.source === "screen_share" && p.track) ??
       videoPubs.find(p => p.source === "camera" && p.track), video.current);
     return () => {
-      for (const { publication, element } of attached) {
-        publication.track?.detach(element);
+      for (const { track, element } of attached) {
+        track.detach(element);
         element.remove();
       }
     };
@@ -94,25 +94,35 @@ function MemberTile({ member, local, refresh, compact = false }: { member: any; 
  * Never create a second audio element for a focused/thumbnail duplicate. */
 function RemoteAudioTracks({ member, refresh }: { member: any; refresh: number }) {
   const target = useRef<HTMLDivElement>(null);
+  const attached = useRef(new Map<any, HTMLMediaElement>());
+  // Keep unchanged subscriptions playing when unrelated camera, speaker or
+  // participant events cause a render. Detach the exact original track.
   useEffect(() => {
-    const attached: Array<{ track: any; element: HTMLMediaElement }> = [];
+    const elements = attached.current;
+    return () => {
+      for (const [track, element] of elements) { track.detach(element); element.remove(); }
+      elements.clear();
+    };
+  }, [member]);
+  useEffect(() => {
+    const next = new Set<any>();
     for (const publication of member.audioTrackPublications.values() as Iterable<any>) {
-      if (!publication?.track || !target.current) continue;
-      const track = publication.track;
+      if (publication?.track) next.add(publication.track);
+    }
+    for (const [track, element] of attached.current) {
+      if (!next.has(track)) { track.detach(element); element.remove(); attached.current.delete(track); }
+    }
+    if (!target.current) return;
+    for (const track of next) {
+      if (attached.current.has(track)) continue;
       const element = track.attach() as HTMLMediaElement;
       element.autoplay = true;
       target.current.appendChild(element);
-      attached.push({ track, element });
+      attached.current.set(track, element);
       void element.play().catch(() => {
         // LiveKit emits AudioPlaybackStatusChanged; the user can unlock it.
       });
     }
-    return () => {
-      for (const { track, element } of attached) {
-        track.detach(element);
-        element.remove();
-      }
-    };
   }, [member, refresh]);
   return <div aria-hidden="true" ref={target} style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }} />;
 }
