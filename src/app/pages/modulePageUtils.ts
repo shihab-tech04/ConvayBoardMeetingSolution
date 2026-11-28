@@ -58,6 +58,8 @@ export interface PageCfg {
   kpis?: KpiDef[];
   /** Opt-in report summary over all filtered rows, before pagination. */
   filteredKpis?: (rows: TableRow[]) => KpiDef[];
+  /** Explicit date dimension for strict report date filtering. */
+  reportDateField?: string;
   entryBtn?: string;
   extraBtns?: {
     id: string; label: string; icon: IconComponent; color?: string;

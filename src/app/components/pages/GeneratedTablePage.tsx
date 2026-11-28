@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { Plus, ChevronUp, ChevronDown, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { handleExportDisabled } from "../../utils/exportDisabled";
+import { isValidReportDateRange, reportDateMatchesRange } from "./reportDateRange";
 import { CollapsibleKpiSection } from "../cards/CollapsibleKpiSection";
 import { DynamicDetailsDrawer } from "../drawers/DynamicDetailsDrawer";
 import { AppModal } from "../modals/AppModal";
@@ -427,7 +428,9 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
   const searchFiltered = useMemo(() =>
     rows.filter(r => {
       if (q && !Object.values(r).some(v => String(v).toLowerCase().includes(q.toLowerCase()))) return false;
+      if (cfg.reportDateField && !reportDateMatchesRange(r[cfg.reportDateField], applied.from, applied.to)) return false;
       for (const [key, val] of Object.entries(applied)) {
+        if (cfg.reportDateField && (key === "from" || key === "to")) continue;
         if (!val || val === "All") continue;
         if (key === "from") {
           const dateVal = String(r.meeting_date ?? r.submission_date ?? r.due_date ?? r.date ?? r.effective_date ?? r.publication_date ?? r.created_at ?? "").slice(0, 10);
@@ -441,7 +444,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
       }
       return true;
     }),
-    [rows, q, applied]
+    [rows, q, applied, cfg.reportDateField]
   );
 
   // Step 4: Tab counts derived from the search+filter result (live, not static config rows).
@@ -500,7 +503,13 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
 
   const handleSearchChange = useCallback((value: string) => { setQ(value); setPage(1); }, []);
   const handleFilterChange = useCallback((k: string, v: string) => setFVals(p => ({ ...p, [k]: v })), []);
-  const handleFilterApply  = useCallback(() => { setApplied(fVals); setPage(1); }, [fVals]);
+  const handleFilterApply = useCallback(() => {
+    if (cfg.reportDateField && !isValidReportDateRange(fVals.from, fVals.to)) {
+      toast.error("Enter valid dates and ensure From Date is not after To Date.");
+      return;
+    }
+    setApplied(fVals); setPage(1);
+  }, [fVals, cfg.reportDateField]);
   const handleFilterReset  = useCallback(() => { setFVals({}); setApplied({}); }, []);
   const handleRowClick     = useCallback((row: TableRow) => { cancelDraftResume(); setDrawer(row); }, [cancelDraftResume]);
   const handleDrawerClose  = useCallback(() => { cancelDraftResume(); setDrawer(null); }, [cancelDraftResume]);
