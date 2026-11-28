@@ -19,9 +19,11 @@ describe("AR-08/10/11 and MN-05/10 — source read state and minutes field integ
     expect(guarded).toContain(`) : ${rows}.length === 0 ? (`);
   });
   it("does not copy quorum text into the discussion field or hide its separate provenance", () => {
-    expect(page).toContain('defaultValue={m.discussion_summary ?? ""}');
+    expect(page).toContain('defaultValue={editSelection.discussion_summary ?? ""}');
     expect(page).not.toContain('defaultValue={m.discussion_summary ?? m.quorum_statement');
     expect(page).toContain('<KV label="Quorum Statement" value={m.quorum_statement} />');
-    expect(page).toContain('minutesReg.update(m.id, { discussion_summary: el.value })');
+    expect(page).toContain('discussion_summary: discussion');
+    expect(page).toContain('persistMinutesReviewTransition<Minutes>(selection');
+    expect(page).not.toContain('minutesReg.update(m.id, { discussion_summary: el.value })');
   });
 });

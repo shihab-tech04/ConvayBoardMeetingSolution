@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { recordListCountLabel, recordListState } from "./recordListState";
 import { legacyNamedArchiveVotes, recordedVoteCount } from "./legacyArchiveVoteView";
+import { persistMinutesReviewTransition } from "./minutesReviewPersistence";
+import type { Minutes } from "../../data/boardMeetingData";
 import { normalizeRecordedQuorum } from "./recordedQuorumStatus";
 import {
   buildMinutesRevisionRequest, canArchiveMinutes, canEditMinutesContent,
@@ -9,7 +11,7 @@ import {
 import { useParams, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { convayAuth } from "../../services/supabase/convayAuth";
-import { useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import {
   ArrowLeft, Users, Calendar, FileText, Mic, Video,
   MessageSquare, Vote, CheckSquare, BookOpen, Clock,
@@ -146,6 +148,15 @@ export function MeetingRecordPage() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [editMinutesId, setEditMinutesId] = useState<string | null>(null);
+  const [editSelection, setEditSelection] = useState<(Minutes & { source_revision: number; accessSnapshot: ReturnType<typeof readAccessSnapshot> }) | null>(null);
+  const editEpoch = useRef(0);
+  const editInFlight = useRef(false);
+  useEffect(() => {
+    const invalidate = () => { editEpoch.current += 1; setEditMinutesId(null); setEditSelection(null); };
+    invalidate();
+    window.addEventListener("convay:entity-cache-cleared", invalidate);
+    return () => { editEpoch.current += 1; window.removeEventListener("convay:entity-cache-cleared", invalidate); };
+  }, [meetingId]);
   const [busyMinutesId, setBusyMinutesId] = useState<string | null>(null);
   const [revisionMinutesId, setRevisionMinutesId] = useState<string | null>(null);
   const [revisionInstructions, setRevisionInstructions] = useState("");
@@ -818,10 +829,10 @@ export function MeetingRecordPage() {
               </div>
             </div>
           )}
-          {editMinutesId === m.id && canEditMinutesContent(m.approval_status, canEditMinutes) ? (
+          {editMinutesId === m.id && editSelection?.id === m.id && canEditMinutesContent(m.approval_status, canEditMinutes) ? (
             <div>
               <textarea
-                defaultValue={m.discussion_summary ?? ""}
+                defaultValue={editSelection.discussion_summary ?? ""}
                 id={`min-edit-${m.id}`}
                 rows={12}
                 style={{ width: "100%", fontFamily: "monospace", fontSize: "0.78rem", borderRadius: 6, padding: "0.5rem", background: "var(--color-muted)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", resize: "vertical", boxSizing: "border-box" }}
@@ -830,32 +841,49 @@ export function MeetingRecordPage() {
                 <button
                   onClick={async () => {
                     const el = document.getElementById(`min-edit-${m.id}`) as HTMLTextAreaElement | null;
-                    if (!el || busyMinutesId !== null) return;
+                    if (!el || busyMinutesId !== null || editInFlight.current || !editSelection || editSelection.id !== m.id) return;
                     const latest = minutesReg.items.find(item => item.id === m.id);
                     if (!canEditMinutesContent(latest?.approval_status, canEditMinutes)) {
                       toast.error("Only draft or returned minutes can be edited by an authorized author.");
                       return;
                     }
+                    const selection = editSelection;
+                    const epoch = editEpoch.current;
+                    const discussion = el.value;
+                    const assertCurrent = () => {
+                      const currentAccess = readAccessSnapshot();
+                      if (editEpoch.current !== epoch || currentAccess !== selection.accessSnapshot || !currentAccess.loaded || currentAccess.error ||
+                          !(currentAccess.is_super_admin || currentAccess.effective_permissions.includes("min_create"))) {
+                        throw new Error("Minutes authority changed. Reopen the editor before saving.");
+                      }
+                    };
+                    editInFlight.current = true;
                     setBusyMinutesId(m.id);
                     try {
-                      const saved = await minutesReg.update(m.id, { discussion_summary: el.value });
-                      if (saved === false) return; // Registry already reports failed server writes.
+                      await persistMinutesReviewTransition<Minutes>(selection, current => {
+                        if (!canEditMinutesContent(current.approval_status, true)) throw new Error("Minutes are no longer editable.");
+                        return { approval_status: current.approval_status, discussion_summary: discussion };
+                      }, {
+                        assertCurrent,
+                        list: async () => (await convayAuth.registry<Minutes>("bms.minutes", "list")).records,
+                        update: async (record, revision) => (await convayAuth.registry<Minutes>("bms.minutes", "update", record, revision)).revision,
+                      });
+                      assertCurrent();
                       setEditMinutesId(null);
-                      try {
-                        await minutesReg.refresh?.();
-                        toast.success("Minutes content updated.");
-                      } catch {
-                        toast.info("Minutes saved; refresh to confirm the updated content.");
-                      }
+                      setEditSelection(null);
+                      try { await minutesReg.refresh?.(); }
+                      catch { toast.info("Minutes saved; refresh to load the latest content."); }
+                      assertCurrent();
+                      toast.success("Minutes content updated and verified.");
                     } catch (error) {
                       toast.error(error instanceof Error ? error.message : "Could not update minutes.");
-                    } finally { setBusyMinutesId(null); }
+                    } finally { editInFlight.current = false; setBusyMinutesId(null); }
                   }}
                   style={{ padding: "4px 14px", borderRadius: 6, fontSize: "0.8rem", background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}
                 >
                   Save
                 </button>
-                <button onClick={() => setEditMinutesId(null)} style={{ padding: "4px 14px", borderRadius: 6, fontSize: "0.8rem", background: "var(--color-muted)", color: "var(--color-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}>
+                <button onClick={() => { setEditMinutesId(null); setEditSelection(null); }} style={{ padding: "4px 14px", borderRadius: 6, fontSize: "0.8rem", background: "var(--color-muted)", color: "var(--color-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}>
                   Cancel
                 </button>
               </div>
@@ -870,7 +898,17 @@ export function MeetingRecordPage() {
                 <button
                   type="button"
                   disabled={busyMinutesId !== null}
-                  onClick={() => setEditMinutesId(m.id)}
+                  onClick={() => {
+                    const revision = minutesReg.getRevision?.(m.id);
+                    const authorization = readAccessSnapshot();
+                    if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 || !authorization.loaded || authorization.error ||
+                        !(authorization.is_super_admin || authorization.effective_permissions.includes("min_create"))) {
+                      toast.error("The minutes revision or author access is unavailable. Refresh and retry.");
+                      return;
+                    }
+                    setEditSelection({ ...m, source_revision: revision, accessSnapshot: authorization });
+                    setEditMinutesId(m.id);
+                  }}
                   style={{ marginTop: "0.5rem", padding: "4px 10px", borderRadius: 6, fontSize: "0.75rem", background: "var(--color-muted)", color: "var(--color-muted-foreground)", border: "1px solid var(--color-border)", cursor: "pointer" }}
                 >
                   Edit Minutes

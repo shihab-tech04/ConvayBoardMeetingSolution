@@ -1,7 +1,7 @@
 /** MN-11/12/15: bind a confirmed workflow intent to one authorized SQL revision. */
-type ReviewIdentity = { id: string; minutes_id: string; meeting_id: string; version: string; approval_status: string };
+type ReviewIdentity = { id: string; minutes_id: string; meeting_id: string; version: string; approval_status: string; discussion_summary?: string };
 type Selection = Partial<Record<keyof ReviewIdentity | "source_revision", unknown>>;
-type WorkflowPatch = { approval_status: string; version?: string };
+type WorkflowPatch = { approval_status: string; version?: string; discussion_summary?: string };
 const IDENTITY_KEYS = ["id", "minutes_id", "meeting_id"] as const;
 
 export async function persistMinutesReviewTransition<T extends ReviewIdentity>(
@@ -45,6 +45,7 @@ export async function persistMinutesReviewTransition<T extends ReviewIdentity>(
   const after = await read();
   if (after.revision === revision + 1 && after.payload.version === intended.version &&
       after.payload.approval_status === intended.approval_status &&
+      (patch.discussion_summary === undefined || after.payload.discussion_summary === patch.discussion_summary) &&
       failure === undefined && acknowledged === revision + 1) return after.payload;
   if (failure !== undefined) throw failure;
   throw new Error("Minutes transition could not be verified. Reopen before retrying.");
