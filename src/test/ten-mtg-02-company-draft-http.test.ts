@@ -119,3 +119,15 @@ describe("MT-11/12 staged draft directory integrity",()=>{
    expect(onSupport).toHaveBeenCalledWith(true);
  });
 });
+
+describe("MT-12/14 immutable draft identity receipt types",()=>{
+ it("rejects a non-string template identity even when array coercion matches the UUID",async()=>{
+   req.mockResolvedValueOnce(read({...draft,template_id:[id]}));
+   await expect(readStagedCompanyDraft(tenant,draftId)).rejects.toThrow("readback invalid");
+ });
+ it("rejects a non-string creation receipt identity before attempting readback",async()=>{
+   req.mockResolvedValueOnce(reply({...receipt,draft_id:[draftId]}));
+   await expect(create()).rejects.toThrow("creation SQL receipt invalid");
+   expect(req).toHaveBeenCalledTimes(1);
+ });
+});

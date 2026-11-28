@@ -127,7 +127,7 @@ export async function readStagedCompanyDraft(tenantId:string,draftId:string):Pro
   const draft=data.draft;
   if (!object(draft)||draft.draft_id!==draftId
     || draft.status!=="Staged Draft"
-    || !UUID.test(String(draft.template_id))
+    || typeof draft.template_id!=="string" || !UUID.test(draft.template_id)
     || !Number.isSafeInteger(draft.template_revision)||Number(draft.template_revision)<1
     || typeof draft.title!=="string" || typeof draft.created_at!=="string"
     || !object(draft.definition)||!Array.isArray(draft.definition.steps)
@@ -160,14 +160,14 @@ export async function saveStagedCompanyDraft(
     request_id:requestId,template_id:template.id,
     template_revision:template.revision,meeting_title:title.trim(),values,...step,
   });
-  if (!/^DRAFT-[A-F0-9]{20}$/.test(String(response.draft_id))
+  if (typeof response.draft_id!=="string" || !/^DRAFT-[A-F0-9]{20}$/.test(response.draft_id)
     || response.template_id!==template.id
     || response.template_revision!==template.revision
     || response.request_id!==requestId||response.status!=="Staged Draft"
     || (progress!==undefined && response.wizard_step_id!==progress.stepId)) {
     throw new Error("Company draft creation SQL receipt invalid");
   }
-  const draft=await readStagedCompanyDraft(tenantId,String(response.draft_id));
+  const draft=await readStagedCompanyDraft(tenantId,response.draft_id);
   if (draft.template_id!==template.id||draft.template_revision!==template.revision
     || draft.title!==title.trim()
     || canon(draft.definition)!==canon(template.definition)
