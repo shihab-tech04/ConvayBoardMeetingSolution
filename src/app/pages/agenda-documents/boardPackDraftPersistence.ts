@@ -165,3 +165,44 @@ export async function persistBoardPackDraft(
     ? "Board-pack SQL readback was not confirmed. Retry the original draft."
     : "Board-pack draft was not confirmed by SQL. Retry the original draft.");
 }
+
+export interface BoardPackUpdateGateway {
+  list(): Promise<readonly BoardPack[]>;
+  update(): Promise<boolean>;
+  assertCurrent(): void;
+}
+
+/** Verify persisted edit; not a transactional compare-and-swap. */
+export async function persistBoardPackDraftUpdate(
+  previous: BoardPack, patch: Partial<BoardPack>, gateway: BoardPackUpdateGateway,
+): Promise<BoardPack> {
+  if (previous.approval_status !== "Draft") throw new Error("Only draft board packs can be edited.");
+  const read = async (): Promise<BoardPack> => {
+    gateway.assertCurrent();
+    const rows = await gateway.list();
+    gateway.assertCurrent();
+    const matches = rows.filter(row => row.id === previous.id);
+    if (matches.length !== 1 || matches[0].pack_id !== previous.pack_id ||
+        rows.some(row => row.id !== previous.id && row.pack_id === previous.pack_id)) {
+      throw new Error("Board-pack identity is missing or ambiguous. Refresh and retry.");
+    }
+    if (matches[0].approval_status !== "Draft" || matches[0].version !== previous.version) {
+      throw new Error("Board-pack state or version changed. Reopen before editing.");
+    }
+    return matches[0];
+  };
+  const keys = Object.keys(patch) as (keyof BoardPack)[];
+  const matchesPatch = (row: BoardPack) => keys.every(key => Object.is(row[key], patch[key]));
+  const before = await read();
+  if (matchesPatch(before)) return before;
+  if (!keys.every(key => Object.is(before[key], previous[key]))) {
+    throw new Error("Board-pack fields changed. Refresh and reopen before editing.");
+  }
+  gateway.assertCurrent();
+  let failure: unknown;
+  try { await gateway.update(); } catch (error) { failure = error; }
+  const after = await read();
+  if (matchesPatch(after)) return after;
+  if (failure) throw failure;
+  throw new Error("Board-pack edit was not confirmed by SQL readback. Refresh before retrying.");
+}

@@ -8,7 +8,7 @@ import { useBoardPackRegistry, useMeetingRegistry, type BoardPack } from "../../
 import { BOARD_PACK_FORM_FIELDS } from "../boardMeetingFormFields";
 import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { convayAuth } from "../../services/supabase/convayAuth";
-import { assembleBoardPackDraft, assembleBoardPackDraftUpdate, assertSameBoardPackDraftIntent, persistBoardPackDraft } from "./boardPackDraftPersistence";
+import { assembleBoardPackDraft, assembleBoardPackDraftUpdate, assertSameBoardPackDraftIntent, persistBoardPackDraft, persistBoardPackDraftUpdate } from "./boardPackDraftPersistence";
 import { useBoardPackDocumentLinkRegistry } from "../../data/documentWorkspaceData";
 import { activeBoardPackDocumentCount } from "./boardPackActiveDocumentCount";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
@@ -107,11 +107,35 @@ export function BoardPacksPage() {
 
   const updateDraft = async (id: string, values: Record<string, unknown>): Promise<boolean> => {
     if (!canCreate) throw new Error("Board-pack editing permission could not be verified.");
+    if (meetings.loading || meetings.error || reg.loading || reg.error) {
+      throw new Error("Board-pack and meeting records must load successfully before editing.");
+    }
+    const epoch = scopeEpoch.current;
+    const assertCurrent = () => {
+      const current = readAccessSnapshot();
+      if (scopeEpoch.current !== epoch || !current.loaded || current.error ||
+          !(current.is_super_admin || current.effective_permissions.includes("pack_create"))) {
+        throw new Error("Board-pack authority changed. Reopen the page before editing.");
+      }
+    };
+    assertCurrent();
+    const actor = await convayAuth.restore();
+    assertCurrent();
+    if (!actor) throw new Error("Session expired. Sign in again.");
     const existing = reg.getById(id);
-    if (!existing) throw new Error("Board pack was not found. Refresh and retry.");
+    if (!existing || existing.id !== id) throw new Error("Board pack was not found. Refresh and retry.");
     const patch = assembleBoardPackDraftUpdate(values, existing, meetings.items);
-    const ack = await reg.update(id, patch);
-    if (ack !== true) throw new Error("Board-pack changes were not confirmed by SQL.");
+    await persistBoardPackDraftUpdate(existing, patch, {
+      assertCurrent,
+      list: async () => {
+        const result = await convayAuth.registry<BoardPack>("bms.boardpacks", "list");
+        return result.records.map(row => row.payload);
+      },
+      update: async () => (await reg.update(id, patch)) === true,
+    });
+    try { await reg.refresh?.(); }
+    catch { toast.warning("Board-pack draft saved. Refresh the list to see the latest records."); }
+    assertCurrent();
     return true;
   };
   const rows = useMemo(() => reg.items.map(pack => ({

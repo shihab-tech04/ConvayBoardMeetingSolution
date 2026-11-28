@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assembleBoardPackDraft, assertSameBoardPackDraftIntent, persistBoardPackDraft } from "../app/pages/agenda-documents/boardPackDraftPersistence";
+import { assembleBoardPackDraft, assertSameBoardPackDraftIntent, persistBoardPackDraft, persistBoardPackDraftUpdate } from "../app/pages/agenda-documents/boardPackDraftPersistence";
 import type { BoardPack } from "../app/data/boardMeetingData";
 
 const meeting = { meeting_id: "M-1", meeting_title: "Board", committee: "Board", meeting_date: "2026-11-26" };
@@ -76,4 +76,46 @@ describe("DC-21 board-pack create: exact interrupted-intent recovery", () => {
     expect(() => assertSameBoardPackDraftIntent({ ...values, include_notice: false }, draft, [meeting])).toThrow(/unresolved/);
     expect(() => assembleBoardPackDraft(values, [meeting, meeting], [], "id", "Actor", new Date())).toThrow(/existing meeting/);
   });
+});
+
+describe("DC-22 board-pack draft update authoritative readback",()=>{
+ const patch = {pack_title:"Updated"};
+ const saved = {...draft,...patch};
+ function editFixture(rows: BoardPack[], result: BoardPack[], ack=true) {
+   let current=rows, writes=0, authorized=true;
+   const gateway={
+     list: async()=>current,
+     assertCurrent:()=>{if(!authorized)throw new Error("scope changed");},
+     update:async()=>{writes++;current=result;return ack;},
+   };
+   return {gateway,get writes(){return writes;},invalidate:()=>{authorized=false;}};
+ }
+ it("confirms saved changes and recovers a lost ACK by exact readback",async()=>{
+   for(const ack of [true,false]){
+     const f=editFixture([draft],[saved],ack);
+     expect(await persistBoardPackDraftUpdate(draft,patch,f.gateway)).toEqual(saved);
+     expect(f.writes).toBe(1);
+   }
+ });
+ it("rejects success ACK without matching persisted fields",async()=>{
+   const f=editFixture([draft],[draft]);
+   await expect(persistBoardPackDraftUpdate(draft,patch,f.gateway)).rejects.toThrow(/readback/);
+ });
+ it("does not mutate a stale, duplicate, missing, or published pack",async()=>{
+   for(const rows of [[{...draft,pack_title:"Other edit"}],[draft,draft],[],[{...draft,approval_status:"Published"} as BoardPack]]){
+     const f=editFixture(rows,[saved]);
+     await expect(persistBoardPackDraftUpdate(draft,patch,f.gateway)).rejects.toThrow();
+     expect(f.writes).toBe(0);
+   }
+ });
+ it("returns an already persisted matching edit without a duplicate mutation",async()=>{
+   const f=editFixture([saved],[saved]);
+   expect(await persistBoardPackDraftUpdate(draft,patch,f.gateway)).toEqual(saved);
+   expect(f.writes).toBe(0);
+ });
+ it("rejects a scope change after the write",async()=>{
+   const f=editFixture([draft],[saved]);const original=f.gateway.update;
+   f.gateway.update=async()=>{const ack=await original();f.invalidate();return ack;};
+   await expect(persistBoardPackDraftUpdate(draft,patch,f.gateway)).rejects.toThrow(/scope changed/);
+ });
 });
