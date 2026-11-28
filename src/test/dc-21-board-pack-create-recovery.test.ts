@@ -82,11 +82,16 @@ describe("DC-22 board-pack draft update authoritative readback",()=>{
  const patch = {pack_title:"Updated"};
  const saved = {...draft,...patch};
  function editFixture(rows: BoardPack[], result: BoardPack[], ack=true) {
-   let current=rows, writes=0, authorized=true;
+   let current=rows, writes=0, authorized=true, revision=7;
    const gateway={
-     list: async()=>current,
+     list: async()=>current.map(payload=>({payload,revision})),
      assertCurrent:()=>{if(!authorized)throw new Error("scope changed");},
-     update:async()=>{writes++;current=result;return ack;},
+     update:async(record:BoardPack, expectedRevision:number)=>{
+       expect(expectedRevision).toBe(7);
+       expect(record.pack_title).toBe("Updated");
+       expect(record.access_policy).toBe(current[0].access_policy);
+       writes++;current=result;revision++;return ack;
+     },
    };
    return {gateway,get writes(){return writes;},invalidate:()=>{authorized=false;}};
  }
@@ -115,7 +120,39 @@ describe("DC-22 board-pack draft update authoritative readback",()=>{
  });
  it("rejects a scope change after the write",async()=>{
    const f=editFixture([draft],[saved]);const original=f.gateway.update;
-   f.gateway.update=async()=>{const ack=await original();f.invalidate();return ack;};
+   f.gateway.update=async(record,revision)=>{const ack=await original(record,revision);f.invalidate();return ack;};
    await expect(persistBoardPackDraftUpdate(draft,patch,f.gateway)).rejects.toThrow(/scope changed/);
+ });
+});
+
+describe("DC-22 exact SQL revision protection",()=>{
+ it("uses fresh row revision and preserves non-editable server metadata",async()=>{
+   const authoritative={...draft,access_policy:"Server restricted"};
+   let row={payload:authoritative,revision:42};
+   const gateway={
+     list:async()=>[row],assertCurrent:()=>{},
+     update:async(record:BoardPack,revision:number)=>{
+       expect(revision).toBe(42);
+       expect(record.access_policy).toBe("Server restricted");
+       row={payload:record,revision:43};return true;
+     },
+   };
+   expect(await persistBoardPackDraftUpdate(draft,{pack_title:"Changed"},gateway))
+     .toMatchObject({pack_title:"Changed",access_policy:"Server restricted"});
+ });
+ it("rejects invalid row revisions before dispatch",async()=>{
+   let writes=0;
+   await expect(persistBoardPackDraftUpdate(draft,{pack_title:"Changed"},{
+     list:async()=>[{payload:draft,revision:0}],assertCurrent:()=>{},
+     update:async()=>{writes++;return true;},
+   })).rejects.toThrow(/revision/);
+   expect(writes).toBe(0);
+ });
+ it("rejects a concurrent revision jump even if intended fields match",async()=>{
+   let row={payload:draft,revision:9};
+   await expect(persistBoardPackDraftUpdate(draft,{pack_title:"Changed"},{
+     list:async()=>[row],assertCurrent:()=>{},
+     update:async(record)=>{row={payload:record,revision:11};return true;},
+   })).rejects.toThrow(/readback/);
  });
 });

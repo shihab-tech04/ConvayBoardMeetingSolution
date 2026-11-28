@@ -129,9 +129,12 @@ export function BoardPacksPage() {
       assertCurrent,
       list: async () => {
         const result = await convayAuth.registry<BoardPack>("bms.boardpacks", "list");
-        return result.records.map(row => row.payload);
+        return result.records;
       },
-      update: async () => (await reg.update(id, patch)) === true,
+      update: async (record, revision) => {
+        const result = await convayAuth.registry<BoardPack>("bms.boardpacks", "update", record, revision);
+        return result.revision === revision + 1;
+      },
     });
     try { await reg.refresh?.(); }
     catch { toast.warning("Board-pack draft saved. Refresh the list to see the latest records."); }
