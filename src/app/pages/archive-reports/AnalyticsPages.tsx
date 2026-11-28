@@ -1,3 +1,5 @@
+import { useScopedParticipationReport } from "../../hooks/useScopedParticipationReport";
+import { recordedSessionCheckIns } from "../../services/reports/participationEvidence";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
@@ -17,6 +19,7 @@ import {
   DECISION_DRAWER_COLS,
 } from "../boardMeetingDrawerSchemas";
 import {
+  type Meeting,
   useMeetingRegistry,
   useQuorumEventRegistry,
   useDecisionRegistry,
@@ -104,19 +107,23 @@ export function MeetingPerformanceAnalyticsPage() {
 // ─── Participation Analytics ────────────────────────────────────────────────
 
 export function ParticipationAnalyticsPage() {
-  const registry = useMeetingRegistry();
+  const registry = useScopedParticipationReport();
+  const checkIns = recordedSessionCheckIns(registry.items);
+  const meetings = registry.items.filter(row => row.entity_key === "bms.meetings").map(row => row.payload as unknown as Meeting);
 
-  const rows: TableRow[] = registry.items.map(m => ({
+  const rows: TableRow[] = meetings.map(m => ({
     id:               m.id,
     meeting_id:       m.meeting_id,
     meeting_title:    m.meeting_title,
     committee:        m.committee,
     meeting_type:     m.meeting_type,
     meeting_date:     m.meeting_date,
-    meeting_year:     /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(m.meeting_date) ? m.meeting_date.slice(0, 4) : "",
+    meeting_year:     typeof m.meeting_date === "string" && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(m.meeting_date) ? m.meeting_date.slice(0, 4) : "",
     chairperson:      m.chairperson,
     secretary:        m.secretary,
     participant_count: m.participant_count,
+    recorded_check_ins: checkIns.get(m.id) ?? "Not recorded",
+    participation_summary: `${summarizeParticipantCounts([m.participant_count]).totalParticipants ?? "Unknown"} planned · ${checkIns.has(m.id) ? `${checkIns.get(m.id)} recorded` : "Not recorded"}`,
     quorum_forecast:  m.quorum_forecast,
     mode:             m.mode,
     approval_status:  m.approval_status,
@@ -127,32 +134,35 @@ export function ParticipationAnalyticsPage() {
     const inPerson          = rows.filter(r => r.mode === "In-Person" || r.mode === "Physical").length;
     const virtual           = rows.filter(r => r.mode === "Virtual" || r.mode === "Online").length;
 
+    const recorded = rows.filter(r => typeof r.recorded_check_ins === "number");
+    const recordedCount = recorded.reduce((sum, r) => sum + r.recorded_check_ins, 0);
     return [
       { label: "Total Meetings",     value: String(rows.length),         tone: "primary" },
-      { label: "Total Participants", value: totalParticipants === null ? "Unavailable" : String(totalParticipants),   tone: "neutral" },
-      { label: "Avg Per Meeting",    value: avgParticipants === null ? "Unavailable" : String(avgParticipants),     tone: "success" },
+      { label: "Total Participants (Planned)", value: totalParticipants === null ? "Unavailable" : String(totalParticipants),   tone: "neutral" },
+      { label: "Avg Per Meeting (Planned)",    value: avgParticipants === null ? "Unavailable" : String(avgParticipants),     tone: "success" },
       { label: "In-Person",          value: String(inPerson),            tone: "warning" },
       { label: "Virtual",            value: String(virtual),             tone: "neutral" },
+      { label: "Recorded Check-ins", value: recorded.length ? String(recordedCount) : "Not recorded", tone: "neutral" },
     ];
   };
   const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Participation Analytics",
-    desc:  "Track member attendance, quorum compliance, and participation patterns across meetings.",
+    desc:  "Track member attendance, quorum compliance, and participation patterns across meetings. Participant totals are planned; recorded check-ins count distinct people per meeting with session-linked evidence, not complete attendance history.",
     cols: [
       fc("meeting_title",    "Meeting",      { headerKey: "headers.meetingTitle" }),
       fc("committee",        "Committee",    { headerKey: "headers.committee" }),
       fc("meeting_date",     "Date",         { headerKey: "headers.date" }),
       fc("mode",             "Mode",         { headerKey: "headers.type" }),
-      fc("participant_count","Participants", { headerKey: "headers.totalEntry" }),
+      fc("participation_summary","Participants", { headerKey: "headers.totalEntry" }),
       fc("quorum_forecast",  "Quorum",       { headerKey: "headers.reason" }),
       BADGE("approval_status", "Status"),
     ],
     mobileCardMapping: {
       primary:    "meeting_title",
       identifier: "meeting_id",
-      meta:       ["committee", "mode", "participant_count"],
+      meta:       ["committee", "mode", "participation_summary"],
       status:     "approval_status",
       date:       "meeting_date",
     },
@@ -160,7 +170,7 @@ export function ParticipationAnalyticsPage() {
     filters:    buildMeetingRegisterFilters(rows),
     actions:    ROW_VIEW,
     drawerTitle: "Meeting Details",
-    drawerCols:  MEETING_DRAWER_COLS,
+    drawerCols:  [...MEETING_DRAWER_COLS, fc("participant_count", "Planned Participants"), fc("recorded_check_ins", "Recorded Check-ins")],
     rows,
     dataLoading: Boolean(registry.loading),
     dataError: registry.error ?? null,

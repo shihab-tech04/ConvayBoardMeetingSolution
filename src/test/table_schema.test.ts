@@ -236,7 +236,7 @@ const ALL_PAGE_CFGS: Array<{ name: string; cols: PageCfg['cols'] }> = [
       col("committee",        "Committee"),
       col("meeting_date",     "Date"),
       col("mode",             "Mode"),
-      col("participant_count","Participants"),
+      col("participation_summary","Participants"),
       col("quorum_forecast",  "Quorum"),
       col("approval_status",  "Status", true),
     ],

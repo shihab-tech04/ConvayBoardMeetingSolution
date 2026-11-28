@@ -3,6 +3,8 @@
  * Uses the project's public publishable key; never stores a service-role key.
  * Auth credentials and password verification are handled by Supabase Auth.
  */
+import { PARTICIPATION_ENTITIES, parseParticipationEvidence, verifyParticipationPage, type ParticipationEvidenceRow } from "../reports/participationEvidence";
+
 export const CONVAY_SUPABASE_URL = "https://cnrueblhgvdonplirlhv.supabase.co";
 export const CONVAY_SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_6ojMU_R8I-sLQQFR64RTQw_p8qZasMm";
 const SUPABASE_URL = CONVAY_SUPABASE_URL;
@@ -686,6 +688,43 @@ export const convayAuth = {
       throw new Error("Supabase did not confirm the meeting revision request.");
     }
     return revised;
+  },
+
+  /** Dedicated read-only report snapshot. Retain SQL tenant and record identity.
+   * All pages use one validated session; the report cannot merge different accounts.
+   * Existing registry reads/writes and release gates remain unchanged. */
+  async participationEvidence(): Promise<ParticipationEvidenceRow[]> {
+    const session = await validSession();
+    if (!session) throw new Error("Session expired. Sign in again.");
+    const epoch = sessionEpoch;
+    const assertCurrent = () => {
+      const stored = readSession();
+      if (sessionEpoch !== epoch || stored?.userId !== session.userId || stored.accessToken !== session.accessToken) {
+        throw new Error("Participation report session changed. Refresh and retry.");
+      }
+    };
+    const headers = { apikey: API_KEY, Authorization: "Bearer " + session.accessToken, Accept: "application/json", Prefer: "count=exact" };
+    const rows: unknown[] = [];
+    let total: number | undefined;
+    do {
+      assertCurrent();
+      const url = new URL(SUPABASE_URL + "/rest/v1/convay_entity_records");
+      url.searchParams.set("entity_key", "in.(" + PARTICIPATION_ENTITIES.join(",") + ")");
+      url.searchParams.set("select", "entity_key,record_id,tenant_id,payload");
+      url.searchParams.set("order", "entity_key.asc,record_id.asc");
+      url.searchParams.set("offset", String(rows.length));
+      url.searchParams.set("limit", "1000");
+      const response = await fetch(url.toString(), { headers, cache: "no-store" });
+      assertCurrent();
+      if (!response.ok) throw new Error(errorMessage(await responseBody(response), "Participation report could not be loaded"));
+      const batch: unknown = await response.json();
+      assertCurrent();
+      if (!Array.isArray(batch) || batch.length > 1000) throw new Error("Invalid participation report page");
+      total = verifyParticipationPage(response.headers.get("Content-Range"), rows.length, batch.length, total);
+      rows.push(...batch);
+    } while (rows.length < total);
+    assertCurrent();
+    return parseParticipationEvidence(rows);
   },
 
   async registry<T extends { id: string }>(

@@ -7,12 +7,13 @@ const stop = source.indexOf("export function GovernanceReportPage()");
 const page = source.slice(start, stop);
 
 describe("RP-02 participation analytics SQL read-state integrity", () => {
-  it("keeps the permission-scoped meeting registry and existing data fields", () => {
-    expect(page).toContain("const registry = useMeetingRegistry()");
-    for (const field of ["participant_count", "quorum_forecast", "approval_status", "mode", "meeting_date"]) {
+  it("uses the permission-scoped report source and retains existing data fields", () => {
+    expect(page).toContain("const registry = useScopedParticipationReport()");
+    for (const field of ["participant_count", "quorum_forecast", "approval_status", "mode", "meeting_date", "recorded_check_ins"]) {
       expect(page).toContain(field);
     }
     expect(page).not.toContain("gen(");
+    expect(page).toContain("recordedSessionCheckIns(registry.items)");
   });
   it("blocks misleading empty results and KPI totals until SQL read succeeds", () => {
     expect(page).toContain("dataLoading: Boolean(registry.loading)");
@@ -27,7 +28,10 @@ describe("RP-02 participation analytics SQL read-state integrity", () => {
     expect(page).toContain("filters:    buildMeetingRegisterFilters(rows)");
     expect(page).toContain('m.meeting_date.slice(0, 4)');
     expect(page).not.toContain("BASE_FILTERS");
-    expect(page).toContain("drawerCols:  MEETING_DRAWER_COLS");
+    expect(page).toContain("drawerCols:  [...MEETING_DRAWER_COLS");
+    expect(page).toContain('fc("participation_summary","Participants"');
+    expect(page).toContain('fc("participant_count", "Planned Participants")');
+    expect(page).toContain('fc("recorded_check_ins", "Recorded Check-ins")');
     expect(page).toContain("mobileCardMapping:");
   });
 });
