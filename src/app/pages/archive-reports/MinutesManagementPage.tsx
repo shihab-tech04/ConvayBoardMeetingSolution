@@ -10,10 +10,11 @@ import { MINUTES_DRAWER_COLS } from "../boardMeetingDrawerSchemas";
 import { useMinutesRegistry, useMeetingRegistry, generateId } from "../../data/boardMeetingData";
 import { MINUTES_FORM_FIELDS } from "../boardMeetingFormFields";
 import { patchFormOptions } from "../../utils/patchFormOptions";
-import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { readAccessSnapshot, reloadAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutesStatus, buildMinutesReviewSubmission, buildMinutesLifecycleTransition, isMinutesLifecycleAction, eligibleMinutesSourceMeetings } from "./minutesSourceIntegrity";
 import type { MinutesLifecycleAction } from "./minutesSourceIntegrity";
 import { buildMinutesHtmlExport } from "./minutesHtmlExport";
+import { assertMinutesExportSelection } from "./minutesExportSelection";
 import { finalizeOwnSuperAdminContent } from "../../services/supabase/convaySuperAdminAutoApproval";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
@@ -107,10 +108,22 @@ export function MinutesManagementPage() {
       if (!nowAccess.loaded || !(nowAccess.is_super_admin || nowAccess.effective_permissions.includes("arc_view"))) {
         throw new Error("You do not have permission to export minutes.");
       }
-      // Do not export an optimistic table snapshot or a test fixture.
+      // Bind the selected revision to a fresh authorized read, not a mutable
+      // drawer snapshot. An account or access change invalidates this intent.
+      const authorization = await reloadAccessSnapshot();
+      if (!authorization.loaded || authorization.error || !(authorization.is_super_admin || authorization.effective_permissions.includes("arc_view"))) {
+        throw new Error("You do not have permission to export minutes.");
+      }
+      if (!registry.refresh || !registry.getRevision) throw new Error("Authoritative minutes export is unavailable.");
       await registry.refresh?.();
+      if (readAccessSnapshot() !== authorization) throw new Error("Access changed during export. Reopen the record and retry.");
+      const finalAccess = await reloadAccessSnapshot();
+      if (readAccessSnapshot() !== finalAccess || !finalAccess.loaded || finalAccess.error || !(finalAccess.is_super_admin || finalAccess.effective_permissions.includes("arc_view"))) {
+        throw new Error("You do not have permission to export minutes.");
+      }
       const current = registry.getById(String(row.id ?? ""));
       if (!current) throw new Error("Minutes record was not found in the authorized server readback.");
+      assertMinutesExportSelection(row, current, registry.getRevision(current.id));
       const exportFile = buildMinutesHtmlExport(current);
       const blob = new Blob([exportFile.content], { type: exportFile.mimeType });
       const url = URL.createObjectURL(blob);
@@ -230,6 +243,7 @@ export function MinutesManagementPage() {
     },
     rows: items.map(m => ({
       ...m,
+      source_revision: registry.getRevision?.(m.id),
       source_committee: m.meeting_context?.committee ?? "",
       source_meeting_type: m.meeting_context?.meeting_type ?? "",
       source_mode: m.meeting_context?.mode ?? "",
