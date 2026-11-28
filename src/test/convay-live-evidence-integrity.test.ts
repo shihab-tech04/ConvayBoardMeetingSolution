@@ -28,8 +28,12 @@ describe("Convay meeting evidence integrity", () => {
     expect(workspace).not.toContain('id: "ac-001"');
     expect(workspace).not.toContain('id: "aim-001"');
     expect(workspace).not.toContain('Ms. Nasrin Sultana');
-    expect(workspace).toContain("setAgendaItemMotions] = useState<LiveMotion[]>([])");
-    expect(workspace).toContain('setAgendaMotionVotes] = useState<Record<string, Record<string, "For" | "Against" | "Abstain">>>({})');
+    expect(workspace).toContain("setLegacyAgendaItemMotions] = useState<LiveMotion[]>([])");
+    expect(workspace).toContain('setLegacyAgendaMotionVotes] = useState<Record<string, Record<string, "For" | "Against" | "Abstain">>>({})');
+    expect(workspace).toContain("const agendaItemMotions = scopedVotingRequired ? EMPTY_LIVE_MOTIONS : legacyAgendaItemMotions;");
+    expect(workspace).toContain("const agendaMotionVotes = scopedVotingRequired ? EMPTY_LOCAL_BALLOTS : legacyAgendaMotionVotes;");
+    expect(workspace).toContain("if (!meetingId || scopedVotingRequired) return;");
+    expect(workspace).toContain("const scopedVotingRequired = votingRelease && scopedVoting.mode !== \"legacy\";");
     expect(workspace).not.toContain("SEED_MOTIONS");
     expect(workspace).not.toContain("AGENDA_DESC_FALLBACK");
     expect(workspace).not.toContain('label="More" onClick={() => {}}');

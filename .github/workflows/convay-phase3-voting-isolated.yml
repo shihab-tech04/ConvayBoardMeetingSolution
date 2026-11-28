@@ -1,0 +1,47 @@
+name: Convay VT — disposable transactional voting rehearsal
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/tests/live_voting_transaction/**'
+      - 'supabase/functions/convay-voting/**'
+      - 'src/app/services/supabase/regularMeetingVoting.ts'
+      - 'supabase/config.toml'
+      - '.github/workflows/convay-phase3-voting-isolated.yml'
+permissions:
+  contents: read
+jobs:
+  isolated-voting:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run voting Edge contract tests
+        run: node --experimental-strip-types --test supabase/tests/live_voting_transaction/edge_contract.node.mjs
+      - name: Start disposable PostgreSQL 17
+        run: |
+          docker run -d --name convay-voting -e POSTGRES_PASSWORD=isolated-fixture-only -e POSTGRES_DB=fixture -v "$GITHUB_WORKSPACE:/workspace:ro" postgres:17-alpine
+          for n in $(seq 1 45); do docker exec convay-voting pg_isready -U postgres -d fixture && exit 0; sleep 2; done
+          exit 1
+      - name: Execute scoped attendance baseline and voting rehearsal
+        run: |
+          set -euo pipefail
+          for f in supabase/tests/live_attendance_scoped/bootstrap.sql supabase/migrations/20261122173000_convay_authoritative_live_attendance.sql supabase/migrations/20261123101000_convay_quorum_snapshot_safeupdate.sql supabase/tests/live_attendance_scoped/activation_candidate.sql supabase/tests/live_voting_transaction/candidate.sql supabase/tests/live_voting_transaction/matrix.sql; do
+            docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f "/workspace/$f"
+          done
+      - name: Execute independent concurrent PostgreSQL sessions
+        run: |
+          docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/race_setup.sql
+          bash supabase/tests/live_voting_transaction/races.sh
+      - name: Execute service-only scoped voting RPC with synthetic Auth sessions
+        run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/gateway_matrix.sql
+      - name: Verify session workspace and archive confidentiality
+        run: docker exec convay-voting psql -X -v ON_ERROR_STOP=1 -U postgres -d fixture -f /workspace/supabase/tests/live_voting_transaction/projection_matrix.sql
+      - name: Destroy disposable PostgreSQL
+        if: always()
+        run: docker rm -f convay-voting || true
