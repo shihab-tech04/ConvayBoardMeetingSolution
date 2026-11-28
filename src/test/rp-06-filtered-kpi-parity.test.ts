@@ -16,8 +16,8 @@ describe("RP-06 filtered summary parity and RP-02 count integrity", () => {
   it("rejects unsafe accumulated totals", () => {
     expect(summarizeParticipantCounts([Number.MAX_SAFE_INTEGER, 1])).toEqual({ totalParticipants: null, avgParticipants: null });
   });
-  it("opts in only the three row-based analytics summaries, before pagination", () => {
-    expect(source.match(/filteredKpis: summarize/g)).toHaveLength(3);
+  it("opts in all five analytics summaries, before pagination", () => {
+    expect(source.match(/filteredKpis: summarize/g)).toHaveLength(5);
     expect(shared).toContain("cfg.filteredKpis?.(filtered) ?? cfg.kpis");
     expect(shared.indexOf("const visibleKpis =")).toBeLessThan(shared.indexOf("const pageRows ="));
     expect(shared).toContain("<CollapsibleKpiSection kpis={visibleKpis}");

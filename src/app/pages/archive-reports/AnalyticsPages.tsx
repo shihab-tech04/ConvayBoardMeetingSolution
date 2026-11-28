@@ -1,6 +1,7 @@
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
+import { indexReportLinks, selectedReportLinks } from "./linkedReportSummary";
 import { summarizeParticipantCounts } from "./participantCountSummary";
 import { buildMeetingRegisterFilters } from "../return-register/meetingRegisterReadiness";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
@@ -177,9 +178,14 @@ export function GovernanceReportPage() {
   const governanceReg = useGovernanceRegistry();
   const resolutionReg = useResolutionRegistry();
 
+  const meetingsByBody = indexReportLinks(governanceReg.items, meetingReg.items,
+    body => [body.id, body.body_id, body.body_name], meeting => meeting.committee);
+  const resolutionsByBody = new Map<string, typeof resolutionReg.items>();
   const rows: TableRow[] = governanceReg.items.map(g => {
-    const bodyMeetings    = meetingReg.items.filter(m => m.committee === g.body_name);
+    const bodyMeetings    = meetingsByBody.get(g.id) ?? [];
     const bodyResolutions = resolutionReg.items.filter(r => bodyMeetings.some(m => resolutionBelongsToMeeting(r, m.meeting_id)));
+    const adopted = [...new Map(bodyResolutions.filter(r => r.approval_status === "Adopted").map(r => [r.id, r])).values()];
+    resolutionsByBody.set(g.id, adopted);
     return {
       id:                 g.id,
       body_id:            g.body_id,
@@ -191,19 +197,20 @@ export function GovernanceReportPage() {
       quorum_requirement: g.quorum_requirement,
       voting_method:      g.voting_method,
       meetings_held:      String(bodyMeetings.length),
-      resolutions_passed: String(bodyResolutions.filter(r => r.approval_status === "Adopted").length),
+      resolutions_passed: String(adopted.length),
       establishment_date: g.establishment_date,
       mandate:            g.mandate,
       status:             g.status,
     };
   });
 
-  const kpis: KpiDef[] = [
-    { label: "Governance Bodies",   value: String(rows.length),                                             tone: "primary" },
-    { label: "Active",              value: String(rows.filter(r => r.status === "Active").length),          tone: "success" },
-    { label: "Total Meetings",      value: String(meetingReg.items.length),                                 tone: "neutral" },
-    { label: "Resolutions Adopted", value: String(resolutionReg.items.filter(r => r.approval_status === "Adopted").length), tone: "warning" },
+  const summarize = (rows: TableRow[]): KpiDef[] => [
+    { label: "Governance Bodies",   value: String(rows.length), tone: "primary" },
+    { label: "Active",              value: String(rows.filter(r => r.status === "Active").length), tone: "success" },
+    { label: "Total Meetings",      value: String(selectedReportLinks(rows, meetingsByBody).length), tone: "neutral" },
+    { label: "Resolutions Adopted", value: String(selectedReportLinks(rows, resolutionsByBody).length), tone: "warning" },
   ];
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Governance Report",
@@ -234,6 +241,7 @@ export function GovernanceReportPage() {
     onDataRetry: async () => {
       await Promise.all([meetingReg.refresh?.(), governanceReg.refresh?.(), resolutionReg.refresh?.()]);
     },
+    filteredKpis: summarize,
     kpis: meetingReg.loading || governanceReg.loading || resolutionReg.loading || meetingReg.error || governanceReg.error || resolutionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
@@ -245,8 +253,10 @@ export function DecisionsActionsAnalyticsPage() {
   const decisionReg = useDecisionRegistry();
   const actionReg   = useActionItemRegistry();
 
+  const actionsByDecision = indexReportLinks(decisionReg.items, actionReg.items,
+    decision => [decision.id, decision.decision_id], action => action.source_decision);
   const rows: TableRow[] = decisionReg.items.map(d => {
-    const linked = actionReg.items.filter(a => a.source_decision === d.decision_id);
+    const linked = actionsByDecision.get(d.id) ?? [];
     return {
       id:                    d.id,
       decision_id:           d.decision_id,
@@ -263,14 +273,17 @@ export function DecisionsActionsAnalyticsPage() {
     };
   });
 
-  const overdueActions = countOverdueActions(actionReg.items.map(a => ({ ...a })), todayInLocalTime(new Date()));
-
-  const kpis: KpiDef[] = [
-    { label: "Total Decisions", value: String(decisionReg.items.length),                                                     tone: "primary" },
-    { label: "Total Actions",   value: String(actionReg.items.length),                                                       tone: "neutral" },
-    { label: "Implemented",     value: String(decisionReg.items.filter(d => d.implementation_status === "Completed").length), tone: "success" },
-    { label: "Overdue Actions", value: String(overdueActions),                                                                tone: "error"   },
-  ];
+  const summarize = (rows: TableRow[]): KpiDef[] => {
+    const linked = selectedReportLinks(rows, actionsByDecision);
+    const overdueActions = countOverdueActions(linked.map(a => ({ ...a })), todayInLocalTime(new Date()));
+    return [
+      { label: "Total Decisions", value: String(rows.length), tone: "primary" },
+      { label: "Total Actions",   value: String(linked.length), tone: "neutral" },
+      { label: "Implemented",     value: String(rows.filter(d => d.implementation_status === "Completed").length), tone: "success" },
+      { label: "Overdue Actions", value: String(overdueActions), tone: "error" },
+    ];
+  };
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Decisions & Actions",
@@ -302,6 +315,7 @@ export function DecisionsActionsAnalyticsPage() {
     onDataRetry: async () => {
       await Promise.all([decisionReg.refresh?.(), actionReg.refresh?.()]);
     },
+    filteredKpis: summarize,
     kpis: decisionReg.loading || actionReg.loading || decisionReg.error || actionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
