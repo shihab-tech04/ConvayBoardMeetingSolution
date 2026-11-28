@@ -83,6 +83,17 @@ function EmptyState({ icon: Icon, message }: { icon: React.ElementType; message:
   );
 }
 
+function SourceReadNotice({ loading, name, retry }: { loading: boolean; name: string; retry: () => unknown }) {
+  if (loading) return <div role="status" aria-live="polite"><EmptyState icon={RefreshCw} message={`Loading ${name}…`} /></div>;
+  return (
+    <div role="alert" style={{ textAlign: "center", paddingBottom: "1rem" }}>
+      <EmptyState icon={AlertCircle} message={`${name} unavailable. Refresh before continuing.`} />
+      <button type="button" onClick={() => { void Promise.resolve().then(retry).catch(() => toast.error(`Unable to load ${name}.`)); }}
+        style={{ padding: "0.4rem 0.8rem", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-foreground)", cursor: "pointer" }}>Retry Loading</button>
+    </div>
+  );
+}
+
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: 10, padding: "1.25rem", marginBottom: "1rem" }}>
@@ -625,8 +636,10 @@ export function MeetingRecordPage() {
 
   const renderDecisions = () => (
     <>
-      <SectionCard title={`Decisions (${meetingDecisions.length})`}>
-        {meetingDecisions.length === 0 ? (
+      <SectionCard title={`Decisions (${recordListCountLabel(Boolean(decisionReg.loading), decisionReg.error, meetingDecisions.length)})`}>
+        {decisionReg.error || decisionReg.loading ? (
+          <SourceReadNotice loading={!decisionReg.error && Boolean(decisionReg.loading)} name="decisions" retry={() => decisionReg.refresh?.()} />
+        ) : meetingDecisions.length === 0 ? (
           <EmptyState icon={CheckSquare} message="No decisions recorded." />
         ) : meetingDecisions.map(d => (
           <div key={d.id} style={{ padding: "0.6rem 0", borderBottom: "1px solid var(--color-border)", fontSize: "0.82rem" }}>
@@ -639,8 +652,10 @@ export function MeetingRecordPage() {
           </div>
         ))}
       </SectionCard>
-      <SectionCard title={`Resolutions (${meetingResolutions.length})`}>
-        {meetingResolutions.length === 0 ? (
+      <SectionCard title={`Resolutions (${recordListCountLabel(Boolean(resolutionReg.loading), resolutionReg.error, meetingResolutions.length)})`}>
+        {resolutionReg.error || resolutionReg.loading ? (
+          <SourceReadNotice loading={!resolutionReg.error && Boolean(resolutionReg.loading)} name="resolutions" retry={() => resolutionReg.refresh?.()} />
+        ) : meetingResolutions.length === 0 ? (
           <EmptyState icon={CheckCircle} message="No resolutions recorded." />
         ) : meetingResolutions.map(r => (
           <div key={r.id} style={{ padding: "0.6rem 0", borderBottom: "1px solid var(--color-border)", fontSize: "0.82rem" }}>
@@ -652,8 +667,10 @@ export function MeetingRecordPage() {
           </div>
         ))}
       </SectionCard>
-      <SectionCard title={`Action Items (${meetingActions.length})`}>
-        {meetingActions.length === 0 ? (
+      <SectionCard title={`Action Items (${recordListCountLabel(Boolean(actionReg.loading), actionReg.error, meetingActions.length)})`}>
+        {actionReg.error || actionReg.loading ? (
+          <SourceReadNotice loading={!actionReg.error && Boolean(actionReg.loading)} name="action items" retry={() => actionReg.refresh?.()} />
+        ) : meetingActions.length === 0 ? (
           <EmptyState icon={CheckSquare} message="No action items recorded." />
         ) : meetingActions.map(a => (
           <div key={a.id} style={{ padding: "0.6rem 0", borderBottom: "1px solid var(--color-border)", fontSize: "0.82rem" }}>
@@ -671,7 +688,9 @@ export function MeetingRecordPage() {
 
   const renderMinutes = () => (
     <>
-      {meetingMinutes.length === 0 ? (
+      {minutesReg.error || minutesReg.loading ? (
+        <SourceReadNotice loading={!minutesReg.error && Boolean(minutesReg.loading)} name="minutes" retry={() => minutesReg.refresh?.()} />
+      ) : meetingMinutes.length === 0 ? (
         <EmptyState icon={FileText} message="No minutes records found for this meeting." />
       ) : meetingMinutes.map(m => (
         <SectionCard key={m.id} title={`${m.minutes_id} — Version ${m.version ?? "1.0"}`}>
@@ -802,7 +821,7 @@ export function MeetingRecordPage() {
           {editMinutesId === m.id && canEditMinutesContent(m.approval_status, canEditMinutes) ? (
             <div>
               <textarea
-                defaultValue={m.discussion_summary ?? m.quorum_statement ?? ""}
+                defaultValue={m.discussion_summary ?? ""}
                 id={`min-edit-${m.id}`}
                 rows={12}
                 style={{ width: "100%", fontFamily: "monospace", fontSize: "0.78rem", borderRadius: 6, padding: "0.5rem", background: "var(--color-muted)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", resize: "vertical", boxSizing: "border-box" }}
@@ -844,8 +863,9 @@ export function MeetingRecordPage() {
           ) : (
             <div>
               <pre style={{ fontSize: "0.78rem", whiteSpace: "pre-wrap", background: "var(--color-muted)", borderRadius: 6, padding: "0.75rem", maxHeight: 320, overflowY: "auto", color: "var(--color-foreground)", lineHeight: 1.6 }}>
-                {m.discussion_summary || m.quorum_statement || "No content captured."}
+                {m.discussion_summary || "No discussion summary captured."}
               </pre>
+              {m.quorum_statement && <KV label="Quorum Statement" value={m.quorum_statement} />}
               {canEditMinutesContent(m.approval_status, canEditMinutes) && (
                 <button
                   type="button"
@@ -864,8 +884,10 @@ export function MeetingRecordPage() {
   );
 
   const renderAudit = () => (
-    <SectionCard title={`Audit Events (${meetingAudit.length})`}>
-      {meetingAudit.length === 0 ? (
+    <SectionCard title={`Audit Events (${recordListCountLabel(Boolean(auditReg.loading), auditReg.error, meetingAudit.length)})`}>
+      {auditReg.error || auditReg.loading ? (
+          <SourceReadNotice loading={!auditReg.error && Boolean(auditReg.loading)} name="audit history" retry={() => auditReg.refresh?.()} />
+        ) : meetingAudit.length === 0 ? (
         <EmptyState icon={Clock} message="No audit events recorded for this meeting." />
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
