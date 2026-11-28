@@ -29,14 +29,17 @@ export function isUserDirectoryStatsUnavailable(state: UserDirectoryStatsState):
   return !state.accessLoaded || !state.isSuperAdmin || state.loading || Boolean(state.error.trim());
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function validDirectoryUser(value: unknown): value is DirectoryUserShape {
   if (!value || typeof value !== "object") return false;
   const user = value as Record<string, unknown>;
-  return typeof user.user_id === "string" && user.user_id.length > 0
+  return typeof user.user_id === "string" && UUID_RE.test(user.user_id)
     && typeof user.display_name === "string"
     && typeof user.email === "string"
     && (user.account_role === "user" || user.account_role === "super_admin")
-    && ["active", "inactive", "suspended"].includes(String(user.account_status));
+    && typeof user.account_status === "string"
+    && ["active", "inactive", "suspended"].includes(user.account_status);
 }
 
 export function createLatestUserDirectoryRead<T extends DirectoryUserShape>() {
@@ -53,7 +56,8 @@ export function createLatestUserDirectoryRead<T extends DirectoryUserShape>() {
         const response = await read();
         if (request !== epoch) return false;
         if (!response || !Array.isArray(response.users)
-          || !response.users.every(validDirectoryUser)) {
+          || !response.users.every(validDirectoryUser)
+          || new Set(response.users.map(user => user.user_id.toLowerCase())).size !== response.users.length) {
           throw new Error("Invalid user directory response. Retry to reload.");
         }
         publish({ phase: "ready", users: response.users, error: "" });

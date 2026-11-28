@@ -71,6 +71,25 @@ describe("UAM-01 fail-closed user-directory read and account recovery", () => {
     );
     expect(updates.at(-1)).toMatchObject({ phase: "error", users: [] });
   });
+  it.each([
+    ["duplicate user identity", [user, { ...user, display_name: "Conflicting row" }]],
+    ["case-variant duplicate identity", [
+      { ...user, user_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      { ...user, user_id: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" },
+    ]],
+    ["invalid Auth UUID", [{ ...user, user_id: "not-a-uuid" }]],
+    ["non-string account status", [{ ...user, account_status: ["active"] }]],
+  ])("rejects %s without publishing a partial directory", async (_label, rows) => {
+    const updates: UserDirectoryUpdate<User>[] = [];
+    const gate = createLatestUserDirectoryRead<User>();
+    await gate.load(async () => ({ users: [user] }), u => updates.push(u));
+    await expect(gate.load(async () => ({ users: rows as User[] }), u => updates.push(u)))
+      .resolves.toBe(false);
+    expect(updates.slice(-2)).toEqual([
+      { phase: "loading", users: [], error: "" },
+      { phase: "error", users: [], error: "Invalid user directory response. Retry to reload." },
+    ]);
+  });
   it("clears a previous directory immediately on retry and after a failed request", async () => {
     const gate = createLatestUserDirectoryRead<User>();
     const updates: UserDirectoryUpdate<User>[] = [];
