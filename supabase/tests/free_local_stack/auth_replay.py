@@ -159,7 +159,17 @@ for attempt in range(30):
 
 def tenant_action(action, **kw):
     return rpc("convay_tenant_admin",rt,{"p_action":action,"p_request_id":rid(),**kw})
-ta = tenant_action("create",p_display_name="Local company A")["tenant_id"]
+# TEN-01: real Auth denial, validation, idempotency and uniqueness.
+for token in (at, bt, lt, anon):
+    rpc("convay_tenant_admin",token,{"p_action":"create","p_request_id":rid(),"p_display_name":"Denied company"},expected=(401,403))
+rpc("convay_tenant_admin",rt,{"p_action":"create","p_request_id":rid(),"p_display_name":"  "},expected=(400,))
+create_a={"p_action":"create","p_request_id":rid(),"p_display_name":"Local company A"}
+created_a=rpc("convay_tenant_admin",rt,create_a)
+assert rpc("convay_tenant_admin",rt,create_a)==created_a
+rpc("convay_tenant_admin",rt,{**create_a,"p_display_name":"Conflicting company"},expected=(409,))
+rpc("convay_tenant_admin",rt,{**create_a,"p_request_id":rid(),"p_display_name":" local COMPANY a "},expected=(409,))
+ta=created_a["tenant_id"]
+assert created_a["lifecycle_state"]=="provisioning" and created_a["tenant_active"] is False
 tb = tenant_action("create",p_display_name="Local company B")["tenant_id"]
 assert ta != tb
 tenant_action("add_member",p_tenant_id=ta,p_member_user_id=a["id"],p_member_role="tenant_admin")
@@ -188,6 +198,35 @@ draft=read_draft(at,ta)["draft"]
 assert draft["wizard_step_id"]=="review" and draft["values"]==intent["values"] and draft["definition"]==definition
 read_draft(bt,ta,expected=(403,))
 rpc("convay_company_draft_lifecycle",anon,{"p_action":"list","p_tenant_id":ta,"p_payload":{}},expected=(401,403))
+
+# TEN-06/07: separate genuine sessions, scoped audit, lifecycle denial,
+# retained staged data and restoration with the original access token.
+def tenant_audit(token,tenant,expected=(200,)):
+    return rpc("convay_tenant_audit",token,{"p_tenant_id":tenant},expected=expected)
+before_audit=tenant_audit(at,ta)
+assert tenant_audit(rt,ta)==before_audit
+assert any(e["request_id"]==create_a["p_request_id"] and e["actor_id"]==root["id"] and e["action"]=="create" for e in before_audit)
+assert sum(e["request_id"]==create_a["p_request_id"] for e in before_audit)==1
+tenant_audit(bt,ta,expected=(403,))
+tenant_audit(at,tb,expected=(403,))
+tenant_audit(lt,ta,expected=(403,))
+tenant_audit(anon,ta,expected=(401,403))
+for token in (at,bt,lt):
+    rpc("convay_tenant_admin",token,{"p_action":"suspend","p_request_id":rid(),"p_tenant_id":ta},expected=(403,))
+suspension=tenant_action("suspend",p_tenant_id=ta)
+assert suspension["lifecycle_state"]=="suspended"
+assert rpc("convay_company_directory",rt,{"p_action":"read","p_tenant_id":ta})["company"]["lifecycle_state"]=="suspended"
+read_draft(at,ta,expected=(403,))
+rpc("convay_tenant_admin",rt,{"p_action":"suspend","p_request_id":rid(),"p_tenant_id":ta},expected=(400,))
+resumption=tenant_action("resume",p_tenant_id=ta)
+assert resumption["lifecycle_state"]=="provisioning" and resumption["tenant_active"] is False
+assert read_draft(at,ta)["draft"]==draft
+after_audit=tenant_audit(rt,ta)
+assert all(e in after_audit for e in before_audit)
+assert {e["id"] for e in after_audit}-{e["id"] for e in before_audit}=={suspension["audit_event_id"],resumption["audit_event_id"]}
+assert tenant_audit(at,ta)==after_audit
+assert companies(bt)=={tb}
+print("LOCAL_TENANT_LIFECYCLE_AUDIT_PASS: root-only creation, duplicate and replay handling, tenant audit isolation, suspend denial and non-destructive resume",flush=True)
 
 # Reproduce global fallback through real API, not a fabricated JWT.
 record={"entity_key":"bms.templates","record_id":"local-legacy-template","payload":{"id":"local-legacy-template","title":"Legacy fixture"}}
