@@ -39,6 +39,27 @@ describe("WS-F UAM-14 user mutation server ACK truthfulness", () => {
       userId: id, displayName: user.display_name,
     })).not.toThrow();
   });
+  it("requires every submitted editable profile field to match persisted SQL on invite and edit", () => {
+    const fields = { username: "test.member", phone: "0123456789", employee_id: "E-001", user_type: "Governance Member" };
+    const expected = { displayName: user.display_name, username: fields.username,
+      phone: fields.phone, employeeId: fields.employee_id, userType: fields.user_type };
+    for (const action of ["invite", "update"] as const) {
+      const intent = { ...expected, email: user.email, userId: id };
+      expect(() => requireUserMutationAck(action, { user: { ...user, ...fields } }, intent)).not.toThrow();
+      for (const key of Object.keys(fields)) {
+        for (const value of [undefined, "stale-value"]) {
+          expect(() => requireUserMutationAck(action, { user: { ...user, ...fields, [key]: value } }, intent)).toThrow(notConfirmed);
+        }
+      }
+      expect(() => requireUserMutationAck(action, { user: { ...user, ...fields, display_name: "stale-name" } }, intent)).toThrow(notConfirmed);
+    }
+  });
+  it("distinguishes confirmed null optional fields from omitted or stale values", () => {
+    const expected = { userId: id, phone: null, employeeId: null };
+    expect(() => requireUserMutationAck("update", { user: { ...user, phone: null, employee_id: null } }, expected)).not.toThrow();
+    expect(() => requireUserMutationAck("update", { user }, expected)).toThrow(notConfirmed);
+    expect(() => requireUserMutationAck("update", { user: { ...user, phone: "old", employee_id: null } }, expected)).toThrow(notConfirmed);
+  });
   it("denies false status-change confirmations and accepts exact target", () => {
     expect(() => requireUserMutationAck("set_status", { user }, {
       userId: id, status: "suspended",

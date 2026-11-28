@@ -275,7 +275,12 @@ function ScopedUserManagementPage({ access, canUse }: {
           ...userBusinessFields(form),
         });
         if (!isCurrent()) return;
-        requireUserMutationAck("invite", confirmed, { email: form.email.trim(), roleId: form.roleId });
+        requireUserMutationAck("invite", confirmed, {
+          email: form.email.trim(), roleId: form.roleId, displayName: form.name.trim(),
+          username: (form.username.trim() || form.email.trim().split("@")[0]).toLowerCase(),
+          phone: form.phone.trim() || null, employeeId: form.employeeId.trim() || null,
+          userType: form.userType,
+        });
         toast.success("Invitation sent and selected role assigned.");
       } else if (mode === "edit" && editing) {
         const confirmed = await convayAuth.users("update", {
@@ -285,6 +290,8 @@ function ScopedUserManagementPage({ access, canUse }: {
         if (!isCurrent()) return;
         requireUserMutationAck("update", confirmed, {
           userId: editing.user_id, displayName: form.name.trim(),
+          username: form.username.trim().toLowerCase(), phone: form.phone.trim() || null,
+          employeeId: form.employeeId.trim() || null, userType: form.userType,
         });
         toast.success("User updated");
       } else if (mode === "password" && editing) {

@@ -9,11 +9,19 @@ export interface ExpectedUserAck {
   email?: string;
   roleId?: string;
   displayName?: string;
+  username?: string;
+  phone?: string | null;
+  employeeId?: string | null;
+  userType?: string;
   status?: "active" | "inactive" | "suspended";
 }
 type UserAckRecord = {
   user_id?: unknown;
   display_name?: unknown;
+  username?: unknown;
+  phone?: unknown;
+  employee_id?: unknown;
+  user_type?: unknown;
   email?: unknown;
   account_status?: unknown;
   invitation_status?: unknown;
@@ -48,7 +56,19 @@ export function requireUserMutationAck(
       || user!.account_status !== "inactive") fail();
     if (expected.roleId && user!.assigned_role_id !== expected.roleId) fail();
   }
-  if (action === "update" && expected.displayName !== undefined
-    && user!.display_name !== expected.displayName) fail();
+  // The Edge response is the persisted SQL profile, not merely a write ACK.
+  // Compare the exact canonical values sent by the existing user form.
+  if (action === "invite" || action === "update") {
+    const fields = [
+      ["display_name", expected.displayName],
+      ["username", expected.username],
+      ["phone", expected.phone],
+      ["employee_id", expected.employeeId],
+      ["user_type", expected.userType],
+    ] as const;
+    for (const [key, value] of fields) {
+      if (value !== undefined && user![key] !== value) fail();
+    }
+  }
   if (action === "set_status" && (!expected.status || user!.account_status !== expected.status)) fail();
 }

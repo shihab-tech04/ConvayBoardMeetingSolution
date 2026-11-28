@@ -229,6 +229,65 @@ assert tenant_audit(at,ta)==after_audit
 assert companies(bt)=={tb}
 print("LOCAL_TENANT_LIFECYCLE_AUDIT_PASS: root-only creation, duplicate and replay handling, tenant audit isolation, suspend denial and non-destructive resume",flush=True)
 
+# TEN-02 / UAM-09 / AC: verified ordinary member and separate real sessions.
+# Fixture setup grants only the existing meeting-view permission. All tenant
+# enrollment and role transitions go through the authorized public RPCs.
+restricted = principal("restricted-member")
+restricted_role = rid()
+sql(f"""
+INSERT INTO public.user_profiles(user_id,username,display_name,account_role,account_status,email)
+VALUES ('{restricted['id']}','fixture-restricted','Restricted fixture','user','active','{restricted['email']}');
+INSERT INTO public.convay_roles(id,name,description) VALUES ('{restricted_role}','Local restricted fixture role','Disposable Auth REST test');
+INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('{restricted_role}','mtg_view');
+INSERT INTO public.convay_user_roles(user_id,role_id,assigned_by) VALUES ('{restricted['id']}','{restricted_role}','{root['id']}');
+""")
+mt = login(restricted)
+member_request={"p_tenant_id":ta,"p_email":restricted["email"],"p_member_role":"member","p_request_id":rid()}
+receipt=rpc("convay_company_member_enroll",at,member_request)
+assert receipt["member_user_id"]==restricted["id"] and receipt["member_role"]=="member"
+assert rpc("convay_company_member_enroll",at,member_request)==receipt
+assert companies(mt)==set()
+for tenant in (ta,tb):
+    rpc("convay_company_directory",mt,{"p_action":"read","p_tenant_id":tenant},expected=(403,))
+    tenant_audit(mt,tenant,expected=(403,))
+read_draft(mt,ta,expected=(403,))
+rpc("convay_company_member_enroll",at,{**member_request,"p_member_role":"tenant_admin","p_request_id":rid()},expected=(403,))
+rpc("convay_company_member_enroll",at,{**member_request,"p_tenant_id":tb,"p_request_id":rid()},expected=(403,))
+def membership_read(token, tenant):
+    rows=rpc("convay_company_directory",token,{"p_action":"read","p_tenant_id":tenant})["members"]
+    matches=[r for r in rows if r["user_id"]==restricted["id"]]
+    assert len(matches)==1
+    return matches[0]
+initial=membership_read(rt,ta)
+assert initial["membership_role"]=="member" and initial["membership_state"]=="active"
+promotion={"p_action":"add_member","p_tenant_id":ta,"p_member_user_id":restricted["id"],"p_member_role":"tenant_admin","p_request_id":rid()}
+with ThreadPoolExecutor(max_workers=2) as pool:
+    results=list(pool.map(lambda _: rpc("convay_tenant_admin",rt,promotion),range(2)))
+assert results[0]==results[1]
+assert membership_read(rt,ta)["revision"]==initial["revision"]+1
+assert membership_read(at,ta)["membership_role"]=="tenant_admin"
+assert companies(mt)=={ta}
+assert membership_read(mt,ta)["membership_role"]=="tenant_admin"
+assert companies(bt)=={tb}
+assert sum(e["request_id"]==promotion["p_request_id"] for e in tenant_audit(rt,ta))==1
+# Obtain a genuine second session, refresh it, then retain both tokens across
+# the root-authorized role demotion. No fabricated claim or browser grant.
+second=call("/auth/v1/token?grant_type=password",anon,{"email":restricted["email"],"password":restricted["password"]})
+renewed=call("/auth/v1/token?grant_type=refresh_token",anon,{"refresh_token":second["refresh_token"]})
+assert renewed["user"]["id"]==restricted["id"]
+mt2=renewed["access_token"]
+assert companies(mt2)=={ta}
+tenant_action("add_member",p_tenant_id=ta,p_member_user_id=restricted["id"],p_member_role="member")
+assert membership_read(rt,ta)["revision"]==initial["revision"]+2
+for token in (mt,mt2,login(restricted)):
+    assert companies(token)==set()
+    tenant_audit(token,ta,expected=(403,))
+    rpc("convay_company_directory",token,{"p_action":"read","p_tenant_id":ta},expected=(403,))
+    read_draft(token,ta,expected=(403,))
+assert companies(at)=={ta} and companies(bt)=={tb}
+print("LOCAL_TENANT_ROLE_REASSIGNMENT_PASS: verified restricted member, root-only promotion, concurrent idempotency, second-session refresh, immediate demotion denial",flush=True)
+
+
 # Reproduce global fallback through real API, not a fabricated JWT.
 record={"entity_key":"bms.templates","record_id":"local-legacy-template","payload":{"id":"local-legacy-template","title":"Legacy fixture"}}
 call("/rest/v1/convay_entity_records",rt,record,method="POST")
