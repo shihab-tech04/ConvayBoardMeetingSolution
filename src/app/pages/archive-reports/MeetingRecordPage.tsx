@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { recordListCountLabel, recordListState } from "./recordListState";
+import { resolveRecordMeeting, selectMeetingRecordLinks } from "./meetingRecordLinks";
 import { legacyNamedArchiveVotes, recordedVoteCount } from "./legacyArchiveVoteView";
 import { persistMinutesReviewTransition } from "./minutesReviewPersistence";
 import type { Minutes } from "../../data/boardMeetingData";
@@ -183,7 +184,7 @@ export function MeetingRecordPage() {
   const interactionReg = useMeetingInteractionRegistry();
   const sessionReg     = useLiveMeetingSessionRegistry();
 
-  const meeting = meetingReg.items.find(m => m.id === meetingId || m.meeting_id === meetingId);
+  const meeting = resolveRecordMeeting(meetingReg.items, meetingId);
 
   // A pending/failed SQL list is not evidence that a meeting does not exist.
   if (meetingReg.loading) {
@@ -223,7 +224,7 @@ export function MeetingRecordPage() {
         <AlertCircle size={48} style={{ margin: "0 auto 1rem", color: "#ef4444", display: "block" }} />
         <h2 style={{ fontSize: "1.2rem", fontWeight: 700, marginBottom: "0.5rem" }}>Meeting Not Found</h2>
         <p style={{ color: "var(--color-muted-foreground)", marginBottom: "1.5rem" }}>
-          No meeting record found for ID: {meetingId}
+          No uniquely identifiable meeting record found for ID: {meetingId}
         </p>
         <button onClick={() => navigate(-1)} style={{ padding: "0.5rem 1.25rem", borderRadius: 8, background: "var(--color-primary)", color: "#fff", border: "none", cursor: "pointer" }}>
           Go Back
@@ -270,9 +271,15 @@ export function MeetingRecordPage() {
   const meetingQuorumEvts = quorumEventReg.items.filter(q => q.meeting_id === mid);
   const meetingMotions    = motionReg.items.filter(m => m.meeting_id === mid);
   const meetingVotes      = voteReg.items.filter(v => v.meeting_id === mid);
-  const meetingDecisions  = decisionReg.items.filter(d => d.meeting_id === mid || d.source_meeting === mid);
-  const meetingResolutions = resolutionReg.items.filter(r => r.meeting_id === mid || r.source_meeting === mid);
-  const meetingActions    = actionReg.items.filter(a => a.meeting_id === mid || a.source_meeting === mid);
+  const decisionLinks = selectMeetingRecordLinks(meetingReg.items, meeting, decisionReg.items);
+  const meetingDecisions = decisionLinks.rows;
+  const decisionReadError = decisionReg.error || (!decisionReg.loading && decisionLinks.integrityError);
+  const resolutionLinks = selectMeetingRecordLinks(meetingReg.items, meeting, resolutionReg.items);
+  const meetingResolutions = resolutionLinks.rows;
+  const resolutionReadError = resolutionReg.error || (!resolutionReg.loading && resolutionLinks.integrityError);
+  const actionLinks = selectMeetingRecordLinks(meetingReg.items, meeting, actionReg.items);
+  const meetingActions = actionLinks.rows;
+  const actionReadError = actionReg.error || (!actionReg.loading && actionLinks.integrityError);
   const meetingMinutes    = minutesReg.items.filter(m => m.meeting_id === mid);
   const meetingAudit      = auditReg.items.filter(a => a.meeting_id === mid);
   const meetingInteractions = interactionReg.items.filter(i => i.meeting_id === mid);
@@ -309,8 +316,8 @@ export function MeetingRecordPage() {
         <KV label="Quorum Required"   value={meeting.quorum_required} />
         <KV label="Agenda Items"      value={recordListCountLabel(Boolean(agendaReg.loading || agendaLinks.loading), agendaReg.error || agendaLinks.error, meetingAgendas.length)} />
         <KV label="Minutes Records"   value={recordListCountLabel(Boolean(minutesReg.loading), minutesReg.error, meetingMinutes.length)} />
-        <KV label="Decisions"         value={recordListCountLabel(Boolean(decisionReg.loading), decisionReg.error, meetingDecisions.length)} />
-        <KV label="Actions"           value={recordListCountLabel(Boolean(actionReg.loading), actionReg.error, meetingActions.length)} />
+        <KV label="Decisions"         value={recordListCountLabel(Boolean(decisionReg.loading), decisionReadError, meetingDecisions.length)} />
+        <KV label="Actions"           value={recordListCountLabel(Boolean(actionReg.loading), actionReadError, meetingActions.length)} />
       </SectionCard>
       {meetingSessions.length > 0 && (
         <SectionCard title="Live Session">
@@ -647,9 +654,9 @@ export function MeetingRecordPage() {
 
   const renderDecisions = () => (
     <>
-      <SectionCard title={`Decisions (${recordListCountLabel(Boolean(decisionReg.loading), decisionReg.error, meetingDecisions.length)})`}>
-        {decisionReg.error || decisionReg.loading ? (
-          <SourceReadNotice loading={!decisionReg.error && Boolean(decisionReg.loading)} name="decisions" retry={() => decisionReg.refresh?.()} />
+      <SectionCard title={`Decisions (${recordListCountLabel(Boolean(decisionReg.loading), decisionReadError, meetingDecisions.length)})`}>
+        {decisionReadError || decisionReg.loading ? (
+          <SourceReadNotice loading={!decisionReadError && Boolean(decisionReg.loading)} name="decisions" retry={() => Promise.all([meetingReg.refresh?.(), decisionReg.refresh?.()])} />
         ) : meetingDecisions.length === 0 ? (
           <EmptyState icon={CheckSquare} message="No decisions recorded." />
         ) : meetingDecisions.map(d => (
@@ -663,9 +670,9 @@ export function MeetingRecordPage() {
           </div>
         ))}
       </SectionCard>
-      <SectionCard title={`Resolutions (${recordListCountLabel(Boolean(resolutionReg.loading), resolutionReg.error, meetingResolutions.length)})`}>
-        {resolutionReg.error || resolutionReg.loading ? (
-          <SourceReadNotice loading={!resolutionReg.error && Boolean(resolutionReg.loading)} name="resolutions" retry={() => resolutionReg.refresh?.()} />
+      <SectionCard title={`Resolutions (${recordListCountLabel(Boolean(resolutionReg.loading), resolutionReadError, meetingResolutions.length)})`}>
+        {resolutionReadError || resolutionReg.loading ? (
+          <SourceReadNotice loading={!resolutionReadError && Boolean(resolutionReg.loading)} name="resolutions" retry={() => Promise.all([meetingReg.refresh?.(), resolutionReg.refresh?.()])} />
         ) : meetingResolutions.length === 0 ? (
           <EmptyState icon={CheckCircle} message="No resolutions recorded." />
         ) : meetingResolutions.map(r => (
@@ -678,9 +685,9 @@ export function MeetingRecordPage() {
           </div>
         ))}
       </SectionCard>
-      <SectionCard title={`Action Items (${recordListCountLabel(Boolean(actionReg.loading), actionReg.error, meetingActions.length)})`}>
-        {actionReg.error || actionReg.loading ? (
-          <SourceReadNotice loading={!actionReg.error && Boolean(actionReg.loading)} name="action items" retry={() => actionReg.refresh?.()} />
+      <SectionCard title={`Action Items (${recordListCountLabel(Boolean(actionReg.loading), actionReadError, meetingActions.length)})`}>
+        {actionReadError || actionReg.loading ? (
+          <SourceReadNotice loading={!actionReadError && Boolean(actionReg.loading)} name="action items" retry={() => Promise.all([meetingReg.refresh?.(), actionReg.refresh?.()])} />
         ) : meetingActions.length === 0 ? (
           <EmptyState icon={CheckSquare} message="No action items recorded." />
         ) : meetingActions.map(a => (

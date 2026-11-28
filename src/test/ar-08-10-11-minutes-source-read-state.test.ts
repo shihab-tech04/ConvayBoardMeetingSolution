@@ -11,11 +11,13 @@ describe("AR-08/10/11 and MN-05/10 — source read state and minutes field integ
     ["minutesReg", "meetingMinutes"],
     ["auditReg", "meetingAudit"],
   ])("gates %s rows and controls behind its own read state", (reg, rows) => {
-    const start = page.indexOf(`{${reg}.error || ${reg}.loading ? (`);
+    const linked = ["decisionReg", "resolutionReg", "actionReg"].includes(reg);
+    const error = linked ? reg.replace(/Reg$/, "ReadError") : `${reg}.error`;
+    const start = page.indexOf(`{${error} || ${reg}.loading ? (`);
     expect(start).toBeGreaterThan(-1);
     const guarded = page.slice(start, start + 400);
-    expect(guarded).toContain(`loading={!${reg}.error && Boolean(${reg}.loading)}`);
-    expect(guarded).toContain(`retry={() => ${reg}.refresh?.()}`);
+    expect(guarded).toContain(`loading={!${error} && Boolean(${reg}.loading)}`);
+    expect(guarded).toContain(linked ? `retry={() => Promise.all([meetingReg.refresh?.(), ${reg}.refresh?.()])}` : `retry={() => ${reg}.refresh?.()}`);
     expect(guarded).toContain(`) : ${rows}.length === 0 ? (`);
   });
   it("does not copy quorum text into the discussion field or hide its separate provenance", () => {

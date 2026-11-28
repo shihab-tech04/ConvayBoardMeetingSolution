@@ -20,8 +20,8 @@ describe("AR-03 — authoritative meeting overview counts", () => {
     for (const expression of [
       "recordListCountLabel(Boolean(agendaReg.loading || agendaLinks.loading), agendaReg.error || agendaLinks.error, meetingAgendas.length)",
       "recordListCountLabel(Boolean(minutesReg.loading), minutesReg.error, meetingMinutes.length)",
-      "recordListCountLabel(Boolean(decisionReg.loading), decisionReg.error, meetingDecisions.length)",
-      "recordListCountLabel(Boolean(actionReg.loading), actionReg.error, meetingActions.length)",
+      "recordListCountLabel(Boolean(decisionReg.loading), decisionReadError, meetingDecisions.length)",
+      "recordListCountLabel(Boolean(actionReg.loading), actionReadError, meetingActions.length)",
     ]) expect(page).toContain(expression);
   });
 });
