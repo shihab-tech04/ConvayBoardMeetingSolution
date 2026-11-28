@@ -48,3 +48,18 @@ const strictPolicy={policyId:'policy',version:1,method:'Secret Ballot',numerator
 for(const [field,value] of [['method',['Secret Ballot']],['basis',['cast']],['comparison',['gte']]])test('workspace rejects non-string policy '+field,()=>assert.equal(projectReceipt({...workspaceOf(workspaceRow),policies:[{...strictPolicy,[field]:value}]},scope,{action:'workspace'}),null));
 for(const [field,value] of [['basis',['cast']],['comparison',['gte']]])test('archive rejects non-string policy '+field,()=>assert.equal(projectReceipt({...scope,rounds:[{...archiveRow,[field]:value}]},scope,{action:'archive'}),null));
 test('valid policy enums retain exact original values',()=>{const v=projectReceipt({...workspaceOf(workspaceRow),policies:[strictPolicy]},scope,{action:'workspace'});assert.deepEqual(v.policies,[strictPolicy]);});
+
+
+// A projection must not inflate results or introduce ambiguous identities.
+const closedWorkspaceRow={...archiveRow,canCast:false,reopenAllowed:true};
+const secondRound='44444444-4444-4444-8444-444444444444';
+test('workspace rejects duplicate motion identity',()=>assert.equal(projectReceipt({...workspaceOf(workspaceRow),motions:[scopeMotion,{...scopeMotion,title:'Conflicting'}]},scope,{action:'workspace'}),null));
+test('workspace rejects duplicate policy version',()=>assert.equal(projectReceipt({...workspaceOf(workspaceRow),policies:[strictPolicy,{...strictPolicy,numerator:2}]},scope,{action:'workspace'}),null));
+test('workspace rejects duplicate closed round identity',()=>assert.equal(projectReceipt({...workspaceOf(closedWorkspaceRow),rounds:[closedWorkspaceRow,closedWorkspaceRow]},scope,{action:'workspace'}),null));
+test('archive rejects duplicate round identity',()=>assert.equal(projectReceipt({...scope,rounds:[archiveRow,archiveRow]},scope,{action:'archive'}),null));
+test('archive rejects conflicting round number for same motion',()=>assert.equal(projectReceipt({...scope,rounds:[archiveRow,{...archiveRow,roundId:secondRound}]},scope,{action:'archive'}),null));
+test('workspace rejects conflicting round number for same motion',()=>assert.equal(projectReceipt({...workspaceOf(closedWorkspaceRow),rounds:[closedWorkspaceRow,{...closedWorkspaceRow,roundId:secondRound}]},scope,{action:'workspace'}),null));
+test('distinct historical rounds remain available',()=>{const reopened={...archiveRow,roundId:secondRound,round:2,priorRound:round,reopenReason:'Approved retry'};assert.equal(projectReceipt({...scope,rounds:[archiveRow,reopened]},scope,{action:'archive'}).rounds.length,2);});
+test('named ballot projection rejects duplicate voter',()=>assert.equal(projectReceipt({...base,method:'Open',for:2,against:0,abstain:0,ballots:[{voter:actor,choice:'For'},{voter:actor,choice:'For'}]},scope,read),null));
+test('named ballot projection rejects mismatched tally',()=>assert.equal(projectReceipt({...base,method:'Open',for:0,against:1,abstain:0,ballots:[{voter:actor,choice:'For'}]},scope,read),null));
+test('aggregate-only open projection stays valid',()=>assert(projectReceipt({...base,method:'Open',for:1,against:0,abstain:0},scope,read)));

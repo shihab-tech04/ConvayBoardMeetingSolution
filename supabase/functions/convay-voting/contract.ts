@@ -18,6 +18,7 @@ const wording = (x: unknown, max: number) => typeof x === 'string' && !!x.trim()
 const choice = (x: unknown): x is Choice => x === 'For' || x === 'Against' || x === 'Abstain';
 const keys = (x: Record<string,unknown>, allowed: string[]) => Object.keys(x).every(k => allowed.includes(k));
 const integer = (x: unknown): x is number => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0;
+const unique = (ids: readonly string[]): boolean => new Set(ids).size === ids.length;
 export function parseDiscovery(raw:unknown):{meetingId:string;sessionId:string}|null {
  if(!record(raw)||!keys(raw,['meetingId','sessionId','command'])||!identity(raw.meetingId)||!identity(raw.sessionId)||!record(raw.command)||!keys(raw.command,['action'])||raw.command.action!=='discover')return null;
  return {meetingId:raw.meetingId,sessionId:raw.sessionId};
@@ -71,7 +72,9 @@ export function projectReceipt(raw: unknown, scope: Scope, c: Command): Record<s
   }
   if(raw.method==='Open' && (raw.state==='Closed'||hasCounts) && 'ballots' in raw) {
     if(!Array.isArray(raw.ballots)||!raw.ballots.every(b=>record(b)&&uuid(b.voter)&&choice(b.choice))) return null;
-    out.ballots=raw.ballots.map(b=>({voter:b.voter,choice:b.choice}));
+    const ballots=raw.ballots.map(b=>({voter:b.voter,choice:b.choice}));
+    if(!unique(ballots.map(b=>b.voter.toLowerCase())) || ballots.filter(b=>b.choice==='For').length!==raw.for || ballots.filter(b=>b.choice==='Against').length!==raw.against || ballots.filter(b=>b.choice==='Abstain').length!==raw.abstain) return null;
+    out.ballots=ballots;
   }
   return out;
 }
@@ -97,6 +100,7 @@ function projectWorkspace(raw:Record<string,unknown>,scope:Scope):WorkspaceView|
  if(!Array.isArray(raw.motions)||!Array.isArray(raw.rounds)||!Array.isArray(raw.policies)||typeof raw.canManage!=='boolean'||typeof raw.quorumMet!=='boolean'||!Array.isArray(raw.eligibleAgendaIds)||!raw.eligibleAgendaIds.every(identity))return null;
  const motions=raw.motions.map(motion),policies=raw.policies.map(policy);
  if(motions.some(x=>!x)||policies.some(x=>!x))return null;
+ if(!unique((motions as MotionView[]).map(m=>m.motionId.toLowerCase()))||!unique((policies as PolicyView[]).map(p=>`${p.policyId}:${p.version}`)))return null;
  const rounds=raw.rounds.map(r=>{
   if(!record(r)||!nestedScopeMatches(r,scope)||!uuid(r.roundId)||typeof r.canCast!=='boolean'||typeof r.reopenAllowed!=='boolean')return null;
   const projected=projectReceipt({...r,...scope},scope,{action:'read',roundId:r.roundId});if(!projected)return null;
@@ -104,6 +108,8 @@ function projectWorkspace(raw:Record<string,unknown>,scope:Scope):WorkspaceView|
   return {...round,canCast:r.canCast,reopenAllowed:r.reopenAllowed} as RoundView;
  });
  if(rounds.some(x=>!x)||rounds.filter(r=>r?.state==='Open').length>1||rounds.some(r=>!motions.some(m=>m?.motionId===r?.motionId)))return null;
+ const verifiedRounds=rounds as RoundView[];
+ if(!unique(verifiedRounds.map(r=>r.roundId.toLowerCase()))||!unique(verifiedRounds.map(r=>`${r.motionId.toLowerCase()}:${r.round}`)))return null;
  return {...scope,motions:motions as MotionView[],policies:policies as PolicyView[],rounds:rounds as RoundView[],eligibleAgendaIds:raw.eligibleAgendaIds as string[],canManage:raw.canManage,quorumMet:raw.quorumMet};
 }
 function projectArchive(raw:Record<string,unknown>,scope:Scope):Record<string,unknown>|null {
@@ -115,5 +121,9 @@ function projectArchive(raw:Record<string,unknown>,scope:Scope):Record<string,un
   const {tenantId:_,meetingId:__,sessionId:___,myRecorded:____,...round}=projected;
   return {...round,agendaId:r.agendaId,title:r.title,wording:r.wording,closedAt:r.closedAt,numerator:r.numerator,denominator:r.denominator,basis:r.basis,comparison:r.comparison};
  });
- return rounds.some(r=>!r)?null:{...scope,rounds};
+ if(rounds.some(r=>!r))return null;
+ // Each accepted projection already has a verified UUID and round number.
+ const ids=raw.rounds.map(r=>r.roundId.toLowerCase());
+ const motionRounds=raw.rounds.map(r=>`${r.motionId.toLowerCase()}:${r.round}`);
+ return unique(ids)&&unique(motionRounds)?{...scope,rounds}:null;
 }
