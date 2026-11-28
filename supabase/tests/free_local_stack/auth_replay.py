@@ -566,3 +566,26 @@ catalog_queries=[
 for index,q in enumerate(catalog_queries,1):
     assert json.loads(sql(q,tuples=True,local_restore_admin=True))==json.loads(sql(q,dbname=restore_db,tuples=True,local_restore_admin=True)), "Restored security catalog mismatch "+str(index)
 print("LOCAL_SYNTHETIC_NATIVE_RESTORE_PASS",len(table_names),"tables and five security catalogs",flush=True)
+
+# Verify native structural recovery independently of the security catalogs.
+# Compare names and definitions, not database-specific OIDs.  The synthetic
+# source and restore share a cluster, so role recovery is not claimed here.
+structural_queries = {
+    "constraints": "SELECT COALESCE(json_agg(x ORDER BY schema_name,relation_name,constraint_name),'[]') FROM (SELECT n.nspname schema_name,c.relname relation_name,k.conname constraint_name,k.contype,k.condeferrable,k.condeferred,k.convalidated,pg_get_constraintdef(k.oid) definition FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+")) x",
+    "indexes": "SELECT COALESCE(json_agg(x ORDER BY schema_name,index_name),'[]') FROM (SELECT n.nspname schema_name,c.relname index_name,i.indisunique,i.indisprimary,i.indisvalid,i.indisready,pg_get_indexdef(c.oid) definition FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+")) x",
+    "triggers": "SELECT COALESCE(json_agg(x ORDER BY schema_name,relation_name,trigger_name),'[]') FROM (SELECT n.nspname schema_name,c.relname relation_name,t.tgname trigger_name,t.tgenabled,pg_get_triggerdef(t.oid) definition FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ("+scope+") AND NOT t.tgisinternal) x",
+    "sequences": "SELECT COALESCE(json_agg(x ORDER BY schemaname,sequencename),'[]') FROM (SELECT schemaname,sequencename,sequenceowner,data_type::text,start_value,min_value,max_value,increment_by,cycle,cache_size,last_value FROM pg_sequences WHERE schemaname IN ("+scope+")) x",
+    "columns": "SELECT COALESCE(json_agg(x ORDER BY schema_name,relation_name,column_number),'[]') FROM (SELECT n.nspname schema_name,c.relname relation_name,a.attnum column_number,a.attname,format_type(a.atttypid,a.atttypmod) data_type,a.attnotnull,a.attidentity,a.attgenerated,pg_get_expr(d.adbin,d.adrelid) default_expression FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE n.nspname IN ("+scope+") AND c.relkind IN ('r','p') AND a.attnum>0 AND NOT a.attisdropped) x",
+}
+for label, query in structural_queries.items():
+    source_catalog = json.loads(sql(query,tuples=True,local_restore_admin=True))
+    restored_catalog = json.loads(sql(query,dbname=restore_db,tuples=True,local_restore_admin=True))
+    assert source_catalog == restored_catalog, "Restored structural catalog mismatch: " + label
+    print("LOCAL_NATIVE_STRUCTURE_PASS",label,len(source_catalog),flush=True)
+# pg_sequences.last_value is NULL for an unused sequence. Verify the exact
+# is_called flag as well, without advancing any source or restored sequence.
+sequences = json.loads(sql("SELECT COALESCE(json_agg(json_build_array(schemaname,sequencename) ORDER BY schemaname,sequencename),'[]') FROM pg_sequences WHERE schemaname IN ("+scope+")",tuples=True,local_restore_admin=True))
+for schema, sequence in sequences:
+    state_query = "SELECT json_build_array(last_value,is_called) FROM " + ident(schema) + "." + ident(sequence)
+    assert json.loads(sql(state_query,tuples=True,local_restore_admin=True)) == json.loads(sql(state_query,dbname=restore_db,tuples=True,local_restore_admin=True)), "Restored sequence state differs"
+print("LOCAL_NATIVE_SEQUENCE_STATE_PASS",len(sequences),flush=True)
