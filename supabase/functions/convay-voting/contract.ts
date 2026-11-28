@@ -127,3 +127,25 @@ function projectArchive(raw:Record<string,unknown>,scope:Scope):Record<string,un
  const motionRounds=raw.rounds.map(r=>`${r.motionId.toLowerCase()}:${r.round}`);
  return unique(ids)&&unique(motionRounds)?{...scope,rounds}:null;
 }
+
+// A successful command receipt is not proof that the requested record was saved.
+// Reconcile the immutable command intent against independently fetched SQL state.
+// A round may already be closed by another authorized host; its identity and
+// original policy/content must still match. Secret choices never enter readback.
+export type VotingMutation=Exclude<Command,{action:'read'|'workspace'|'archive'}>;
+export function confirmsVotingMutation(scope:Scope,actorId:string,command:VotingMutation,receipt:Record<string,unknown>,workspace:WorkspaceView):boolean {
+ if(![receipt,workspace].every(row=>row.tenantId===scope.tenantId&&row.meetingId===scope.meetingId&&row.sessionId===scope.sessionId))return false;
+ if(command.action==='motion'){
+  const m=workspace.motions.find(m=>m.motionId===receipt.motionId);
+  return !!m&&m.proposerId===actorId&&m.agendaId===command.agendaId&&m.title===command.title&&m.wording===command.wording&&m.seconderId===(command.seconderId??null)&&m.notes===(command.notes??'')&&m.amendments===(command.amendments??'')&&m.votingRequired===(command.votingRequired??true);
+ }
+ const r=workspace.rounds.find(r=>r.roundId===receipt.roundId);
+ if(!r)return false;
+ if(command.action==='cast')return r.roundId===command.roundId&&receipt.recorded===true&&r.myRecorded;
+ if(command.action==='close')return r.roundId===command.roundId&&r.state==='Closed'&&r.outcome===receipt.outcome;
+ const m=workspace.motions.find(m=>m.motionId===command.motionId);
+ if(!m||r.motionId!==command.motionId||r.policyId!==command.policyId||r.policyVersion!==command.policyVersion||r.voteTitle!==(command.voteTitle||m.title)||r.voteNotes!==(command.voteNotes??''))return false;
+ if(command.action==='open')return r.round===1&&r.priorRound===null&&r.reopenReason===null;
+ const prior=workspace.rounds.find(p=>p.roundId===command.priorRoundId);
+ return !!prior&&prior.state==='Closed'&&prior.motionId===r.motionId&&prior.policyId===r.policyId&&prior.policyVersion===r.policyVersion&&r.round===prior.round+1&&r.priorRound===command.priorRoundId&&r.reopenReason===command.reason;
+}

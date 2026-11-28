@@ -1,7 +1,7 @@
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
-import {discoverScopedVoting,submitScopedVote,type VotingDiscovery,type Command} from '../../services/supabase/regularMeetingVoting';
-import type {WorkspaceView} from '../../../../supabase/functions/convay-voting/contract';
-export type VotingMutation=Exclude<Command,{action:'read'|'workspace'|'archive'}>;
+import {discoverScopedVoting,submitScopedVote,type VotingDiscovery} from '../../services/supabase/regularMeetingVoting';
+import {confirmsVotingMutation,type WorkspaceView,type VotingMutation} from '../../../../supabase/functions/convay-voting/contract';
+export type {VotingMutation} from '../../../../supabase/functions/convay-voting/contract';
 export function useRegularMeetingVoting(enabled:boolean,meetingId:string,sessionId:string,actorId:string,accessKey:string){
  const epoch=useMemo(()=>({enabled,meetingId,sessionId,actorId,accessKey}),[enabled,meetingId,sessionId,actorId,accessKey]);
  const current=useRef<typeof epoch|null>(epoch);current.current=epoch;
@@ -31,13 +31,11 @@ export function useRegularMeetingVoting(enabled:boolean,meetingId:string,session
    try{
      const receipt=await submitScopedVote(scope,command,isCurrent);
      const next=await refresh();
-     if(!isCurrent()||next?.kind!=='company'||next.tenantId!==scope.tenantId)throw Error('Readback unavailable');
-     const round=next.rounds.find(r=>r.roundId===receipt.roundId);
-     if(command.action==='motion'?!next.motions.some(m=>m.motionId===receipt.motionId):!round || (command.action==='cast'&&!round.myRecorded)||(command.action==='close'&&(round.state!=='Closed'||round.outcome!==receipt.outcome)))throw Error('Readback mismatch');
+     if(!isCurrent()||next?.kind!=='company'||!confirmsVotingMutation(scope,actorId,command,receipt,next))throw Error('Readback mismatch');
      setPending(null);return true;
    }catch{if(isCurrent())setSaved(prev=>({epoch,data:prev.epoch===epoch?prev.data:null,error:'The command is not confirmed. Retry the same request or refresh.'}));return false;}
    finally{if(inFlight.current===token)inFlight.current=null;if(isCurrent())setBusy(null);}
- },[isCurrent,data,unresolved,epoch,refresh]);
+ },[isCurrent,data,unresolved,epoch,refresh,actorId]);
  return {mode:!enabled||data?.kind==='legacy'?'legacy':data?.kind==='company'?'company':'pending',workspace:data?.kind==='company'?data as WorkspaceView:null,error,busy:busy===epoch,pending:unresolved,refresh,execute} as const;
 }
 export type RegularMeetingVoting=ReturnType<typeof useRegularMeetingVoting>;

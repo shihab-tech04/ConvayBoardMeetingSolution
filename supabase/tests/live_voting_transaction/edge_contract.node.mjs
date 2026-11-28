@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {votingHandler} from '../../functions/convay-voting/handler.ts';
-import {parseRequest,projectReceipt} from '../../functions/convay-voting/contract.ts';
+import {parseRequest,projectReceipt,confirmsVotingMutation} from '../../functions/convay-voting/contract.ts';
 const actor='11111111-1111-4111-8111-111111111111', sid='51111111-1111-4111-8111-111111111111', round='22222222-2222-4222-8222-222222222222', motion='33333333-3333-4333-8333-333333333333';
 const scope={tenantId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',meetingId:'MTG-SHARED',sessionId:'SES-A'};
 const cmd={action:'cast',roundId:round,choice:'For',requestId:'request_000000000001'};
@@ -63,3 +63,22 @@ test('distinct historical rounds remain available',()=>{const reopened={...archi
 test('named ballot projection rejects duplicate voter',()=>assert.equal(projectReceipt({...base,method:'Open',for:2,against:0,abstain:0,ballots:[{voter:actor,choice:'For'},{voter:actor,choice:'For'}]},scope,read),null));
 test('named ballot projection rejects mismatched tally',()=>assert.equal(projectReceipt({...base,method:'Open',for:0,against:1,abstain:0,ballots:[{voter:actor,choice:'For'}]},scope,read),null));
 test('aggregate-only open projection stays valid',()=>assert(projectReceipt({...base,method:'Open',for:1,against:0,abstain:0},scope,read)));
+
+
+// Independent SQL readback must prove the original command, not just an ID.
+const motionIntent={action:'motion',agendaId:'AG-1',title:'M',wording:'W',requestId:cmd.requestId};
+const openIntent={action:'open',motionId:motion,policyId:'policy',policyVersion:1,requestId:cmd.requestId};
+const fullRound={...workspaceRow,voteTitle:'M',voteNotes:''};
+const motionAck={...scope,motionId:motion};
+const roundAck={...scope,roundId:round};
+const check=(command,ack,workspace,who=actor)=>confirmsVotingMutation(scope,who,command,ack,workspace);
+test('motion readback confirms all original fields and defaults',()=>assert(check(motionIntent,motionAck,workspaceOf(fullRound))));
+for(const [field,value] of [['agendaId','AG-2'],['title','Other'],['wording','Other'],['proposerId',secondRound],['seconderId',secondRound],['notes','Other'],['amendments','Other'],['votingRequired',false]])test('motion readback rejects changed '+field,()=>assert(!check(motionIntent,motionAck,{...workspaceOf(fullRound),motions:[{...scopeMotion,[field]:value}]})));
+test('motion readback confirms explicit optional values',()=>{const intent={...motionIntent,seconderId:secondRound,notes:'Notes',amendments:'Amend',votingRequired:false};assert(check(intent,motionAck,{...workspaceOf(fullRound),motions:[{...scopeMotion,seconderId:secondRound,notes:'Notes',amendments:'Amend',votingRequired:false}]}));});
+test('open readback confirms motion, policy and SQL title fallback',()=>assert(check(openIntent,roundAck,workspaceOf(fullRound))));
+for(const [field,value] of [['motionId',secondRound],['policyId','other'],['policyVersion',2],['voteTitle','Other'],['voteNotes','Other'],['priorRound',secondRound],['round',2],['reopenReason','Other']])test('open readback rejects changed '+field,()=>assert(!check(openIntent,roundAck,workspaceOf({...fullRound,[field]:value}))));
+test('open readback tolerates a valid concurrently closed round',()=>assert(check(openIntent,roundAck,workspaceOf({...fullRound,state:'Closed',outcome:'Passed'}))));
+test('reopen requires previous closed round and original policy/content',()=>{const intent={...openIntent,action:'reopen',priorRoundId:round,reason:'Approved retry'};const ack={...scope,roundId:secondRound};const previous={...fullRound,state:'Closed',outcome:'Passed'};const next={...fullRound,roundId:secondRound,round:2,priorRound:round,reopenReason:'Approved retry'};const ws={...workspaceOf(next),rounds:[previous,next]};assert(check(intent,ack,ws));assert(!check(intent,ack,{...ws,rounds:[next]}));assert(!check(intent,ack,{...ws,rounds:[previous,{...next,reopenReason:'Wrong'}]}));assert(!check(intent,ack,{...ws,rounds:[{...previous,state:'Open'},next]}));});
+test('cast checks only own recorded flag and exact round, not secret choice',()=>{assert(check(cmd,{...roundAck,recorded:true},workspaceOf(fullRound)));assert(!check(cmd,{...roundAck,recorded:true},workspaceOf({...fullRound,myRecorded:false})));assert(!check(cmd,{...roundAck,roundId:secondRound,recorded:true},workspaceOf({...fullRound,roundId:secondRound})));});
+test('close checks exact round and confirmed terminal outcome',()=>{const intent={action:'close',roundId:round,requestId:cmd.requestId};const ack={...roundAck,outcome:'Passed'};assert(check(intent,ack,workspaceOf({...fullRound,state:'Closed',outcome:'Passed'})));assert(!check(intent,ack,workspaceOf({...fullRound,state:'Closed',outcome:'Rejected'})));assert(!check(intent,ack,workspaceOf(fullRound)));});
+for(const field of ['tenantId','meetingId','sessionId'])test('readback rejects wrong '+field+' even for matching round ID',()=>{assert(!check(openIntent,roundAck,{...workspaceOf(fullRound),[field]:'wrong'}));assert(!check(openIntent,{...roundAck,[field]:'wrong'},workspaceOf(fullRound)));});
