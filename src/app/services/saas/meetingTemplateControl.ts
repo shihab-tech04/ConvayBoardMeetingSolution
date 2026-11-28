@@ -107,12 +107,27 @@ export function validateMeetingTemplateDefinition(definition: MeetingTemplateDef
   }
 }
 
+function classifyTemplateMutationError(action: string, cause: unknown, status: unknown, code: unknown): unknown {
+  if (cause instanceof Error && ["create", "revise", "publish", "copy"].includes(action)
+    && typeof status === "number" && status >= 400 && status < 500
+    && typeof code === "string" && ["22023", "22P02", "23514", "42501", "P0002", "40001", "23505"].includes(code)) {
+    cause.name = "TemplateMutationRejected";
+  }
+  return cause;
+}
+
 export async function templateAction<T>(action: string, payload: Record<string, unknown>): Promise<T> {
-  const result = await convayAuth.authenticatedRequest("/rest/v1/rpc/convay_meeting_template_manage", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ p_action: action, p_payload: payload }),
-  });
+  let result: Response;
+  try {
+    result = await convayAuth.authenticatedRequest("/rest/v1/rpc/convay_meeting_template_manage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_action: action, p_payload: payload }),
+    });
+  } catch (cause) {
+    const failure = cause as { httpStatus?: unknown; sqlState?: unknown } | null;
+    throw classifyTemplateMutationError(action, cause, failure?.httpStatus, failure?.sqlState);
+  }
   const body: unknown = await result.json().catch(() => null);
   if (!result.ok) {
     // PostgREST can return a JSON error, an HTML gateway response, or no body.
@@ -120,13 +135,9 @@ export async function templateAction<T>(action: string, payload: Record<string, 
     const error = body && typeof body === "object" && !Array.isArray(body)
       && "message" in body && typeof body.message === "string"
       ? body.message : "Meeting template SQL request failed. Refresh and retry.";
-    const failure=new Error(error);
-    if(["create","revise","publish","copy"].includes(action) && result.status>=400 && result.status<500
-      && body && typeof body==="object" && !Array.isArray(body) && "code" in body
-      && typeof body.code==="string" && ["22023","22P02","23514","42501","P0002","40001","23505"].includes(body.code)){
-      failure.name="TemplateMutationRejected";
-    }
-    throw failure;
+    const code = body && typeof body === "object" && !Array.isArray(body) && "code" in body
+      ? body.code : undefined;
+    throw classifyTemplateMutationError(action, new Error(error), result.status, code);
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Meeting template SQL response is invalid");
