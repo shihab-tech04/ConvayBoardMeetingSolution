@@ -1,5 +1,6 @@
 import { convayAuth } from "../supabase/convayAuth";
 import type { StoredContent } from "../types/documents";
+import { validatePinnedOriginal } from "./documentOriginalIdentity";
 
 interface DbContent {
   id: string;
@@ -170,10 +171,14 @@ export const supabaseDocumentContentStore = {
   async getOriginalFile(documentId: string, versionId?: string): Promise<File | null> {
     const entry = await byId("file:" + documentId + ":" + (versionId ?? "latest"));
     if (!entry || !entry.storage_path) return null;
+    if (versionId !== undefined) validatePinnedOriginal(entry, documentId, versionId);
     const res = await convayAuth.authenticatedRequest(
       storage("authenticated/convay-documents/" + entry.storage_path),
     );
     const blob = await res.blob();
+    if (versionId !== undefined && blob.size !== entry.size) {
+      throw new Error("Original-file byte count does not match the selected historical version.");
+    }
     return new File([blob], entry.file_name ?? "document", {
       type: entry.mime_type ?? "application/octet-stream",
     });

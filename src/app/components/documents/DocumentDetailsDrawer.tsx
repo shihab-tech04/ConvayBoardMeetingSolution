@@ -56,6 +56,7 @@ import { exactBoardPackLink, resolveBoardPackVersion, resolveDraftPack } from ".
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getDocumentRepository } from "../../services/repositories/documentRepository";
 import { documentContentStore } from "../../services/repositories/documentContentStore";
+import { retrieveVersionOriginalForDownload } from "./documentOriginalDownload";
 import type { DocumentRepository, DocumentAccessEntry } from "../../services/types/documents";
 import { getDocumentWorkspaceType } from "../../utils/documentFormat";
 import { canRestoreVersion, isLockedVersion } from "./documentVersionLock";
@@ -627,8 +628,17 @@ function VersionsTab({
   const [comparing, setComparing]       = useState<string | null>(null);
   const [diffChunks, setDiffChunks]     = useState<DiffChunk[] | null>(null);
   const [diffLoading, setDiffLoading]   = useState(false);
+  const [downloadingVersion, setDownloadingVersion] = useState<string | null>(null);
 
   const docId   = doc.doc_id ?? doc.id;
+  const versionDownload = useRef<{ documentId: string; token: symbol | null }>({ documentId: docId, token: null });
+  if (versionDownload.current.documentId !== docId) {
+    versionDownload.current = { documentId: docId, token: null };
+  }
+  useEffect(() => {
+    setDownloadingVersion(null);
+    return () => { versionDownload.current.token = null; };
+  }, [docId]);
   const versions = useMemo(
     () => versionReg.items
       .filter(v => v.document_id === docId)
@@ -676,6 +686,48 @@ function VersionsTab({
     versionReg.update(v.id, { version_name: nameInput.trim(), is_named: true });
     toast.success("Version named.");
     setNaming(null); setNameInput("");
+  };
+
+  const handleVersionDownload = async (v: DocumentVersion) => {
+    if (versionDownload.current.token || versionReg.loading || versionReg.error) return;
+    const accessAtStart = readAccessSnapshot();
+    if (!documentActionGranted("doc_download", accessAtStart)) {
+      toast.error("You do not have permission to download this document version.");
+      return;
+    }
+    const token = Symbol("version-download");
+    versionDownload.current.token = token;
+    setDownloadingVersion(v.id);
+    const active = () => versionDownload.current.documentId === docId && versionDownload.current.token === token;
+    const assertCurrent = () => {
+      if (!active() || !documentActionSessionUnchanged("doc_download", accessAtStart, readAccessSnapshot())) {
+        throw new Error("Your document selection or access changed. Reopen the version before downloading.");
+      }
+    };
+    try {
+      await retrieveVersionOriginalForDownload(docId, v, doc.file_name ?? "document",
+        (id, versionId) => documentContentStore.getOriginalFile(id, versionId), assertCurrent,
+        (file, name) => {
+          const url = URL.createObjectURL(file);
+          const anchor = document.createElement("a");
+          try {
+            anchor.href = url;
+            anchor.download = name;
+            document.body.appendChild(anchor);
+            anchor.click();
+          } finally {
+            anchor.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 15_000);
+          }
+        });
+    } catch (error) {
+      if (active()) toast.error(error instanceof Error ? error.message : "Unable to download this document version.");
+    } finally {
+      if (active()) {
+        versionDownload.current.token = null;
+        setDownloadingVersion(null);
+      }
+    }
   };
 
   const handleCompare = async (v: DocumentVersion) => {
@@ -811,7 +863,10 @@ function VersionsTab({
                   <Button variant="ghost" size="sm" leadingIcon={Eye}>Preview</Button>
                 )}
                 {can("doc_download") && v.original_file_ref && (
-                  <Button variant="ghost" size="sm" leadingIcon={Download}>Download</Button>
+                  <Button variant="ghost" size="sm" leadingIcon={Download}
+                    loading={downloadingVersion === v.id}
+                    disabled={downloadingVersion !== null || Boolean(versionReg.loading) || Boolean(versionReg.error)}
+                    onClick={() => void handleVersionDownload(v)}>Download</Button>
                 )}
               </div>
             )}
