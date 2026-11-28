@@ -6,6 +6,8 @@ This is a source replay, not a native backup of production data or a release.
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import json
+import io
+import zipfile
 import re
 import secrets
 import shlex
@@ -408,6 +410,8 @@ print("LOCAL_BOARD_PACK_LINK_INTEGRITY_PASS: exact version, valid draft, invalid
 # DC-23/24 staged atomic publication snapshot. Real Auth, real Storage object,
 # same approved parent and exact-version link. No synthetic hosted data.
 sql((ROOT/"supabase/release-candidates/dc23_board_pack_publication_snapshot.sql").read_text())
+sql((ROOT/"supabase/release-candidates/dc25_board_pack_retention_download.sql").read_text())
+time.sleep(2)
 meeting_id="local-pack-meeting-"+rid()
 call(pack_registry,rt,{"entity_key":"bms.meetings","record_id":meeting_id,"payload":{"id":meeting_id,"meeting_id":meeting_id,"meeting_title":"Local pack meeting","approval_status":"Draft"}},method="POST")
 # A new draft references the fixture meeting and existing exact document version.
@@ -455,6 +459,86 @@ call(pub_path,rt,method="DELETE",expected=(400,409))
 assert call(pub_path,rt)[0]["payload"]==frozen
 assert sql("SELECT count(*) FROM convay_private.board_pack_publication_snapshots WHERE pack_record_id='"+pub_id+"';",tuples=True)=="1"
 print("LOCAL_BOARD_PACK_PUBLICATION_SNAPSHOT_PASS: draft denial, missing original atomic rollback, unauthorized denial, real Storage identity, immutable publication and stale revision denial",flush=True)
+# DC-24/25: actual Storage bytes stay unchanged after attempted replacement
+# and bulk deletion. The authenticated download contract must reauthorize at
+# receipt time; it must not accept foreign, expired or substituted tickets.
+metadata_path="/rest/v1/convay_document_content?id=eq."+original_row["id"]
+call(metadata_path,rt,{"size":1},method="PATCH",expected=(400,409))
+call(metadata_path,rt,method="DELETE",expected=(400,409))
+assert call(metadata_path,rt)[0]["storage_path"]==original_name
+version_path=pack_registry+"?entity_key=eq.bms.docversions&record_id=eq."+version_id
+call(version_path,rt,{"payload":{**version_payload,"version_number":"99"}},method="PATCH",expected=(400,409))
+call(version_path,rt,method="DELETE",expected=(400,409))
+assert call(version_path,rt)[0]["payload"]==version_payload
+# PUT and bulk DELETE use the actual Storage service (not SQL metadata DML).
+# Some Storage versions return an empty successful result for RLS-filtered
+# deletion, so authoritative original-byte readback is the decisive assertion.
+storage(original_path,rt,"PUT",b"tampered",expected=(400,403,404,409,500))
+bulk_req=Request(base+"/storage/v1/object/convay-documents",json.dumps({"prefixes":[original_name]}).encode(),
+    {"apikey":anon,"Authorization":"Bearer "+rt,"Content-Type":"application/json"},method="DELETE")
+try:
+    with urlopen(bulk_req,timeout=30) as res:
+        assert res.status in (200,204)
+except HTTPError as exc:
+    assert exc.code in (400,403,404,409,500)
+assert storage(original_path,rt)==object_bytes
+assert call(metadata_path,rt)[0]["size"]==len(object_bytes)
+# Unpublished files remain editable; the retention guard applies only to pins.
+free_name=doc_id+"/unpublished/"+rid()
+free_path="/storage/v1/object/convay-documents/"+free_name
+storage(free_path,rt,"POST",b"unpublished")
+storage(free_path,rt,"PUT",b"updated unpublished")
+assert storage(free_path,rt)==b"updated unpublished"
+manifest_rpc="convay_board_pack_download_manifest"
+receipt_rpc="convay_board_pack_download_receipt"
+for token in (at,bt,anon):
+    rpc(manifest_rpc,token,{"p_pack":pub_id},expected=(401,403,404))
+grant=rpc(manifest_rpc,rt,{"p_pack":pub_id})
+assert grant["packId"]==pub_id and grant["approvalStatus"]=="Published"
+assert grant["frozenRevision"]==frozen["frozen_revision"]
+assert grant["files"]==[{"documentId":doc_id,"versionId":version_id,"fileName":"fixture.txt","sizeBytes":len(object_bytes)}]
+assert grant["manifestId"]!=snapshot["manifest_id"]
+# Check real retained bytes under the same signed-in actor before confirming.
+assert storage(original_path,rt)==object_bytes
+params={"p_pack":pub_id,"p_manifest":grant["manifestId"]}
+for token in (at,bt,anon):
+    rpc(receipt_rpc,token,params,expected=(401,403,404))
+rpc(receipt_rpc,rt,{**params,"p_pack":pack_id},expected=(403,))
+rpc(receipt_rpc,rt,{**params,"p_manifest":rid()},expected=(403,))
+confirmed=rpc(receipt_rpc,rt,params)
+assert confirmed["packId"]==pub_id and confirmed["manifestId"]==grant["manifestId"] and confirmed["receiptId"]
+assert rpc(receipt_rpc,rt,params)==confirmed
+# A real non-admin legacy actor has the exact download/view permissions but
+# cannot obtain this pack without the canonical meeting participant link.
+sql("INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('"+role+"','pack_view'),('"+role+"','doc_download');")
+rpc(manifest_rpc,lt,{"p_pack":pub_id},expected=(403,))
+participant_id="local-pack-participant-"+rid()
+participant={"id":participant_id,"meeting_id":meeting_id,"user_id":legacy["id"],"participant_type":"Member","selection_source_type":"individual","invitation_status":"pending","quorum_eligible":False,"voting_eligible":False,"is_required":False}
+call(pack_registry,rt,{"entity_key":"bms.meetingParticipantLinks","record_id":participant_id,"payload":participant},method="POST")
+participant_grant=rpc(manifest_rpc,lt,{"p_pack":pub_id})
+assert participant_grant["files"]==grant["files"]
+rpc(receipt_rpc,lt,params,expected=(403,))
+participant_params={"p_pack":pub_id,"p_manifest":participant_grant["manifestId"]}
+assert rpc(receipt_rpc,lt,participant_params)["receiptId"]
+call(pack_registry+"?entity_key=eq.bms.meetingParticipantLinks&record_id=eq."+participant_id,rt,method="DELETE")
+rpc(receipt_rpc,lt,participant_params,expected=(403,))
+rpc(manifest_rpc,lt,{"p_pack":pub_id},expected=(403,))
+sql("DELETE FROM public.convay_role_permissions WHERE role_id='"+role+"' AND permission_id IN ('pack_view','doc_download');")
+assert sql("SELECT count(*) FROM convay_private.board_pack_download_authorizations WHERE id='"+grant["manifestId"]+"' AND receipt_id='"+confirmed["receiptId"]+"' AND actor_id='"+root["id"]+"';",tuples=True)=="1"
+expired=rpc(manifest_rpc,rt,{"p_pack":pub_id})
+sql("UPDATE convay_private.board_pack_download_authorizations SET issued_at=now()-interval '10 minutes',expires_at=now()-interval '5 minutes' WHERE id='"+expired["manifestId"]+"';")
+rpc(receipt_rpc,rt,{"p_pack":pub_id,"p_manifest":expired["manifestId"]},expected=(403,))
+# Exercise the actual TypeScript UI transport and deterministic ZIP writer
+# against local Auth/REST/Storage. No mocked gateway or fabricated archive.
+completed=subprocess.run(["node","--experimental-strip-types",str(ROOT/"supabase/tests/free_local_stack/board_pack_download.node.mts")],
+    input=json.dumps({"base":base,"anon":anon,"token":rt,"packId":pub_id,"frozenRevision":frozen["frozen_revision"]}).encode(),
+    stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45)
+assert completed.returncode==0,"Actual board-pack UI transport/ZIP failed (local credentials suppressed)"
+with zipfile.ZipFile(io.BytesIO(completed.stdout)) as archive:
+    assert archive.testzip() is None and archive.namelist()==["fixture.txt"]
+    assert archive.read("fixture.txt")==object_bytes
+print("LOCAL_BOARD_PACK_ORIGINAL_RETENTION_DOWNLOAD_PASS: real retained bytes, mutation denial, unaffected unpinned original, authenticated manifest, idempotent audit receipt, denied foreign and expired requests",flush=True)
+
 
 
 # NI-01: real authenticated create/read/update with immutable lifecycle.

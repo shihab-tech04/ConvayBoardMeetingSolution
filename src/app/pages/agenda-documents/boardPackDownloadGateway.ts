@@ -13,7 +13,7 @@ import {
   BOARD_PACK_MAX_FILES, BOARD_PACK_MAX_FILE_BYTES, BOARD_PACK_MAX_TOTAL_BYTES,
   safeBoardPackEntryName,
   type AuthorizedBoardPackFile,
-} from "../../utils/boardPackZip";
+} from "../../utils/boardPackZip.ts";
 
 export interface BoardPackManifestFile extends AuthorizedBoardPackFile {
   /** Server-recorded immutable original byte size, never client-provided. */

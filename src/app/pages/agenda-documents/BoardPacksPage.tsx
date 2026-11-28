@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Eye, Package, Upload, Download, Pencil, Archive } from "lucide-react";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
@@ -6,12 +6,13 @@ import type { PageCfg, KpiDef } from "../modulePageUtils";
 import { fc, BADGE, BASE_FILTERS, dg } from "../modulePageUtils";
 import { useBoardPackRegistry, useMeetingRegistry, type BoardPack } from "../../data/boardMeetingData";
 import { BOARD_PACK_FORM_FIELDS } from "../boardMeetingFormFields";
-import { readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
+import { hasAccess, readAccessSnapshot, useAccessSnapshot } from "../../services/supabase/convayAccess";
 import { convayAuth } from "../../services/supabase/convayAuth";
 import { assembleBoardPackDraft, assembleBoardPackDraftUpdate, assertSameBoardPackDraftIntent, persistBoardPackDraft, persistBoardPackDraftUpdate } from "./boardPackDraftPersistence";
 import { useBoardPackDocumentLinkRegistry } from "../../data/documentWorkspaceData";
 import { activeBoardPackDocumentCount } from "./boardPackActiveDocumentCount";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
+import { prepareServerBoardPackDownload } from "./boardPackDownloadTransport";
 
 const DRAWER_COLS = [
   dg("Pack Details", [
@@ -48,6 +49,51 @@ export function BoardPacksPage() {
 
   const pending = useRef<{ actorId: string; draft: BoardPack; dispatched: boolean } | null>(null);
   const scopeEpoch = useRef(0);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const downloadInFlight = useRef(false);
+  const canDownload = (row: Record<string, unknown>) =>
+    !downloadBusy && row.approval_status === "Published" &&
+    typeof row.publication_manifest_id === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(row.publication_manifest_id) &&
+    typeof row.frozen_revision === "number" && Number.isSafeInteger(row.frozen_revision) && row.frozen_revision > 0 &&
+    ["pack_view", "mtg_view", "doc_download", "doc_view"].every(permission => hasAccess(permission, access));
+
+  const downloadPack = async (row: Record<string, unknown>) => {
+    if (downloadInFlight.current || !canDownload(row) || typeof row.id !== "string" || typeof row.frozen_revision !== "number") return;
+    const epoch = scopeEpoch.current;
+    const accessAtStart = readAccessSnapshot();
+    const assertCurrent = () => {
+      const current = readAccessSnapshot();
+      if (scopeEpoch.current !== epoch || current !== accessAtStart ||
+          !["pack_view", "mtg_view", "doc_download", "doc_view"].every(permission => hasAccess(permission, current))) {
+        throw new Error("Board-pack access changed. Reopen the pack before downloading.");
+      }
+    };
+    downloadInFlight.current = true;
+    setDownloadBusy(true);
+    try {
+      const result = await prepareServerBoardPackDownload(row.id, row.frozen_revision,
+        (path, init) => convayAuth.authenticatedRequest(path, init), assertCurrent);
+      assertCurrent();
+      const url = URL.createObjectURL(result.archive);
+      const anchor = document.createElement("a");
+      try {
+        anchor.href = url;
+        anchor.download = result.fileName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        toast.success("Authorized board-pack download started.");
+      } finally {
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 15_000);
+      }
+    } catch (error) {
+      if (scopeEpoch.current === epoch) toast.error(error instanceof Error ? error.message : "Unable to download board pack. Reopen to retry.");
+    } finally {
+      downloadInFlight.current = false;
+      setDownloadBusy(false);
+    }
+  };
   useEffect(() => {
     const invalidate = () => { scopeEpoch.current += 1; pending.current = null; };
     window.addEventListener("convay:entity-cache-cleared", invalidate);
@@ -204,11 +250,12 @@ export function BoardPacksPage() {
         disabledReason: row.approval_status === "Draft" ? undefined : "Only server-confirmed draft packs may be edited." },
       { id: "publish", label: "Publish", icon: Upload, color: "#22c55e", enabled: false,
         disabledReason: "Publishing requires server approval, an immutable frozen manifest and an audit trail." },
-      { id: "download", label: "Download Pack", icon: Download, color: "#6b7280", enabled: false,
-        disabledReason: "An authorized published manifest, original versions and server audit receipt are not connected yet." },
+      { id: "download", label: "Download Pack", icon: Download, color: "#6b7280", enabled: canDownload(row),
+        disabledReason: downloadBusy ? "A board-pack download is in progress." : "An authorized published manifest and current download permissions are required." },
       { id: "archive", label: "Archive", icon: Archive, color: "#ef4444", enabled: false,
         disabledReason: "Archiving requires a server-confirmed lifecycle transition and audit record." },
     ]),
+    onCustomAction: (action, row) => { if (action === "download") void downloadPack(row); },
     entryBtn: "Create Board Pack",
     searchPlaceholder: "Search board packs",
   };
