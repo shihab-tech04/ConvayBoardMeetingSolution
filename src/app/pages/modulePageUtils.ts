@@ -56,6 +56,8 @@ export interface PageCfg {
   dataErrorDescription?: string;
   onDataRetry?: () => void | Promise<void>;
   kpis?: KpiDef[];
+  /** Opt-in report summary over all filtered rows, before pagination. */
+  filteredKpis?: (rows: TableRow[]) => KpiDef[];
   entryBtn?: string;
   extraBtns?: {
     id: string; label: string; icon: IconComponent; color?: string;

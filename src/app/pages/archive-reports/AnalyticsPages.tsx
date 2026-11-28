@@ -1,6 +1,7 @@
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import type { PageCfg, KpiDef, TableRow } from "../modulePageUtils";
 import { fc, BADGE } from "../modulePageUtils";
+import { summarizeParticipantCounts } from "./participantCountSummary";
 import { buildMeetingRegisterFilters } from "../return-register/meetingRegisterReadiness";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { latestRecordedQuorumStatus } from "./recordedQuorumStatus";
@@ -46,18 +47,21 @@ export function MeetingPerformanceAnalyticsPage() {
     approval_status:  m.approval_status,
   }));
 
-  const completed  = rows.filter(r => r.approval_status === "Completed" || r.approval_status === "Minutes Approved").length;
-  const cancelled  = rows.filter(r => r.approval_status === "Cancelled").length;
-  const scheduled  = rows.filter(r => r.approval_status === "Scheduled").length;
-  const quorumMet  = rows.filter(r => r.quorum_observed === "Met").length;
+  const summarize = (rows: TableRow[]): KpiDef[] => {
+    const completed  = rows.filter(r => r.approval_status === "Completed" || r.approval_status === "Minutes Approved").length;
+    const cancelled  = rows.filter(r => r.approval_status === "Cancelled").length;
+    const scheduled  = rows.filter(r => r.approval_status === "Scheduled").length;
+    const quorumMet  = rows.filter(r => r.quorum_observed === "Met").length;
 
-  const kpis: KpiDef[] = [
-    { label: "Total Meetings", value: String(rows.length),  tone: "primary" },
-    { label: "Completed",      value: String(completed),    tone: "success" },
-    { label: "Scheduled",      value: String(scheduled),    tone: "warning" },
-    { label: "Cancelled",      value: String(cancelled),    tone: "error"   },
-    { label: "Quorum Met",     value: String(quorumMet),    tone: "neutral" },
-  ];
+    return [
+      { label: "Total Meetings", value: String(rows.length),  tone: "primary" },
+      { label: "Completed",      value: String(completed),    tone: "success" },
+      { label: "Scheduled",      value: String(scheduled),    tone: "warning" },
+      { label: "Cancelled",      value: String(cancelled),    tone: "error"   },
+      { label: "Quorum Met",     value: String(quorumMet),    tone: "neutral" },
+    ];
+  };
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Meeting Performance",
@@ -89,6 +93,7 @@ export function MeetingPerformanceAnalyticsPage() {
       await Promise.all([registry.refresh?.(), quorumReg.refresh?.()]);
     },
     // Never present zero meeting/quorum metrics before both authorized reads succeed.
+    filteredKpis: summarize,
     kpis: registry.loading || quorumReg.loading || registry.error || quorumReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
@@ -115,18 +120,20 @@ export function ParticipationAnalyticsPage() {
     approval_status:  m.approval_status,
   }));
 
-  const totalParticipants = rows.reduce((sum, r) => sum + (parseInt(String(r.participant_count)) || 0), 0);
-  const avgParticipants   = rows.length ? Math.round(totalParticipants / rows.length) : 0;
-  const inPerson          = rows.filter(r => r.mode === "In-Person" || r.mode === "Physical").length;
-  const virtual           = rows.filter(r => r.mode === "Virtual" || r.mode === "Online").length;
+  const summarize = (rows: TableRow[]): KpiDef[] => {
+    const { totalParticipants, avgParticipants } = summarizeParticipantCounts(rows.map(r => r.participant_count));
+    const inPerson          = rows.filter(r => r.mode === "In-Person" || r.mode === "Physical").length;
+    const virtual           = rows.filter(r => r.mode === "Virtual" || r.mode === "Online").length;
 
-  const kpis: KpiDef[] = [
-    { label: "Total Meetings",     value: String(rows.length),         tone: "primary" },
-    { label: "Total Participants", value: String(totalParticipants),   tone: "neutral" },
-    { label: "Avg Per Meeting",    value: String(avgParticipants),     tone: "success" },
-    { label: "In-Person",          value: String(inPerson),            tone: "warning" },
-    { label: "Virtual",            value: String(virtual),             tone: "neutral" },
-  ];
+    return [
+      { label: "Total Meetings",     value: String(rows.length),         tone: "primary" },
+      { label: "Total Participants", value: totalParticipants === null ? "Unavailable" : String(totalParticipants),   tone: "neutral" },
+      { label: "Avg Per Meeting",    value: avgParticipants === null ? "Unavailable" : String(avgParticipants),     tone: "success" },
+      { label: "In-Person",          value: String(inPerson),            tone: "warning" },
+      { label: "Virtual",            value: String(virtual),             tone: "neutral" },
+    ];
+  };
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Participation Analytics",
@@ -155,6 +162,7 @@ export function ParticipationAnalyticsPage() {
     dataLoading: Boolean(registry.loading),
     dataError: registry.error ?? null,
     onDataRetry: registry.refresh,
+    filteredKpis: summarize,
     kpis: registry.loading || registry.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;
@@ -317,14 +325,17 @@ export function FinancialResourceImpactPage() {
     approval_status:       d.approval_status,
   }));
 
-  const implemented = rows.filter(r => r.implementation_status === "Completed").length;
-  const pending     = rows.filter(r => r.implementation_status !== "Completed").length;
+  const summarize = (rows: TableRow[]): KpiDef[] => {
+    const implemented = rows.filter(r => r.implementation_status === "Completed").length;
+    const pending     = rows.filter(r => r.implementation_status !== "Completed").length;
 
-  const kpis: KpiDef[] = [
-    { label: "Decisions with Financial Impact", value: String(rows.length), tone: "primary" },
-    { label: "Implemented",                     value: String(implemented), tone: "success" },
-    { label: "Pending Implementation",          value: String(pending),     tone: "warning" },
-  ];
+    return [
+      { label: "Decisions with Financial Impact", value: String(rows.length), tone: "primary" },
+      { label: "Implemented",                     value: String(implemented), tone: "success" },
+      { label: "Pending Implementation",          value: String(pending),     tone: "warning" },
+    ];
+  };
+  const kpis = summarize(rows);
 
   const cfg: PageCfg = {
     title: "Financial & Resource Impact",
@@ -353,6 +364,7 @@ export function FinancialResourceImpactPage() {
     dataLoading: Boolean(decisionReg.loading),
     dataError: decisionReg.error ?? null,
     onDataRetry: decisionReg.refresh,
+    filteredKpis: summarize,
     kpis: decisionReg.loading || decisionReg.error ? [] : kpis,
   };
   return <GenPage cfg={cfg} />;

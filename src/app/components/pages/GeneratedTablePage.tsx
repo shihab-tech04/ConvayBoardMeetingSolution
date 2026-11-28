@@ -473,6 +473,9 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
     return searchFiltered.filter(r => rowMatchesTab(r, activeStatusTab));
   }, [searchFiltered, activeStatusTab, statusTabField, rowMatchesTab]);
 
+  // Opt-in reports summarize the same authorized, filtered result as the table.
+  const visibleKpis = cfg.dataLoading || cfg.dataError ? undefined : cfg.filteredKpis?.(filtered) ?? cfg.kpis;
+
   // Step 7: Pagination
   const pageRows = useMemo(() => filtered.slice((page - 1) * PER, page * PER), [filtered, page]);
 
@@ -962,7 +965,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
                 <Button key={b.id} type="button" variant="primary" size="lg" leadingIcon={Icon} disabled={Boolean(cfg.dataLoading || cfg.dataError)} onClick={() => setModal(`extra:${b.id}`)}>{b.label}</Button>
               );
             })}
-            {cfg.kpis && (
+            {visibleKpis && (
               <button
                 onClick={() => setKpiOpen(o => !o)}
                 className="table-page__kpi-toggle"
@@ -980,7 +983,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         </div>
       )}
 
-      {!cfg.dataLoading && !cfg.dataError && cfg.kpis && <CollapsibleKpiSection kpis={cfg.kpis} open={kpiOpen} />}
+      {visibleKpis && <CollapsibleKpiSection kpis={visibleKpis} open={kpiOpen} />}
 
       {cfg.dataLoading || cfg.dataError ? (
         <section
