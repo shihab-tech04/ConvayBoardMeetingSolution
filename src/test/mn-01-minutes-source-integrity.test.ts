@@ -112,7 +112,7 @@ describe("MN-01 minutes source integrity", () => {
     expect(page).toContain('id: "submit_for_review"');
     expect(page).toContain("<SConfirmModal");
     expect(page).toContain("buildMinutesReviewSubmission(original.approval_status, original.version)");
-    expect(page).toContain("const saved = await registry.update(id, patch)");
+    expect(page).toContain("persistSelectedTransition(");
     expect(page).toContain("await registry.refresh?.()");
     expect(page).toContain("submissionInFlight.current");
   });
@@ -149,8 +149,8 @@ describe("MN-01 minutes source integrity", () => {
     expect(page).not.toContain('id: "publish"');
     expect(page).not.toContain('id: "archive"');
     expect(page).toContain("buildMinutesLifecycleTransition(current.approval_status, workflowRequest.action)");
-    expect(page).toContain("const saved = await registry.update(id, patch)");
-    expect(page).toContain("const readback = registry.getById(id)");
+    expect(page).toContain("persistSelectedTransition(");
+    expect(page).toContain('convayAuth.registry<Minutes>("bms.minutes", "update", record, revision)');
     expect(page).toContain('effective_permissions.includes("min_approve")');
   });
   it("requires server-assigned reviewer, approver, signer and archivist identity", () => {

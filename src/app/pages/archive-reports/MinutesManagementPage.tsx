@@ -1,5 +1,5 @@
 import { Eye, RefreshCw, CheckCircle, Archive, Send, PenLine, Download } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { GenPage } from "../../components/pages/GeneratedTablePage";
 import { SConfirmModal } from "../../components/modals/SConfirmModal";
@@ -15,6 +15,9 @@ import { resolveMinutesSource, validateMinutesRevisionRequest, isEditableMinutes
 import type { MinutesLifecycleAction } from "./minutesSourceIntegrity";
 import { buildMinutesHtmlExport } from "./minutesHtmlExport";
 import { assertMinutesExportSelection } from "./minutesExportSelection";
+import { persistMinutesReviewTransition } from "./minutesReviewPersistence";
+import { convayAuth } from "../../services/supabase/convayAuth";
+import type { Minutes } from "../../data/boardMeetingData";
 import { finalizeOwnSuperAdminContent } from "../../services/supabase/convaySuperAdminAutoApproval";
 
 const STATUS_FLOW = ["Draft", "Under Secretary Review", "Under Chairperson Review", "Member Review", "Revision Requested", "Approved", "Signed", "Archived"];
@@ -32,6 +35,32 @@ export function MinutesManagementPage() {
   const [workflowRequest, setWorkflowRequest] = useState<{ row: TableRow; action: MinutesLifecycleAction } | null>(null);
   const [workflowSaving, setWorkflowSaving] = useState(false);
   const workflowInFlight = useRef(false);
+  const scopeEpoch = useRef(0);
+  useEffect(() => {
+    const invalidate = () => { scopeEpoch.current += 1; setSubmissionRow(null); setWorkflowRequest(null); };
+    window.addEventListener("convay:entity-cache-cleared", invalidate);
+    return () => { window.removeEventListener("convay:entity-cache-cleared", invalidate); scopeEpoch.current += 1; };
+  }, []);
+
+  async function persistSelectedTransition(row: TableRow, permission: "min_create" | "min_approve", buildPatch: (record: Minutes) => { approval_status: string; version?: string }) {
+    const epoch = scopeEpoch.current;
+    const authorization = readAccessSnapshot();
+    const assertCurrent = () => {
+      if (scopeEpoch.current !== epoch || readAccessSnapshot() !== authorization || !authorization.loaded || authorization.error ||
+          !(authorization.is_super_admin || authorization.effective_permissions.includes(permission))) {
+        throw new Error("Minutes authority changed. Reopen the record before confirming.");
+      }
+    };
+    const result = await persistMinutesReviewTransition<Minutes>(row, buildPatch, {
+      assertCurrent,
+      list: async () => (await convayAuth.registry<Minutes>("bms.minutes", "list")).records,
+      update: async (record, revision) => (await convayAuth.registry<Minutes>("bms.minutes", "update", record, revision)).revision,
+    });
+    try { await registry.refresh?.(); }
+    catch { toast.warning("Minutes transition saved. Refresh the list to see the latest record."); }
+    assertCurrent();
+    return result;
+  }
 
   async function submitForSecretaryReview() {
     if (!submissionRow || submissionInFlight.current) return;
@@ -45,14 +74,9 @@ export function MinutesManagementPage() {
       if (registry.loading || registry.error) {
         throw new Error("Minutes records are not ready. Refresh and retry.");
       }
-      const id = String(submissionRow.id ?? "").trim();
-      const original = registry.items.find(item => item.id === id);
-      if (!original) throw new Error("Minutes record changed or is missing. Refresh and retry.");
-      const patch = buildMinutesReviewSubmission(original.approval_status, original.version);
       // SQL enforces authorship, source, revision order and immutable history.
-      const saved = await registry.update(id, patch);
-      if (saved !== true) throw new Error("Minutes submission was not confirmed. Refresh and retry.");
-      await registry.refresh?.();
+      await persistSelectedTransition(submissionRow, "min_create", original =>
+        buildMinutesReviewSubmission(original.approval_status, original.version));
       setSubmissionRow(null);
       toast.success("Minutes submitted for secretary review.");
     } catch (error) {
@@ -74,21 +98,10 @@ export function MinutesManagementPage() {
       if (registry.loading || registry.error) {
         throw new Error("Minutes records are unavailable. Refresh and try again.");
       }
-      const id = String(workflowRequest.row.id ?? "").trim();
-      const current = registry.items.find(m => m.id === id);
-      if (!current || String(current.approval_status) !== String(workflowRequest.row.approval_status)) {
-        throw new Error("Minutes review stage changed. Refresh before taking action.");
-      }
-      const patch = buildMinutesLifecycleTransition(current.approval_status, workflowRequest.action);
       // Only a trusted SQL trigger can stamp reviewers/signers and verify
       // stage-specific privileges. The client never supplies actor identity.
-      const saved = await registry.update(id, patch);
-      if (saved !== true) throw new Error("Minutes transition was not saved. Refresh and retry.");
-      await registry.refresh?.();
-      const readback = registry.getById(id);
-      if (!readback || readback.approval_status !== patch.approval_status) {
-        throw new Error("The updated minutes status could not be verified. Refresh and retry.");
-      }
+      await persistSelectedTransition(workflowRequest.row, "min_approve", current =>
+        buildMinutesLifecycleTransition(current.approval_status, workflowRequest.action));
       setWorkflowRequest(null);
       toast.success("Minutes status updated and verified.");
     } catch (error) {
