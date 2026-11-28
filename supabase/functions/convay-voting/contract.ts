@@ -90,12 +90,15 @@ function motion(x:unknown):MotionView|null {
  if(!record(x)||!uuid(x.motionId)||!identity(x.agendaId)||!string(x.title)||!string(x.wording)||!uuid(x.proposerId)||!(x.seconderId===null||uuid(x.seconderId))||!string(x.notes)||!string(x.amendments)||typeof x.votingRequired!=='boolean'||!date(x.createdAt))return null;
  return {motionId:x.motionId,agendaId:x.agendaId,title:x.title,wording:x.wording,proposerId:x.proposerId,seconderId:x.seconderId,notes:x.notes,amendments:x.amendments,votingRequired:x.votingRequired,createdAt:x.createdAt};
 }
+// Nested SQL rows may omit scope, but must never contradict the verified parent scope.
+const nestedScopeMatches=(row:Record<string,unknown>,scope:Scope):boolean =>
+ (['tenantId','meetingId','sessionId'] as const).every(key=>!Object.prototype.hasOwnProperty.call(row,key)||row[key]===scope[key]);
 function projectWorkspace(raw:Record<string,unknown>,scope:Scope):WorkspaceView|null {
  if(!Array.isArray(raw.motions)||!Array.isArray(raw.rounds)||!Array.isArray(raw.policies)||typeof raw.canManage!=='boolean'||typeof raw.quorumMet!=='boolean'||!Array.isArray(raw.eligibleAgendaIds)||!raw.eligibleAgendaIds.every(identity))return null;
  const motions=raw.motions.map(motion),policies=raw.policies.map(policy);
  if(motions.some(x=>!x)||policies.some(x=>!x))return null;
  const rounds=raw.rounds.map(r=>{
-  if(!record(r)||!uuid(r.roundId)||typeof r.canCast!=='boolean'||typeof r.reopenAllowed!=='boolean')return null;
+  if(!record(r)||!nestedScopeMatches(r,scope)||!uuid(r.roundId)||typeof r.canCast!=='boolean'||typeof r.reopenAllowed!=='boolean')return null;
   const projected=projectReceipt({...r,...scope},scope,{action:'read',roundId:r.roundId});if(!projected)return null;
   const {tenantId:_,meetingId:__,sessionId:___,...round}=projected;
   return {...round,canCast:r.canCast,reopenAllowed:r.reopenAllowed} as RoundView;
@@ -106,7 +109,7 @@ function projectWorkspace(raw:Record<string,unknown>,scope:Scope):WorkspaceView|
 function projectArchive(raw:Record<string,unknown>,scope:Scope):Record<string,unknown>|null {
  if(!Array.isArray(raw.rounds))return null;
  const rounds=raw.rounds.map(r=>{
-  if(!record(r)||!uuid(r.roundId)||r.state!=='Closed'||!identity(r.agendaId)||!string(r.title)||!string(r.wording)||!date(r.closedAt))return null;
+  if(!record(r)||!nestedScopeMatches(r,scope)||!uuid(r.roundId)||r.state!=='Closed'||!identity(r.agendaId)||!string(r.title)||!string(r.wording)||!date(r.closedAt))return null;
   const projected=projectReceipt({...r,...scope,myRecorded:false},scope,{action:'read',roundId:r.roundId});
   if(!projected||!integer(r.numerator)||!integer(r.denominator)||r.numerator<1||r.numerator>r.denominator||!['decisive','cast','electorate'].includes(String(r.basis))||!['gt','gte'].includes(String(r.comparison)))return null;
   const {tenantId:_,meetingId:__,sessionId:___,myRecorded:____,...round}=projected;

@@ -30,3 +30,14 @@ const discoveryRequest=()=>new Request('https://example.invalid/vote',{method:'P
 test('only explicit authenticated legacy scope yields legacy mode',async()=>{const {h,calls}=run({resolveScope:async()=>({...scope,tenantId:null})});const r=await h(discoveryRequest());assert.equal(r.status,200);assert.deepEqual(await r.json(),{kind:'legacy',meetingId:scope.meetingId,sessionId:scope.sessionId});assert.equal(calls.length,0);});
 test('scope discovery rejects stale session instead of fallback',async()=>{const {h,calls}=run({resolveScope:async()=>({...scope,sessionId:'SES-B'})});assert.equal((await h(discoveryRequest())).status,403);assert.equal(calls.length,0);});
 test('company discovery returns sanitized authoritative workspace',async()=>{const {h}=run({resolveScope:async()=>scope,rpc:async args=>({ok:true,data:{...scope,motions:[{motionId:motion,agendaId:'AG-1',title:'M',wording:'W',proposerId:actor,seconderId:null,notes:'',amendments:'',votingRequired:true,createdAt:'2026-11-25T00:00:00Z'}],rounds:[{...base,canCast:true,reopenAllowed:false,for:1,ballots:[{voter:actor,choice:'For'}]}],policies:[],eligibleAgendaIds:['AG-1'],canManage:true,quorumMet:true}})});const r=await h(discoveryRequest());assert.equal(r.status,200);const x=await r.json();assert.equal(x.kind,'company');assert.equal(x.rounds[0].canCast,true);assert(!('ballots' in x.rounds[0]));assert(!('for' in x.rounds[0]));});
+
+// Nested scope is optional in the SQL projection, but a contradictory scope must fail closed.
+const scopeMotion={motionId:motion,agendaId:'AG-1',title:'M',wording:'W',proposerId:actor,seconderId:null,notes:'',amendments:'',votingRequired:true,createdAt:'2026-11-25T00:00:00Z'};
+const workspaceRow={...base,canCast:true,reopenAllowed:false};
+const archiveRow={...base,state:'Closed',for:1,against:0,abstain:0,outcome:'Passed',agendaId:'AG-1',title:'M',wording:'W',closedAt:'2026-11-25T12:00:00Z',numerator:1,denominator:1,basis:'cast',comparison:'gte'};
+const workspaceOf=row=>({...scope,motions:[scopeMotion],rounds:[row],policies:[],eligibleAgendaIds:['AG-1'],canManage:true,quorumMet:true});
+for(const [key,value] of [['tenantId','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],['meetingId','MTG-OTHER'],['sessionId','SES-B']]){
+ test('workspace rejects nested contradictory '+key,()=>assert.equal(projectReceipt(workspaceOf({...workspaceRow,[key]:value}),scope,{action:'workspace'}),null));
+ test('archive rejects nested contradictory '+key,()=>assert.equal(projectReceipt({...scope,rounds:[{...archiveRow,[key]:value}]},scope,{action:'archive'}),null));
+}
+test('nested rows may omit redundant scope',()=>{const omit=({tenantId,meetingId,sessionId,...row})=>row;assert(projectReceipt(workspaceOf(omit(workspaceRow)),scope,{action:'workspace'}));assert(projectReceipt({...scope,rounds:[omit(archiveRow)]},scope,{action:'archive'}));});
