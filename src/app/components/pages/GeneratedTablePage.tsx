@@ -1038,7 +1038,7 @@ export function GeneratedTablePage({ cfg, drawerFields, wrapTitle }: GeneratedTa
         onApplyFilters={handleFilterApply}
         onResetFilters={handleFilterReset}
         onExport={() => handleExportDisabled("Download/export is currently disabled.")}
-        onPrint={() => window.print()}
+        onPrint={() => cfg.printDisabledReason ? toast.info(cfg.printDisabledReason) : window.print()}
         page={page}
         perPage={PER}
         onPageChange={setPage}

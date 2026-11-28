@@ -231,6 +231,46 @@ assert tenant_audit(at,ta)==after_audit
 assert companies(bt)=={tb}
 print("LOCAL_TENANT_LIFECYCLE_AUDIT_PASS: root-only creation, duplicate and replay handling, tenant audit isolation, suspend denial and non-destructive resume",flush=True)
 
+# AD-04/RP-09: bounded allowlisted projection of real immutable event sources.
+# Install only in the disposable local database, never on hosted SQL.
+sql((ROOT/"supabase/release-candidates/ad04_rp09_audit_projection.sql").read_text())
+sql("NOTIFY pgrst,'reload schema';")
+for attempt in range(30):
+    if "/rpc/convay_report_audit_events" in call("/rest/v1/",rt).get("paths",{}): break
+    if attempt == 29: raise AssertionError("Audit RPC schema cache not ready")
+    time.sleep(1)
+root_audit=rpc("convay_report_audit_events",rt,{"p_workflow_only":True})
+assert root_audit["scope"]=="platform" and root_audit["limited"] is False
+assert any(e["source"]=="Meeting template" and e["target_id"]==template and e["action"]=="publish" and e["revision"]=="1" and e["actor_id"]==a["id"] for e in root_audit["events"])
+assert all(set(e)=={"event_id","source","target_id","actor_id","occurred_at","action","revision","request_id","tenant_id"} for e in root_audit["events"])
+for token in (at,bt,lt,anon):
+    rpc("convay_report_audit_events",token,{"p_workflow_only":True},expected=(401,403))
+    rpc("convay_report_audit_events",token,{"p_workflow_only":False},expected=(401,403))
+# A delegated audit grant is necessary but cannot authorize another company.
+sql(f"INSERT INTO public.convay_role_permissions(role_id,permission_id) VALUES ('{role}','admin_audit_log');")
+try:
+    own=rpc("convay_report_audit_events",at,{"p_workflow_only":False})
+    other=rpc("convay_report_audit_events",bt,{"p_workflow_only":False})
+    assert own["scope"]==other["scope"]=="tenant"
+    assert any(e["target_id"]==template for e in own["events"])
+    assert all(e["tenant_id"]==ta and not e["source"].startswith("bms.") for e in own["events"])
+    assert all(e["tenant_id"]==tb and e["target_id"]!=template for e in other["events"])
+    rpc("convay_report_audit_events",lt,{"p_workflow_only":False},expected=(403,))
+finally:
+    sql(f"DELETE FROM public.convay_role_permissions WHERE role_id='{role}' AND permission_id='admin_audit_log';")
+rpc("convay_report_audit_events",at,{"p_workflow_only":False},expected=(403,))
+# Verify the new registry journal guard with a disposable transaction.
+sql("""DO $$ BEGIN
+ BEGIN UPDATE convay_private.entity_changes SET operation='UPDATE' WHERE false;
+ RAISE EXCEPTION 'audit update unexpectedly allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN DELETE FROM convay_private.entity_changes WHERE false;
+ RAISE EXCEPTION 'audit delete unexpectedly allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN TRUNCATE convay_private.entity_changes;
+ RAISE EXCEPTION 'audit truncate unexpectedly allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ END $$;""")
+print("LOCAL_AD04_RP09_AUDIT_PROJECTION_PASS: source identity, root and tenant scope, revocation, metadata-only projection and immutable registry journal",flush=True)
+
+
 # TEN-02 / UAM-09 / AC: verified ordinary member and separate real sessions.
 # Fixture setup grants only the existing meeting-view permission. All tenant
 # enrollment and role transitions go through the authorized public RPCs.

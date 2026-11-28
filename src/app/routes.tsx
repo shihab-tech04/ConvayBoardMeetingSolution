@@ -17,7 +17,7 @@ import { DashboardPage }            from "./pages/dashboard/DashboardPage";
 import { PSRDashboardPage }         from "./pages/dashboard/PSRDashboardPage";
 import { CombinedDashboardPage }    from "./pages/dashboard/CombinedDashboardPage";
 import { NotificationsPage } from "./pages/dashboard/NotificationsPage";
-import { ReportViewPage }           from "./pages/report/ReportViewPage";
+import { AuditProjectionPage } from "./pages/administration/AuditProjectionPage";
 import { ReturnViewApprovalPage }   from "./pages/return-register/ReturnViewApprovalPage";
 import { OnlineReturnRegisterPage } from "./pages/return-register/OnlineReturnRegisterPage";
 import { OfflineReturnRegisterPage } from "./pages/return-register/OfflineReturnRegisterPage";
@@ -82,7 +82,7 @@ function ParticipationRoute()           { return <ParticipationAnalyticsPage />;
 function GovernanceReportRoute()        { return <GovernanceReportPage />; }
 function DecisionsActionsRoute()        { return <DecisionsActionsAnalyticsPage />; }
 function FinancialResourceImpactRoute() { return <FinancialResourceImpactPage />; }
-function AuditTrailRoute()              { return <ReportViewPage reportId="user-activity-report" />; }
+function AuditTrailRoute()              { return <AuditProjectionPage />; }
 
 function AdminOnly({ children }: { children: ReactNode }) {
   const allowed = useSelector((state: RootState) => state.auth.isAuthenticated && state.currentUser.role === "super_admin");

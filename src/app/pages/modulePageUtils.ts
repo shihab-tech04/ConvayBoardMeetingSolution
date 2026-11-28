@@ -60,6 +60,8 @@ export interface PageCfg {
   filteredKpis?: (rows: TableRow[]) => KpiDef[];
   /** Explicit date dimension for strict report date filtering. */
   reportDateField?: string;
+  /** Keep an existing print control inert until its authorized output is verified. */
+  printDisabledReason?: string;
   entryBtn?: string;
   extraBtns?: {
     id: string; label: string; icon: IconComponent; color?: string;
