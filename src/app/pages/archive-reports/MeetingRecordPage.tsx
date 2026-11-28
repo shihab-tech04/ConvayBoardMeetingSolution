@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { recordListCountLabel, recordListState } from "./recordListState";
+import { legacyNamedArchiveVotes, recordedVoteCount } from "./legacyArchiveVoteView";
 import { normalizeRecordedQuorum } from "./recordedQuorumStatus";
 import {
   buildMinutesRevisionRequest, canArchiveMinutes, canEditMinutesContent,
@@ -525,6 +526,8 @@ export function MeetingRecordPage() {
   };
 
   const renderMotions = () => {
+    if (motionReg.error || voteReg.error) return <EmptyState icon={Vote} message="Motion and vote history unavailable. Refresh before continuing." />;
+    if (motionReg.loading || voteReg.loading) return <EmptyState icon={Vote} message="Loading motion and vote history…" />;
     if (meetingMotions.length === 0 && meetingVotes.length === 0) {
       return <EmptyState icon={Vote} message="No motions recorded for this meeting." />;
     }
@@ -533,11 +536,12 @@ export function MeetingRecordPage() {
         {meetingMotions.length === 0 ? (
           <EmptyState icon={Vote} message="No motions recorded for this meeting." />
         ) : meetingMotions.map(motion => {
-          const votes = votesByMotion[motion.id] ?? [];
-          const forCount     = parseInt(motion.votes_for)    || votes.filter(v => v.vote === "For").length;
-          const againstCount = parseInt(motion.votes_against) || votes.filter(v => v.vote === "Against").length;
-          const abstainCount = parseInt(motion.abstentions)  || votes.filter(v => v.vote === "Abstain" || v.vote === "Abstained").length;
-          const total        = forCount + againstCount + abstainCount || 1;
+          const votes = legacyNamedArchiveVotes(votesByMotion[motion.id] ?? []);
+          const forCount = recordedVoteCount(motion.votes_for);
+          const againstCount = recordedVoteCount(motion.votes_against);
+          const abstainCount = recordedVoteCount(motion.abstentions);
+          const totalsKnown = forCount !== null && againstCount !== null && abstainCount !== null;
+          const total = (forCount ?? 0) + (againstCount ?? 0) + (abstainCount ?? 0);
           const passed = motion.status === "Passed";
           const rejected = motion.status === "Rejected" || motion.status === "Failed";
 
@@ -565,14 +569,14 @@ export function MeetingRecordPage() {
               {/* Vote progress */}
               <div style={{ background: "var(--color-muted)", borderRadius: 8, padding: "0.85rem 1rem", marginBottom: votes.length > 0 ? "0.85rem" : 0 }}>
                 <p style={{ margin: "0 0 0.65rem", fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--color-muted-foreground)" }}>
-                  Vote Results — {forCount + againstCount + abstainCount} vote{forCount + againstCount + abstainCount !== 1 ? "s" : ""} cast
+                  Vote Results — {totalsKnown ? `${total} vote${total !== 1 ? "s" : ""} cast` : "Recorded totals unavailable"}
                 </p>
-                {[
+                {totalsKnown && [
                   { label: "For",     count: forCount,     color: "#22c55e" },
                   { label: "Against", count: againstCount, color: "#ef4444" },
                   { label: "Abstain", count: abstainCount, color: "#94a3b8" },
                 ].map(({ label, count, color }) => {
-                  const pct = total > 0 ? (count / total) * 100 : 0;
+                  const pct = total > 0 ? ((count ?? 0) / total) * 100 : 0;
                   return (
                     <div key={label} style={{ display: "flex", alignItems: "center", gap: "0.65rem", marginBottom: "0.4rem" }}>
                       <span style={{ minWidth: 52, fontSize: "0.75rem", fontWeight: 600, color }}>{label}</span>
