@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../app/services/supabase/convayAuth",()=>({convayAuth:{authenticatedRequest:vi.fn()}}));
 import { convayAuth } from "../app/services/supabase/convayAuth";
-import { readStagedCompanyDraft, saveStagedCompanyDraft, updateStagedCompanyDraft, discardStagedCompanyDraft } from "../app/services/saas/companyMeetingDrafts";
+import { listStagedCompanyDrafts, readStagedCompanyDraft, saveStagedCompanyDraft, updateStagedCompanyDraft, discardStagedCompanyDraft } from "../app/services/saas/companyMeetingDrafts";
 import type { MeetingTemplateVersion } from "../app/services/saas/meetingTemplateControl";
 import type { StagedCompanyDraft } from "../app/services/saas/companyMeetingDrafts";
 const tenant="11111111-1111-4111-8111-111111111111", other="99999999-9999-4999-8999-999999999999";
@@ -94,5 +94,28 @@ describe("MT-11/12 SQL-advertised partial progress",()=>{
    req.mockResolvedValueOnce(reply(capability)).mockResolvedValueOnce(reply(transition)).mockResolvedValueOnce(read(revised));
    await expect(updateStagedCompanyDraft(tenant,draft,draft.title,{},rid,progress)).resolves.toMatchObject({draft:revised});
    expect(JSON.parse(req.mock.calls[1][1]!.body as string).p_payload).toMatchObject({expected_revision:1,wizard_step_id:"details",partial_save:true});
+ });
+});
+
+describe("MT-11/12 staged draft directory integrity",()=>{
+ const directory=(drafts:unknown[])=>reply({tenant_id:tenant,meeting_activation_enabled:false,draft_progress_supported:true,drafts});
+ it.each([
+   ["duplicate draft identity",[draft,{...draft,title:"Conflicting title"}]],
+   ["non-string template identity",[{...draft,template_id:[id]}]],
+   ["missing creation timestamp",[{...draft,created_at:undefined}]],
+   ["non-string wizard step",[{...draft,wizard_step_id:["details"]}]],
+   ["invalid wizard step syntax",[{...draft,wizard_step_id:"invalid step"}]],
+ ])("rejects %s before publishing directory or capability",async(_label,rows)=>{
+   req.mockResolvedValueOnce(directory(rows as unknown[]));
+   const onSupport=vi.fn();
+   await expect(listStagedCompanyDrafts(tenant,onSupport)).rejects.toThrow("directory SQL readback invalid");
+   expect(onSupport).not.toHaveBeenCalled();
+ });
+ it("preserves legacy null steps and valid saved step identities",async()=>{
+   const rows=[{...draft,wizard_step_id:null},{...draft,draft_id:"DRAFT-ABCDEF1234567890ABCD",wizard_step_id:"details"}];
+   req.mockResolvedValueOnce(directory(rows));
+   const onSupport=vi.fn();
+   await expect(listStagedCompanyDrafts(tenant,onSupport)).resolves.toEqual(rows);
+   expect(onSupport).toHaveBeenCalledWith(true);
  });
 });

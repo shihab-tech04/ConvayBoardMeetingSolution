@@ -109,10 +109,13 @@ export async function listStagedCompanyDrafts(tenantId:string,onProgressSupport?
     || data.drafts.some(row=>!object(row)||typeof row.draft_id!=="string"
       || !/^DRAFT-[A-F0-9]{20}$/.test(row.draft_id)
       || row.status!=="Staged Draft"
-      || typeof row.title!=="string" || !UUID.test(String(row.template_id))
+      || typeof row.title!=="string" || typeof row.template_id!=="string" || !UUID.test(row.template_id)
       || !Number.isSafeInteger(row.template_revision)||Number(row.template_revision)<1
       || !Number.isSafeInteger(row.edit_revision)||Number(row.edit_revision)<1
-      || typeof row.updated_at!=="string")) {
+      || typeof row.created_at!=="string" || typeof row.updated_at!=="string"
+      || (row.wizard_step_id!=null && (typeof row.wizard_step_id!=="string"
+        || !/^[a-z][a-z0-9_-]{1,63}$/.test(row.wizard_step_id))))
+    || new Set(data.drafts.map(row=>row.draft_id)).size!==data.drafts.length) {
     throw new Error("Company draft directory SQL readback invalid");
   }
   onProgressSupport?.(data.draft_progress_supported===true);
