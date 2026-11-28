@@ -346,6 +346,58 @@ call(link_path,rt,method="DELETE",expected=(400,409))
 assert call(link_path,rt)[0]["payload"]==link_payload
 print("LOCAL_BOARD_PACK_LINK_INTEGRITY_PASS: exact version, valid draft, invalid alias, unauthorized actor, reparent and non-draft mutation denial",flush=True)
 
+# DC-23/24 staged atomic publication snapshot. Real Auth, real Storage object,
+# same approved parent and exact-version link. No synthetic hosted data.
+sql((ROOT/"supabase/release-candidates/dc23_board_pack_publication_snapshot.sql").read_text())
+meeting_id="local-pack-meeting-"+rid()
+call(pack_registry,rt,{"entity_key":"bms.meetings","record_id":meeting_id,"payload":{"id":meeting_id,"meeting_id":meeting_id,"meeting_title":"Local pack meeting","approval_status":"Draft"}},method="POST")
+# A new draft references the fixture meeting and existing exact document version.
+pub_id="local-publish-pack-"+rid(); pub_ref="BPK-publish-"+rid()
+pub_payload={**pack_payload,"id":pub_id,"pack_id":pub_ref,"meeting_id":meeting_id,"related_meeting":meeting_id}
+pub_path=pack_registry+"?entity_key=eq.bms.boardpacks&record_id=eq."+pub_id
+call(pack_registry,rt,{"entity_key":"bms.boardpacks","record_id":pub_id,"payload":pub_payload},method="POST")
+call(pub_path,rt,{"payload":{**pub_payload,"approval_status":"Published"}},method="PATCH",expected=(400,409))
+call(pub_path,rt,{"payload":{**pub_payload,"status":"Published"}},method="PATCH",expected=(400,409))
+call(pub_path,rt,{"payload":{**pub_payload,"publication_manifest_id":rid()}},method="PATCH",expected=(400,409))
+pub_link="local-publish-link-"+rid()
+call(pack_registry,rt,{**link_body,"record_id":pub_link,"payload":{**link_payload,"id":pub_link,"link_id":pub_link,"board_pack_id":pub_id}},method="POST")
+approved={**pub_payload,"approval_status":"Approved"}
+call(pub_path,rt,{"payload":approved},method="PATCH")
+published={**approved,"approval_status":"Published"}
+# Missing original must leave the prior approval and private snapshot unchanged.
+call(pub_path,rt,{"payload":published},method="PATCH",expected=(400,409))
+assert call(pub_path,rt)[0]["payload"]==approved
+assert sql("SELECT count(*) FROM convay_private.board_pack_publication_snapshots WHERE pack_record_id='"+pub_id+"';",tuples=True)=="0"
+original_name=doc_id+"/"+version_id+"/original/"+rid()
+original_path="/storage/v1/object/convay-documents/"+original_name
+storage(original_path,rt,"POST",object_bytes)
+assert storage(original_path,rt)==object_bytes
+original_row={"id":"file:"+doc_id+":"+version_id,"document_id":doc_id,"version_id":version_id,"content_type":"original_file","storage_path":original_name,"file_name":"fixture.txt","mime_type":"text/plain","size":len(object_bytes)}
+call("/rest/v1/convay_document_content",rt,original_row,method="POST")
+for token in (at,bt,anon):
+    denied=call(pub_path,token,{"payload":published},method="PATCH",expected=(200,401,403))
+    assert denied==[] or isinstance(denied,dict)
+assert call(pub_path,rt)[0]["payload"]==approved
+# Fresh exact parent revision, and an atomic immutable snapshot plus audit.
+rev=call(pub_path,rt)[0]["revision"]
+rows=call(pub_path+"&revision=eq."+str(rev),rt,{"payload":published},method="PATCH")
+assert len(rows)==1 and rows[0]["revision"]==rev+1
+frozen=rows[0]["payload"]
+assert frozen["approval_status"]=="Published" and frozen["frozen_revision"]==rev+1 and frozen["published_by"]==root["id"]
+assert frozen["document_count"]=="1" and frozen["publication_manifest_id"]
+snapshot=json.loads(sql("SELECT to_jsonb(s)::text FROM convay_private.board_pack_publication_snapshots s WHERE pack_record_id='"+pub_id+"';",tuples=True))
+assert snapshot["manifest_id"]==frozen["publication_manifest_id"] and snapshot["pack_payload"]==frozen
+assert snapshot["files"][0]["documentId"]==doc_id and snapshot["files"][0]["versionId"]==version_id
+assert snapshot["files"][0]["storagePath"]==original_name and snapshot["files"][0]["sizeBytes"]==len(object_bytes)
+assert snapshot["files"][0]["objectId"]
+assert call(pub_path+"&revision=eq."+str(rev),rt,{"payload":published},method="PATCH")==[]
+call(pub_path,rt,{"payload":{**frozen,"pack_title":"Tampered"}},method="PATCH",expected=(400,409))
+call(pub_path,rt,method="DELETE",expected=(400,409))
+assert call(pub_path,rt)[0]["payload"]==frozen
+assert sql("SELECT count(*) FROM convay_private.board_pack_publication_snapshots WHERE pack_record_id='"+pub_id+"';",tuples=True)=="1"
+print("LOCAL_BOARD_PACK_PUBLICATION_SNAPSHOT_PASS: draft denial, missing original atomic rollback, unauthorized denial, real Storage identity, immutable publication and stale revision denial",flush=True)
+
+
 # NI-01: real authenticated create/read/update with immutable lifecycle.
 # This is draft-only, no provider send or notification delivery.
 rule_id=rid()
