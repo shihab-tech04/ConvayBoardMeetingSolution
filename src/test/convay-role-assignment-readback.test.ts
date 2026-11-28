@@ -34,6 +34,9 @@ describe("server-confirmed user role assignment", () => {
   it("never mistakes another user's role assignments for the target's", () => {
     expect(() => requireRoleAssignmentReadback({ ok: true }, snapshot([]), target, [r2])).toThrow();
   });
+  it("rejects duplicate persisted role IDs that conceal a missing requested role", () => {
+    expect(() => requireRoleAssignmentReadback({ ok: true }, snapshot([r1, r1]), target, [r1, r2])).toThrow(/could not be verified/);
+  });
   it("rejects duplicate requested IDs rather than silently deduplicating an invalid request", () => {
     expect(() => requireRoleAssignmentReadback({ ok: true }, snapshot([r1]), target, [r1, r1])).toThrow();
   });
