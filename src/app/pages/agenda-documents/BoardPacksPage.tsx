@@ -13,6 +13,8 @@ import { useBoardPackDocumentLinkRegistry } from "../../data/documentWorkspaceDa
 import { activeBoardPackDocumentCount } from "./boardPackActiveDocumentCount";
 import { ROW_VIEW } from "../../data/modulePageConfigs";
 import { prepareServerBoardPackDownload } from "./boardPackDownloadTransport";
+import { publishBoardPack, type PublicationIntent } from "./boardPackPublication";
+import { SConfirmModal } from "../../components/modals/SConfirmModal";
 
 const DRAWER_COLS = [
   dg("Pack Details", [
@@ -51,8 +53,58 @@ export function BoardPacksPage() {
   const scopeEpoch = useRef(0);
   const [downloadBusy, setDownloadBusy] = useState(false);
   const downloadInFlight = useRef(false);
+  const publishInFlight = useRef(false);
+  const [publishIntent, setPublishIntent] = useState<(PublicationIntent & { title: string; epoch: number; access: typeof access }) | null>(null);
+  const [publishError, setPublishError] = useState("");
+  const canPublish = (row: Record<string,unknown>) =>
+    !publishIntent && !publishInFlight.current && !access.error && row.approval_status === "Approved" &&
+    ["pack_publish", "pack_create", "pack_view", "mtg_view", "doc_view"].every(permission => hasAccess(permission, access));
+  const publicationAccess = (epoch: number, before: typeof access) => {
+    const current = readAccessSnapshot();
+    if (epoch !== scopeEpoch.current || before !== current || current.error ||
+        !["pack_publish", "pack_create", "pack_view", "mtg_view", "doc_view"].every(permission => hasAccess(permission, current))) {
+      throw new Error("Board-pack authority changed. Reopen the pack before publishing.");
+    }
+  };
+  const beginPublication = async (row: Record<string,unknown>) => {
+    if (publishInFlight.current || !canPublish(row) || typeof row.id !== "string") return;
+    const epoch = scopeEpoch.current, before = readAccessSnapshot();
+    publishInFlight.current = true;
+    try {
+      publicationAccess(epoch, before);
+      const response = await convayAuth.registry<BoardPack>("bms.boardpacks", "list");
+      publicationAccess(epoch, before);
+      const matches = response.records.filter(r => r.payload.id === row.id);
+      if (matches.length !== 1 || matches[0].payload.approval_status !== "Approved" ||
+          matches[0].payload.version !== row.version || !Number.isSafeInteger(matches[0].revision) || matches[0].revision < 1) {
+        throw new Error("The approved board pack changed. Refresh and reopen it.");
+      }
+      setPublishError("");
+      setPublishIntent({recordId:row.id,revision:matches[0].revision,version:matches[0].payload.version,
+        title:matches[0].payload.pack_title,epoch,access:before});
+    } catch(error) {
+      if (epoch === scopeEpoch.current) toast.error(error instanceof Error ? error.message : "Unable to verify board pack.");
+    } finally { publishInFlight.current=false; }
+  };
+  const confirmPublication = async () => {
+    if (!publishIntent || publishInFlight.current) return;
+    const intent = publishIntent;
+    publishInFlight.current=true;
+    setPublishError("");
+    try {
+      const assertCurrent = () => publicationAccess(intent.epoch,intent.access);
+      await publishBoardPack(intent,(path,init)=>convayAuth.authenticatedRequest(path,init),assertCurrent);
+      assertCurrent();
+      setPublishIntent(null);
+      toast.success("Board pack published with its immutable original versions.");
+      try { await reg.refresh?.(); }
+      catch { toast.warning("Board pack published. Refresh the list to see the latest records."); }
+    } catch(error) {
+      if (intent.epoch === scopeEpoch.current) setPublishError(error instanceof Error ? error.message : "Publication not confirmed. Retry this exact revision.");
+    } finally { publishInFlight.current=false; }
+  };
   const canDownload = (row: Record<string, unknown>) =>
-    !downloadBusy && row.approval_status === "Published" &&
+    !downloadBusy && !access.error && row.approval_status === "Published" &&
     typeof row.publication_manifest_id === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(row.publication_manifest_id) &&
     typeof row.frozen_revision === "number" && Number.isSafeInteger(row.frozen_revision) && row.frozen_revision > 0 &&
@@ -64,7 +116,7 @@ export function BoardPacksPage() {
     const accessAtStart = readAccessSnapshot();
     const assertCurrent = () => {
       const current = readAccessSnapshot();
-      if (scopeEpoch.current !== epoch || current !== accessAtStart ||
+      if (scopeEpoch.current !== epoch || current !== accessAtStart || current.error ||
           !["pack_view", "mtg_view", "doc_download", "doc_view"].every(permission => hasAccess(permission, current))) {
         throw new Error("Board-pack access changed. Reopen the pack before downloading.");
       }
@@ -95,7 +147,7 @@ export function BoardPacksPage() {
     }
   };
   useEffect(() => {
-    const invalidate = () => { scopeEpoch.current += 1; pending.current = null; };
+    const invalidate = () => { scopeEpoch.current += 1; pending.current = null; setPublishIntent(null); };
     window.addEventListener("convay:entity-cache-cleared", invalidate);
     return () => { window.removeEventListener("convay:entity-cache-cleared", invalidate); invalidate(); };
   }, []);
@@ -248,17 +300,26 @@ export function BoardPacksPage() {
       { id: "edit", label: "Edit Pack", icon: Pencil, color: "#3b82f6",
         enabled: row.approval_status === "Draft",
         disabledReason: row.approval_status === "Draft" ? undefined : "Only server-confirmed draft packs may be edited." },
-      { id: "publish", label: "Publish", icon: Upload, color: "#22c55e", enabled: false,
+      { id: "publish", label: "Publish", icon: Upload, color: "#22c55e", enabled: canPublish(row),
         disabledReason: "Publishing requires server approval, an immutable frozen manifest and an audit trail." },
       { id: "download", label: "Download Pack", icon: Download, color: "#6b7280", enabled: canDownload(row),
         disabledReason: downloadBusy ? "A board-pack download is in progress." : "An authorized published manifest and current download permissions are required." },
       { id: "archive", label: "Archive", icon: Archive, color: "#ef4444", enabled: false,
         disabledReason: "Archiving requires a server-confirmed lifecycle transition and audit record." },
     ]),
-    onCustomAction: (action, row) => { if (action === "download") void downloadPack(row); },
+    onCustomAction: (action, row) => {
+      if (action === "download") void downloadPack(row);
+      if (action === "publish") void beginPublication(row);
+    },
     entryBtn: "Create Board Pack",
     searchPlaceholder: "Search board packs",
   };
 
-  return <GenPage cfg={cfg} />;
+  return <>
+    <GenPage cfg={cfg} />
+    {publishIntent && <SConfirmModal title="Publish Board Pack"
+      message={`Publish ${publishIntent.title} (${publishIntent.version})? Its original versions will be retained and the published record will be immutable.${publishError ? " " + publishError : ""}`}
+      confirmLabel="Publish" onConfirm={() => void confirmPublication()}
+      onClose={() => { if (!publishInFlight.current) setPublishIntent(null); }} />}
+  </>;
 }

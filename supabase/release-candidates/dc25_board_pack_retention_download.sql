@@ -205,3 +205,43 @@ $fn$;
 revoke all on function public.convay_board_pack_download_receipt(text,uuid) from public,anon,authenticated;
 grant execute on function public.convay_board_pack_download_receipt(text,uuid) to authenticated;
 notify pgrst,'reload schema';
+
+-- Dedicated, revision-checked publication command. No generic browser status
+-- edit or fallback. The existing registry RLS and atomic snapshot trigger
+-- remain the only transition authority. A lost response may be recovered
+-- only by the same actor and expected revision.
+create or replace function public.convay_publish_board_pack(p_pack text,p_revision bigint)
+returns jsonb language plpgsql security invoker set search_path='' as $fn$
+declare row_data public.convay_entity_records%rowtype;
+  actor uuid := auth.uid();
+begin
+  if actor is null or p_revision is null or p_revision<1 or p_revision>=9007199254740991
+    or not coalesce(convay_private.has_permission('pack_publish'),false)
+    or not coalesce(convay_private.has_permission('pack_create'),false)
+    or not coalesce(convay_private.has_permission('pack_view'),false) then
+    raise exception 'Board-pack publication is not authorized' using errcode='42501';
+  end if;
+  select r.* into row_data from public.convay_entity_records r
+    where r.entity_key='bms.boardpacks' and r.record_id=p_pack for update;
+  if not found then raise exception 'Board pack is unavailable' using errcode='42501'; end if;
+  if row_data.revision=p_revision and row_data.payload->>'approval_status'='Approved' then
+    update public.convay_entity_records set payload=jsonb_set(payload,'{approval_status}','"Published"'::jsonb)
+      where entity_key='bms.boardpacks' and record_id=p_pack and revision=p_revision returning * into row_data;
+    if not found then raise exception 'Board-pack publication changed or was denied' using errcode='42501'; end if;
+  elsif row_data.revision<>p_revision+1 or row_data.payload->>'approval_status' is distinct from 'Published'
+    or row_data.payload->>'published_by' is distinct from actor::text then
+    raise exception 'Board pack changed or is not approved; refresh before publishing' using errcode='23514';
+  end if;
+  -- A missing/disabled snapshot trigger cannot result in a published record.
+  if row_data.payload->>'approval_status' is distinct from 'Published'
+    or row_data.revision<>p_revision+1 or row_data.payload->>'frozen_revision' is distinct from row_data.revision::text
+    or row_data.payload->>'published_by' is distinct from actor::text
+    or nullif(row_data.payload->>'publication_manifest_id','') is null then
+    raise exception 'Atomic board-pack publication was not confirmed' using errcode='23514';
+  end if;
+  return jsonb_build_object('recordId',row_data.record_id,'revision',row_data.revision,
+    'approvalStatus','Published','manifestId',row_data.payload->>'publication_manifest_id','version',row_data.payload->>'version');
+end $fn$;
+revoke all on function public.convay_publish_board_pack(text,bigint) from public,anon,authenticated;
+grant execute on function public.convay_publish_board_pack(text,bigint) to authenticated;
+notify pgrst,'reload schema';

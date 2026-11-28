@@ -483,7 +483,14 @@ for token in (at,bt,anon):
 assert call(pub_path,rt)[0]["payload"]==approved
 # Fresh exact parent revision, and an atomic immutable snapshot plus audit.
 rev=call(pub_path,rt)[0]["revision"]
-rows=call(pub_path+"&revision=eq."+str(rev),rt,{"payload":published},method="PATCH")
+# Actual dedicated UI publication contract, not a client-side status edit.
+for token in (at,bt,anon):
+    rpc("convay_publish_board_pack",token,{"p_pack":pub_id,"p_revision":rev},expected=(401,403,404))
+receipt=rpc("convay_publish_board_pack",rt,{"p_pack":pub_id,"p_revision":rev})
+assert receipt["recordId"]==pub_id and receipt["revision"]==rev+1 and receipt["approvalStatus"]=="Published"
+assert rpc("convay_publish_board_pack",rt,{"p_pack":pub_id,"p_revision":rev})==receipt
+rpc("convay_publish_board_pack",rt,{"p_pack":pub_id,"p_revision":rev-1},expected=(400,409))
+rows=call(pub_path,rt)
 assert len(rows)==1 and rows[0]["revision"]==rev+1
 frozen=rows[0]["payload"]
 assert frozen["approval_status"]=="Published" and frozen["frozen_revision"]==rev+1 and frozen["published_by"]==root["id"]
